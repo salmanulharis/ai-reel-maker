@@ -1,0 +1,37 @@
+services:
+  app:
+    build: .
+    ports:
+      - "${APP_PUBLISH_PORT:-18527}:5000"
+    env_file:
+      - .env
+    environment:
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+      DATA_DIR: /app/data
+      TEMP_DIR: /app/data/tmp
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - highlighter-data:/app/data
+    restart: unless-stopped
+
+  ollama:
+    image: ollama/ollama:latest
+    profiles: ["ollama"]
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama-models:/root/.ollama
+    restart: unless-stopped
+    # GPU passthrough (NVIDIA Container Toolkit):
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: all
+    #           capabilities: [gpu]
+
+volumes:
+  highlighter-data:
+  ollama-models:

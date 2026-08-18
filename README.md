@@ -1,0 +1,353 @@
+# AI Video Highlights
+
+Turn long videos into concise, meaningful highlight clips — entirely on your machine.
+
+The app analyzes a lecture, interview, podcast, tutorial, gameplay recording, meeting, or product demo, finds the strongest moments, drops repetition and low-value padding, and renders a short highlight that still makes sense.
+
+Example:
+
+```text
+Input:  5 minute video
+Target: 20–30 seconds
+Output: a coherent 20–30 second highlight of the strongest moments
+```
+
+Everything runs locally. Your videos are not uploaded to third-party AI services. There is no telemetry and no cloud processing.
+
+---
+
+## Features
+
+- Local upload of MP4, MOV, MKV, AVI, WebM, and M4V
+- Background jobs (the HTTP request never blocks on transcoding)
+- Scene detection, transcription, silence analysis, and keyframe sampling
+- Optional local vision + language understanding through Ollama (`qwen3-vl:8b` recommended)
+- Light and dark theme (header switch, preference saved locally)
+- Semantic repetition removal (paraphrases, not just identical frames)
+- Diversity-aware clip selection against a duration range
+- Review timeline: keep, remove, trim, extend, regenerate
+- Must-include / must-exclude ranges
+- High-quality FFmpeg render (CRF, optional hardware encoders, no watermark)
+- Optional subtitles (SRT or burned-in) and social 9:16 output
+- Analysis cache so changing 20s → 30s does not re-transcribe
+- Cancel, retry from the last valid stage, job history, storage cleanup
+- Deterministic fallback when Ollama is offline
+
+---
+
+## Requirements
+
+| Component | Notes |
+|-----------|--------|
+| Python | 3.11+ (Docker image uses 3.11) |
+| Node.js | 20+ only if you build the UI outside Docker |
+| FFmpeg / FFprobe | Required for probe, cuts, concat, silence detect |
+| Docker / Compose | Recommended deployment |
+| Ollama | Optional but recommended for meaning-aware highlights |
+| RAM | 8 GB minimum; 16–32 GB comfortable with Whisper `small` + `qwen3-vl:8b` |
+| GPU | Optional. Helps Whisper, Ollama, and NVENC/QSV/AMF/VideoToolbox |
+| Disk | Several GB for models, plus space for source videos and cache |
+
+CPU-only operation is supported. It will be slower, especially transcription and visual analysis.
+
+---
+
+## Install Ollama
+
+Ollama is **not** bundled in the Flask image. Install it on the host (recommended for GPU users) or run the optional Compose profile.
+
+### Windows
+
+1. Download the installer from [https://ollama.com/download](https://ollama.com/download)
+2. Run it. The service listens on port `11434`
+3. Confirm: `ollama --version`
+
+### macOS
+
+```bash
+brew install ollama
+ollama serve
+```
+
+Or install the macOS app from the Ollama website.
+
+### Linux
+
+```bash
+curl -fsSL https://ollama.com/install.sh | sh
+systemctl enable --now ollama
+```
+
+---
+
+## Recommended models (best for this app)
+
+This app needs two local models:
+
+1. **Vision** — score sampled scene frames (what is happening, intro vs demo, on-screen text, action).
+2. **Text** — score transcript segments (importance, hooks, filler, repetition).
+
+**Use this pair:**
+
+```bash
+ollama pull qwen3-vl:8b
+ollama pull qwen3:8b
+```
+
+### Why `qwen3-vl:8b` is the best default
+
+| Criterion | Winner |
+|-----------|--------|
+| Best Ollama-native vision family for video (2026) | Qwen3-VL |
+| Official Ollama `qwen3-vl:latest` | **8B** (~6.1 GB, 256K context, image + text) |
+| Lectures, slides, product UI, OCR | 8B over 4B |
+| Structured JSON scoring + language quality | 8B + `qwen3:8b` |
+| Speed on 6–8 GB VRAM | `qwen3-vl:4b` |
+
+Qwen3-VL is currently the strongest open vision-language line you can run in Ollama for this workload. It has native long-video / multi-image reasoning, spatial understanding, and OCR across many languages — which matches highlight extraction (keyframes + “is this a demo / slide / speaker / intro?”).
+
+The official Ollama library tags `qwen3-vl:latest` to **`qwen3-vl:8b`**. Independent local video-frame tests found `qwen3-vl:4b` can match 8B on simple frame tagging at about 2× the speed and half the VRAM (~3.3 GB). The **8B** still wins for this product because tutorials, presentations, and product demos often depend on reading on-screen text; 8B is clearly stronger on document/OCR-style tasks (for example DocVQA-class gaps versus 4B). Pair it with **`qwen3:8b`** for transcript scoring — do not send every frame to a giant model.
+
+Gemma 3 is a weaker fit here: combining visual frames with speech context (exactly what this pipeline does) has been shown to *hurt* Gemma 3 while *helping* Qwen3-VL. Llama 3.2 Vision is behind Qwen3-VL on current local VLM comparisons. Newer Qwen 3.6 vision builds are not a reliable Ollama one-liner yet.
+
+Requires **Ollama 0.12.7+** for Qwen3-VL.
+
+### Size guide
+
+| Model | Disk (approx.) | When to use |
+|-------|----------------|-------------|
+| `qwen3-vl:2b` | ~1.9 GB | CPU / very low VRAM only |
+| `qwen3-vl:4b` | ~3.3 GB | Fast path; 6–8 GB VRAM; many scenes |
+| **`qwen3-vl:8b`** | **~6.1 GB** | **Recommended default for this app** |
+| `qwen3-vl:30b` / `:32b` | ~20–21 GB | Higher quality if you have the VRAM |
+| `qwen3-vl:235b` | ~143 GB | Do not pull unless you know the hardware |
+
+Text model: `qwen3:8b` with the 8B vision default; `qwen3:4b` with the 4B vision default.
+
+```bash
+# Lightweight
+ollama pull qwen3-vl:4b
+ollama pull qwen3:4b
+
+# Stronger machine
+ollama pull qwen3-vl:30b
+ollama pull qwen3:30b
+```
+
+The Settings page also shows a VRAM warning and a hardware-based suggestion. Do not auto-download the largest variant.
+
+---
+
+## Verify Ollama
+
+```bash
+curl http://localhost:11434/api/tags
+```
+
+You should see JSON with a `models` list. If this fails, the app still runs in degraded mode (scenes, transcript heuristics, audio, repetition) and the UI will show that visual AI is unavailable.
+
+---
+
+## Environment configuration
+
+Copy `.env.example` to `.env` and adjust. None of these are mandatory if you are happy with the defaults.
+
+```env
+# Bind address for the Flask + Socket.IO server
+APP_HOST=0.0.0.0
+APP_PORT=5000
+FLASK_ENV=production
+
+# Ollama API root (do not hard-code localhost in application code)
+# Docker → host Ollama:
+OLLAMA_BASE_URL=http://host.docker.internal:11434
+# Native Python on the same machine:
+# OLLAMA_BASE_URL=http://127.0.0.1:11434
+# Ollama on another LAN box:
+# OLLAMA_BASE_URL=http://192.168.1.50:11434
+OLLAMA_VISION_MODEL=qwen3-vl:8b
+OLLAMA_TEXT_MODEL=qwen3:8b
+OLLAMA_TIMEOUT=300
+OLLAMA_MAX_RETRIES=2
+
+DATA_DIR=/app/data
+TEMP_DIR=/app/data/tmp
+MAX_UPLOAD_SIZE_GB=10
+
+TARGET_MIN_DURATION=20
+TARGET_MAX_DURATION=30
+
+ENABLE_WHISPER=true
+WHISPER_MODEL=small
+ENABLE_SCENE_DETECTION=true
+ENABLE_VISUAL_ANALYSIS=true
+ENABLE_REPETITION_ANALYSIS=true
+
+OUTPUT_FORMAT=mp4
+OUTPUT_VIDEO_CODEC=auto
+OUTPUT_CRF=18
+
+KEEP_CACHE=true
+CACHE_RETENTION_DAYS=7
+DEBUG_ANALYSIS=false
+```
+
+`DEBUG_ANALYSIS=true` keeps sampled frames and raw scoring files for tuning. Leave it false in normal use so temporary frames are deleted after analysis.
+
+---
+
+## Docker installation
+
+```bash
+cp .env.example .env
+docker compose build
+docker compose up -d
+```
+
+### Access
+
+Open [http://localhost:18527](http://localhost:18527) if you use the default `APP_PUBLISH_PORT` from `.env.example`, or [http://localhost:5000](http://localhost:5000) if you publish container port 5000 directly.
+
+### Optional Ollama container
+
+Default recommended mode: **host Ollama + Dockerized Flask app** (easier GPU use for models).
+
+To run Ollama in Compose as well:
+
+```bash
+docker compose --profile ollama up -d
+```
+
+Then set `OLLAMA_BASE_URL=http://ollama:11434` in `.env` so the app container talks to the Ollama service. Models persist in the `ollama-models` volume and are not redownloaded on every restart.
+
+---
+
+## Ollama + Docker networking
+
+The Flask container must reach Ollama. Compose includes:
+
+```yaml
+extra_hosts:
+  - "host.docker.internal:host-gateway"
+```
+
+| Host OS | What this does |
+|---------|----------------|
+| Windows / macOS Docker Desktop | `host.docker.internal` already points at the host. The extra host is harmless. |
+| Linux | `host-gateway` maps `host.docker.internal` to the host, so `http://host.docker.internal:11434` reaches host Ollama. |
+
+If Ollama listens only on localhost, that is usually enough. If the container still cannot connect:
+
+1. Confirm `curl http://localhost:11434/api/tags` on the host
+2. On Linux, allow the Docker bridge to reach port 11434 (firewall / `OLLAMA_HOST=0.0.0.0`)
+3. Or point `OLLAMA_BASE_URL` at another machine on your LAN, for example `http://192.168.1.50:11434`
+
+Never commit videos to a public registry. The default Compose volume keeps job files on the local Docker disk.
+
+---
+
+## GPU
+
+### Ollama on the host
+
+Install NVIDIA/AMD/Apple GPU drivers as you normally would for Ollama. The Flask container does not need the GPU for inference if Ollama runs on the host.
+
+### NVIDIA encoding inside the app container
+
+Hardware encoding (NVENC) needs the NVIDIA Container Toolkit and an image with FFmpeg linked to NVENC. The default CPU image still encodes with `libx264`. To pass a GPU into Compose, uncomment the `deploy.resources.reservations.devices` block on the service that should see the GPU (usually `ollama`, sometimes `app`).
+
+### CPU-only mode
+
+Leave Ollama unset or offline. Set `ENABLE_VISUAL_ANALYSIS=false` if you want to skip vision calls entirely. Transcription still works on CPU via `faster-whisper` (slower). Rendering uses libx264.
+
+---
+
+## Native (non-Docker) install
+
+```bash
+python -m venv .venv
+# Windows: .venv\Scripts\activate
+source .venv/bin/activate
+pip install -r requirements.txt
+cd frontend && npm install && npm run build && cd ..
+copy .env.example .env   # Windows
+# set OLLAMA_BASE_URL=http://127.0.0.1:11434
+python run.py
+```
+
+Frontend dev mode (UI on 5173, API proxied to 5000):
+
+```bash
+python run.py
+cd frontend && npm install && npm run dev
+```
+
+System check:
+
+```bash
+python scripts/check_system.py
+```
+
+---
+
+## How analysis works
+
+The pipeline is hierarchical. It does **not** send every frame to the LLM.
+
+1. Probe metadata (FFprobe)
+2. Detect scenes (PySceneDetect)
+3. Extract audio (FFmpeg)
+4. Transcribe (faster-whisper, local)
+5. Detect silence / dead air
+6. Sample a few representative frames per scene
+7. Optional Ollama vision on those frames only
+8. Score transcript segments (Ollama text model, with heuristics as fallback)
+9. Generate many candidate windows and snap to sentence / pause / scene boundaries
+10. Remove semantically repeated ideas
+11. Diversity-aware selection into the target duration range
+12. Show a clip plan for review
+13. Render with FFmpeg (AI never emits shell commands)
+
+Quality is preferred over padding the duration with weak clips. If the source is already shorter than the target, it is not artificially expanded.
+
+---
+
+## Tests
+
+```bash
+pip install pytest pydantic pydantic-settings flask flask-cors flask-socketio sqlalchemy numpy scikit-learn requests python-dotenv
+python -m pytest tests -q
+```
+
+Unit tests cover timestamps, scoring, repetition, duration optimization, FFmpeg argv construction, JSON repair, probe/silence parsing, and API validation. Integration tests that need a real GPU or Whisper weights are skipped unless those tools are present.
+
+---
+
+## Troubleshooting
+
+| Problem | What to check |
+|---------|----------------|
+| Ollama unavailable | `curl http://localhost:11434/api/tags`; URL in Settings; Docker extra_hosts |
+| Model missing | UI shows “not installed” + Install model, or `ollama pull qwen3-vl:8b` |
+| FFmpeg missing | Install FFmpeg so `ffmpeg` and `ffprobe` are on `PATH` |
+| GPU unavailable | App continues on CPU; encoding falls back to libx264 |
+| Permission denied | Data directory must be writable (`DATA_DIR`) |
+| Out of disk space | Settings → Storage; clear tmp/cache; retention days |
+| Unsupported codec | Re-wrap/transcode the source locally; FFmpeg must decode it |
+| Very slow inference | Use `qwen3-vl:4b` / Whisper `base` or `tiny`; enable GPU for Ollama |
+| Container cannot reach host Ollama | Linux `host-gateway`, `OLLAMA_HOST=0.0.0.0`, or a LAN URL |
+| Job failed mid-vision | Retry continues from cache; one failed scene uses fallback scoring |
+
+---
+
+## Privacy
+
+- No cloud AI APIs (no OpenAI, no Gemini, no SaaS video APIs)
+- The only network calls are to the Ollama URL you configure (typically localhost or LAN)
+- Uploads are stored under `data/jobs/<id>/` as files, not in SQLite blobs
+
+---
+
+## License
+
+MIT — see `LICENSE`.

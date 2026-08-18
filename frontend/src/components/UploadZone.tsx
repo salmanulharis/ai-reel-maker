@@ -1,0 +1,98 @@
+import { useRef, useState } from "react";
+import { messages } from "../i18n";
+
+const ACCEPT = ".mp4,.mov,.mkv,.avi,.webm,.m4v,video/*";
+const MAX_FILES = 8;
+
+function asVideoFiles(list: FileList | File[] | null): File[] {
+  if (!list) return [];
+  return Array.from(list).filter((file) => file.type.startsWith("video/") || /\.(mp4|mov|mkv|avi|webm|m4v)$/i.test(file.name));
+}
+
+export function UploadZone({
+  onFiles,
+  files,
+  onRemove,
+}: {
+  onFiles: (files: File[]) => void;
+  files: File[];
+  onRemove: (index: number) => void;
+}) {
+  const input = useRef<HTMLInputElement>(null);
+  const [drag, setDrag] = useState(false);
+
+  function add(incoming: File[]) {
+    if (!incoming.length) return;
+    onFiles(incoming.slice(0, MAX_FILES));
+  }
+
+  return (
+    <div>
+      <div
+        className={`upload ${drag ? "drag" : ""}`}
+        onClick={() => input.current?.click()}
+        onDragOver={(e) => {
+          e.preventDefault();
+          setDrag(true);
+        }}
+        onDragLeave={() => setDrag(false)}
+        onDrop={(e) => {
+          e.preventDefault();
+          setDrag(false);
+          add(asVideoFiles(e.dataTransfer.files));
+        }}
+        role="button"
+        tabIndex={0}
+        onKeyDown={(e) => e.key === "Enter" && input.current?.click()}
+        aria-label={messages.upload.drop}
+      >
+        <div>
+          <h3>{messages.upload.drop}</h3>
+          <p>
+            {messages.upload.or}
+            <br />
+            <strong>{messages.upload.browse}</strong>
+          </p>
+          <p style={{ color: "var(--muted)", fontSize: 12 }}>{messages.upload.formats}</p>
+        </div>
+        <input
+          ref={input}
+          type="file"
+          accept={ACCEPT}
+          hidden
+          multiple
+          onChange={(e) => {
+            add(asVideoFiles(e.target.files));
+            e.target.value = "";
+          }}
+        />
+      </div>
+      {files.length > 0 && (
+        <div className="file-list">
+          <p className="file-list-title">
+            {messages.upload.files} ({files.length}/{MAX_FILES})
+          </p>
+          <ol>
+            {files.map((file, index) => (
+              <li key={`${file.name}-${file.size}-${index}`}>
+                <span>
+                  Video {index + 1}: {file.name}
+                </span>
+                <button
+                  className="btn"
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onRemove(index);
+                  }}
+                >
+                  {messages.upload.removeFile}
+                </button>
+              </li>
+            ))}
+          </ol>
+        </div>
+      )}
+    </div>
+  );
+}

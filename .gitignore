@@ -1,0 +1,42 @@
+# Byte-compiled
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+env/
+*.egg-info/
+.coverage
+htmlcov/
+
+# Data / uploads
+data/jobs/*
+data/cache/*
+data/tmp/*
+data/app.db
+!data/**/.gitkeep
+
+# Frontend
+frontend/node_modules/
+frontend/dist/
+
+# Env / secrets
+.env
+.env.local
+.env.*.local
+
+# OS / IDE
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+.cursor/
+
+# Logs and local media
+*.log
+samples/*
+!samples/.gitkeep
+!samples/README.md
+samples/.multi-e2e/
