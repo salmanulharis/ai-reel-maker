@@ -5,14 +5,17 @@ import time
 from pathlib import Path
 
 from app.ai.ollama import OllamaClient, OllamaError
-from app.ai.prompts import SEGMENT_SCHEMA, transcript_batch_prompt
+from app.ai.prompts import (
+    TRANSCRIPT_BATCH_SCHEMA_FAST,
+    transcript_batch_prompt_fast,
+)
 from app.analysis.audio import detect_silence, extract_audio, transcribe
 from app.analysis.candidates import generate_candidates
 from app.analysis.optimizer import ClipOptimizer
 from app.analysis.repetition import RepetitionAnalyzer
 from app.analysis.scenes import detect_scenes
 from app.analysis.scorer import HighlightScorer
-from app.analysis.visual import analyze_scene_visual, sample_timestamps
+from app.analysis.visual import analyze_scenes_visual, sample_timestamps
 from app.config import Settings
 from app.models.schemas import CandidateScore, HighlightConfig, Scene, Transcript
 from app.video.ffmpeg_runner import CancelledError, FFmpegRunner
@@ -122,7 +125,13 @@ class VideoAnalyzer:
             progress.stage("transcript", "running")
             if wav.exists() and self.settings.enable_whisper:
                 try:
-                    transcript = transcribe(wav, self.settings.whisper_model, self.settings.whisper_device)
+                    transcript = transcribe(
+                        wav,
+                        self.settings.whisper_model,
+                        self.settings.whisper_device,
+                        cpu_threads=self.settings.whisper_cpu_threads,
+                        num_workers=self.settings.whisper_num_workers,
+                    )
                     transcript_data = transcript.model_dump()
                     nseg = len(transcript.segments)
                     progress.log(f"Transcription completed ({nseg} segment{'s' if nseg != 1 else ''})")
@@ -159,10 +168,12 @@ class VideoAnalyzer:
         if not has_frame_files:
             progress.stage("frames", "running")
             frame_map = {}
+            use_lite_frames = self.settings.enable_visual_analysis and bool(self.ollama) and self.vision_enabled
+            frame_density = "lite" if use_lite_frames else "auto"
             for scene in scenes:
                 model = Scene.model_validate(scene)
                 paths = []
-                for stamp in sample_timestamps(model, source_duration=source_duration):
+                for stamp in sample_timestamps(model, source_duration=source_duration, density=frame_density):
                     out = frames_dir / f"scene_{model.scene_id}_{int(stamp * 100)}.jpg"
                     if not out.exists():
                         try:
@@ -190,29 +201,54 @@ class VideoAnalyzer:
                 )
             elif not ollama_ok:
                 progress.log("Ollama is unavailable. Using deterministic visual scoring.", "WARNING")
-            for i, scene in enumerate(scenes):
+            ai_scene_count = sum(
+                1
+                for scene in scenes
+                if float(scene.get("duration") or 0) >= self.settings.ollama_vision_min_scene_duration
+            )
+            batch_count = max(
+                1,
+                (ai_scene_count + self.settings.ollama_vision_batch_size - 1)
+                // self.settings.ollama_vision_batch_size,
+            )
+            progress.log(
+                f"Visual AI: analyzing {ai_scene_count} scene(s) in up to {batch_count} batched call(s) "
+                f"({self.settings.ollama_vision_max_pixels}px frames, model {self.settings.ollama_vision_model})"
+            )
+            progress.stage("visual", "running", "Preparing batched visual analysis", 0, batch_count)
+            self._check_cancel()
+
+            def _visual_batch_progress(batch_no: int, total: int, size: int) -> None:
                 self._check_cancel()
-                paths = [Path(p["image_path"]) for p in frame_map.get(str(scene["scene_id"]), [])]
-                analysis, error = analyze_scene_visual(
-                    self.ollama,
-                    self.settings.ollama_vision_model,
-                    paths,
-                    Scene.model_validate(scene),
-                    source_duration,
-                    config.custom_focus,
-                    enabled=self.settings.enable_visual_analysis and vision_ok,
+                progress.log(f"Visual AI: batch {batch_no}/{total} ({size} scene{'s' if size != 1 else ''})")
+                progress.stage(
+                    "visual",
+                    "running",
+                    f"Visual batch {batch_no}/{total}",
+                    batch_no,
+                    total,
                 )
-                visual[str(scene["scene_id"])] = analysis.model_dump()
-                if error:
-                    detail = error.replace("\n", " ").strip()[:220]
-                    progress.log(
-                        f"Scene {scene['scene_id']} visual analysis failed ({detail}). Using fallback visual score. Continuing...",
-                        "WARNING",
-                    )
-                progress.stage("visual", "running", f"Analyzing scene {i + 1}/{len(scenes)}", i + 1, len(scenes))
+
+            results, errors = analyze_scenes_visual(
+                self.ollama,
+                self.settings.ollama_vision_model,
+                scenes,
+                frame_map,
+                source_duration,
+                config.custom_focus,
+                enabled=self.settings.enable_visual_analysis and vision_ok,
+                settings=self.settings,
+                on_batch_start=_visual_batch_progress,
+            )
+            for scene in scenes:
+                scene_id = int(scene["scene_id"])
+                if scene_id in results:
+                    visual[str(scene_id)] = results[scene_id].model_dump()
+            for message in errors:
+                progress.log(message, "WARNING")
+            progress.stage("visual", "done", f"Analyzed {len(results)} scene(s)", batch_count, batch_count)
             _write(job_dir / "visual_analysis.json", visual)
             progress.log("Visual analysis completed")
-            progress.stage("visual", "done")
         cache["visual"] = visual
 
         progress.stage("content", "running")
@@ -266,6 +302,7 @@ class VideoAnalyzer:
             source_duration=source_duration,
             similarity_fn=similarity_fn,
             max_sequence_duration=config.max_sequence_duration,
+            min_sequence_duration=config.min_sequence_duration,
             sequence_duration_mode=config.sequence_duration_mode,
             allow_repeated_content=bool(config.allow_repeated_content),
             max_repeated_duration=config.max_repeated_duration,
@@ -359,6 +396,7 @@ class VideoAnalyzer:
             source_duration=total_duration,
             similarity_fn=similarity_fn,
             max_sequence_duration=config.max_sequence_duration,
+            min_sequence_duration=config.min_sequence_duration,
             sequence_duration_mode=config.sequence_duration_mode,
             allow_repeated_content=bool(config.allow_repeated_content),
             max_repeated_duration=config.max_repeated_duration,
@@ -385,33 +423,50 @@ class VideoAnalyzer:
         if not transcript.segments:
             return results
         if self.ollama is None:
-            progress.log("AI visual understanding unavailable" if False else "Text model unavailable; using heuristic transcript scores.", "WARNING")
+            progress.log("Text model unavailable; using heuristic transcript scores.", "WARNING")
             return [_heuristic_segment(seg) for seg in transcript.segments]
-        batch_size = 8
-        for start in range(0, len(transcript.segments), batch_size):
+        batch_size = max(1, self.settings.ollama_text_batch_size)
+        total = len(transcript.segments)
+        batch_count = (total + batch_size - 1) // batch_size
+        text_options = {
+            "num_ctx": self.settings.ollama_text_num_ctx,
+            "num_predict": self.settings.ollama_text_num_predict,
+        }
+        for start in range(0, total, batch_size):
             self._check_cancel()
             batch = transcript.segments[start : start + batch_size]
+            batch_no = start // batch_size + 1
+            progress.log(
+                f"Scoring transcript batch {batch_no}/{batch_count} "
+                f"({len(batch)} segment{'s' if len(batch) != 1 else ''})"
+            )
+            progress.stage(
+                "content",
+                "running",
+                f"Scoring speech {batch_no}/{batch_count}",
+                batch_no,
+                batch_count,
+            )
             payload = [{"start": s.start, "end": s.end, "text": s.text} for s in batch]
             try:
                 data = self.ollama.chat(
                     self.settings.ollama_text_model,
-                    transcript_batch_prompt(config.style, config.custom_focus, payload),
-                    schema={
-                        "type": "object",
-                        "properties": {"segments": {"type": "array", "items": SEGMENT_SCHEMA}},
-                    },
+                    transcript_batch_prompt_fast(config.style, config.custom_focus, payload),
+                    schema=TRANSCRIPT_BATCH_SCHEMA_FAST,
+                    options=text_options,
+                    schema_first=False,
                 )
                 items = data.get("segments") or []
                 for i, seg in enumerate(batch):
                     raw = items[i] if i < len(items) else {}
-                    score = CandidateScore.model_validate(raw)
+                    score = _expand_segment_score(raw, seg)
                     results.append(
                         {
                             "start": seg.start,
                             "end": seg.end,
                             "text": seg.text,
                             "score": score.model_dump(),
-                            "reason": raw.get("reason") or raw.get("label") or self.scorer.reason_for(score),
+                            "reason": self.scorer.reason_for(score),
                         }
                     )
             except (OllamaError, Exception) as exc:  # noqa: BLE001
@@ -453,6 +508,7 @@ def plan_from_cache(cache: dict, config: HighlightConfig, settings: Settings) ->
         source_duration=float(meta.get("duration") or 0),
         similarity_fn=similarity_fn,
         max_sequence_duration=config.max_sequence_duration,
+        min_sequence_duration=config.min_sequence_duration,
         sequence_duration_mode=config.sequence_duration_mode,
         allow_repeated_content=bool(config.allow_repeated_content),
         max_repeated_duration=config.max_repeated_duration,
@@ -460,6 +516,26 @@ def plan_from_cache(cache: dict, config: HighlightConfig, settings: Settings) ->
         content_priorities=config.content_priorities,
     )
     return plan.model_dump()
+
+
+def _expand_segment_score(raw: dict, seg) -> CandidateScore:
+    text = seg.text.strip()
+    lower = text.lower()
+    words = text.split()
+    filler = 0.85 if lower in {"um", "uh", "you know", "like", "yeah", "okay", "ok"} or len(words) < 3 else 0.05
+    intro = 0.75 if any(w in lower for w in ("welcome", "hello", "hi everyone", "thanks for watching")) else 0.0
+    hook = 0.65 if "?" in text or text.isupper() else 0.25
+    emotional = min(1.0, 0.25 + float(raw.get("importance") or 0) * 0.55)
+    return CandidateScore.model_validate(
+        {
+            **raw,
+            "hook_strength": raw.get("hook_strength", hook),
+            "filler_score": raw.get("filler_score", filler),
+            "repetition_score": raw.get("repetition_score", 0.12),
+            "context_dependency": raw.get("context_dependency", intro),
+            "emotional_intensity": raw.get("emotional_intensity", emotional),
+        }
+    )
 
 
 def _heuristic_segment(seg) -> dict:

@@ -9,10 +9,11 @@ from pathlib import Path
 
 from flask import Flask
 
-from app.ai.ollama import OllamaClient
+from app.ai.ollama import OllamaError
 from app.analysis.pipeline import PipelineProgress, VideoAnalyzer
 from app.analysis.sequence_limits import clamp_plan_clips, sequence_cap
 from app.config import get_settings
+from app.services.ollama_runtime import get_ollama_client
 from app.models.schemas import ClipPlan, ClipPlanItem, HighlightConfig, RenderSettings, VideoMetadata
 from app.services.hardware import preferred_hw_encoder
 from app.services.job_manager import get_job_manager
@@ -66,13 +67,14 @@ def _recover_orphaned_jobs() -> None:
 
 
 def _loop(app: Flask) -> None:
+    settings = get_settings()
     while True:
         try:
             with app.app_context():
                 _tick(app)
         except Exception:
             _log.exception("Highlight worker tick failed")
-        time.sleep(0.8)
+        time.sleep(settings.worker_idle_sleep)
 
 
 def _tick(app: Flask) -> None:
@@ -139,7 +141,7 @@ def _run_analysis(app: Flask, job_id: str) -> None:
     ollama = None
     vision_enabled = False
     try:
-        client = OllamaClient(settings)
+        client = get_ollama_client(settings)
         health = client.health()
         if health.get("connected"):
             ollama = client

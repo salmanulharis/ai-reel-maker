@@ -208,6 +208,7 @@ class HighlightConfig(BaseModel):
     must_include: list[tuple[float, float]] = Field(default_factory=list)
     must_exclude: list[tuple[float, float]] = Field(default_factory=list)
     max_sequence_duration: float = 5.0
+    min_sequence_duration: float | None = None
     sequence_duration_mode: Literal["auto", "custom"] = "auto"
     allow_repeated_content: bool | None = None
     max_repeated_duration: float = 15.0
@@ -226,6 +227,13 @@ class HighlightConfig(BaseModel):
         else:
             self.remove_repetition = not self.allow_repeated_content
         self.max_sequence_duration = max(1.0, float(self.max_sequence_duration))
+        if self.min_sequence_duration is not None:
+            self.min_sequence_duration = max(0.5, float(self.min_sequence_duration))
+        if self.sequence_duration_mode == "custom":
+            if self.min_sequence_duration is None:
+                self.min_sequence_duration = 1.5
+            if self.min_sequence_duration > self.max_sequence_duration:
+                self.min_sequence_duration = self.max_sequence_duration
         if self.sequence_duration_mode not in {"auto", "custom"}:
             self.sequence_duration_mode = "auto"
         self.max_repeated_duration = max(0.0, float(self.max_repeated_duration))

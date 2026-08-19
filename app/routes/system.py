@@ -6,10 +6,11 @@ import threading
 
 from flask import Blueprint, jsonify, request
 
-from app.ai.ollama import OllamaClient, OllamaError
+from app.ai.ollama import OllamaError
 from app.config import get_settings
 from app.services.hardware import detect_hardware
 from app.services.job_manager import get_job_manager
+from app.services.ollama_runtime import get_ollama_client
 
 system_bp = Blueprint("system", __name__)
 _pull_lock = threading.Lock()
@@ -31,7 +32,7 @@ def system_info():
         "ffprobe": hw["ffprobe"],
         "storage": settings.data_dir.exists() and settings.data_dir.is_dir(),
     }
-    ollama = OllamaClient(settings).health()
+    ollama = get_ollama_client(settings).health()
     checks["ollama"] = bool(ollama.get("connected"))
     checks["vision_model"] = bool(ollama.get("vision_present"))
     checks["text_model"] = bool(ollama.get("text_present"))
@@ -51,7 +52,7 @@ def system_info():
 
 @system_bp.get("/system/ollama/status")
 def ollama_status():
-    client = OllamaClient(get_settings())
+    client = get_ollama_client()
     health = client.health()
     health["pull"] = dict(_pull_status)
     return jsonify(health)
@@ -67,7 +68,7 @@ def ollama_pull():
     def _run():
         _pull_status[name] = "running"
         try:
-            client = OllamaClient(get_settings())
+            client = get_ollama_client()
             try:
                 client.pull_model(name)
             except OllamaError:

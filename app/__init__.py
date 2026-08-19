@@ -57,8 +57,10 @@ def create_app(settings: Settings | None = None, start_background: bool = True) 
     job_manager_mod._manager = None
 
     if start_background:
+        from app.services.ollama_runtime import schedule_ollama_warm
         from app.workers.worker import start_worker
 
+        schedule_ollama_warm(settings)
         start_worker(app)
 
     return app

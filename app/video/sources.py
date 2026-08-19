@@ -41,7 +41,14 @@ def fallback_source(input_path: str | Path, filename: str = "") -> dict:
 
 
 def working_path(source: dict) -> Path:
-    return Path(source.get("analysis_path") or source.get("path") or "")
+    from app.config import resolve_project_path
+
+    raw = source.get("analysis_path") or source.get("path") or ""
+    path = Path(raw)
+    if path.is_file():
+        return path.resolve()
+    resolved = resolve_project_path(path)
+    return resolved if resolved.is_file() else path
 
 
 def tag_candidates(candidates: list[dict], source: dict) -> list[dict]:

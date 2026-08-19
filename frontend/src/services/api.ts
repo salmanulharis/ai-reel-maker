@@ -58,6 +58,7 @@ export function configPayload(form: HighlightForm) {
     remove_repetition: form.remove_repetition,
     allow_repeated_content: form.allow_repeated_content,
     max_sequence_duration: form.max_sequence_duration,
+    min_sequence_duration: form.min_sequence_duration,
     sequence_duration_mode: form.sequence_duration_mode,
     content_priorities: form.content_priorities,
     priority_weights: form.priority_weights,

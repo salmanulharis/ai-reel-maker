@@ -64,6 +64,7 @@ class ClipOptimizer:
         source_duration: float | None = None,
         target: float | None = None,
         max_sequence_duration: float = 5.0,
+        min_sequence_duration: float | None = None,
         sequence_duration_mode: str = "custom",
         allow_repeated_content: bool = False,
         max_repeated_duration: float = 15.0,
@@ -76,11 +77,14 @@ class ClipOptimizer:
         must_include = must_include or []
         must_exclude = must_exclude or []
         max_sequence_duration = max(1.0, float(max_sequence_duration))
+        if min_sequence_duration is not None:
+            min_sequence_duration = max(0.5, float(min_sequence_duration))
+        if sequence_duration_mode == "custom" and min_sequence_duration is not None:
+            max_sequence_duration = max(max_sequence_duration, min_sequence_duration)
         max_repeated_duration = max(0.0, float(max_repeated_duration))
         sequence_duration_mode = "auto" if sequence_duration_mode == "auto" else "custom"
         if sequence_duration_mode == "auto":
             max_sequence_duration = auto_cap(min_duration, max_duration)
-        repeat_budget = 0.0 if not allow_repeated_content else max_repeated_duration
 
         def fit(item: dict, cap: float | None = None) -> dict:
             return fit_candidate(
@@ -88,7 +92,10 @@ class ClipOptimizer:
                 cap if cap is not None else max_sequence_duration,
                 sequence_duration_mode,
                 priorities=content_priorities,
+                min_len=min_sequence_duration,
             )
+
+        repeat_budget = 0.0 if not allow_repeated_content else max_repeated_duration
 
         if source_duration is not None and 0 < source_duration <= min_duration:
             return self._short_source_plan(
@@ -98,6 +105,7 @@ class ClipOptimizer:
                 order_mode,
                 max_sequence_duration,
                 sequence_duration_mode,
+                min_sequence_duration,
             )
 
         pool = []
@@ -245,12 +253,18 @@ class ClipOptimizer:
         order_mode: str,
         max_sequence_duration: float,
         sequence_duration_mode: str = "custom",
+        min_sequence_duration: float | None = None,
     ) -> ClipPlan:
         if candidates:
             selected = []
             used: list[tuple[float, float]] = []
             for candidate in sorted(candidates, key=lambda c: c["start"]):
-                item = fit_candidate(candidate, max_sequence_duration, sequence_duration_mode)
+                item = fit_candidate(
+                    candidate,
+                    max_sequence_duration,
+                    sequence_duration_mode,
+                    min_len=min_sequence_duration,
+                )
                 span = (float(item["start"]), float(item["end"]))
                 if any(_overlaps(span, used_span) for used_span in used):
                     continue

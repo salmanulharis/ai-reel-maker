@@ -1,18 +1,46 @@
 from __future__ import annotations
 
+import threading
 from pathlib import Path
 
 from app.models.schemas import Transcript, TranscriptSegment, WordTimestamp
 from app.video.ffmpeg_runner import FFmpegRunner, FFmpegError
+
+_whisper_models: dict[tuple[str, str, str, int, int], object] = {}
+_whisper_lock = threading.Lock()
 
 
 def extract_audio(runner: FFmpegRunner, video_path: Path, wav_path: Path) -> Path:
     return runner.extract_audio(video_path, wav_path)
 
 
-def transcribe(wav_path: Path, model_size: str = "small", device: str = "auto") -> Transcript:
+def _get_whisper_model(model_size: str, device: str, compute: str, cpu_threads: int, num_workers: int):
+    key = (model_size, device, compute, cpu_threads, num_workers)
+    with _whisper_lock:
+        model = _whisper_models.get(key)
+        if model is None:
+            from faster_whisper import WhisperModel
+
+            model = WhisperModel(
+                model_size,
+                device=device,
+                compute_type=compute,
+                cpu_threads=cpu_threads,
+                num_workers=num_workers,
+            )
+            _whisper_models[key] = model
+        return model
+
+
+def transcribe(
+    wav_path: Path,
+    model_size: str = "small",
+    device: str = "auto",
+    cpu_threads: int = 6,
+    num_workers: int = 1,
+) -> Transcript:
     try:
-        from faster_whisper import WhisperModel
+        from faster_whisper import WhisperModel  # noqa: F401
     except ImportError:
         return Transcript(segments=[], words=[], language=None)
 
@@ -31,7 +59,7 @@ def transcribe(wav_path: Path, model_size: str = "small", device: str = "auto") 
         chosen_device = device
         compute = "float16" if device == "cuda" else "int8"
 
-    model = WhisperModel(model_size, device=chosen_device, compute_type=compute)
+    model = _get_whisper_model(model_size, chosen_device, compute, cpu_threads, num_workers)
     segments_iter, info = model.transcribe(str(wav_path), word_timestamps=True, vad_filter=True)
     segments = []
     words = []

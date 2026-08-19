@@ -3,12 +3,30 @@ from __future__ import annotations
 from functools import lru_cache
 from pathlib import Path
 
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 def _project_root() -> Path:
     return Path(__file__).resolve().parent.parent
+
+
+def resolve_project_path(path: str | Path) -> Path:
+    candidate = Path(path)
+    if candidate.is_absolute():
+        return candidate.resolve()
+    return (_project_root() / candidate).resolve()
+
+
+def default_ollama_base_url() -> str:
+    docker_markers = (
+        Path("/.dockerenv"),
+        Path("\\.dockerenv"),
+        _project_root() / ".dockerenv",
+    )
+    if any(marker.exists() for marker in docker_markers):
+        return "http://host.docker.internal:11434"
+    return "http://127.0.0.1:11434"
 
 
 class Settings(BaseSettings):
@@ -24,11 +42,29 @@ class Settings(BaseSettings):
     flask_env: str = "production"
     secret_key: str = "change-me-local-only"
 
-    ollama_base_url: str = "http://host.docker.internal:11434"
+    ollama_base_url: str = Field(default_factory=default_ollama_base_url)
     ollama_vision_model: str = "qwen3-vl:8b"
     ollama_text_model: str = "qwen3:8b"
-    ollama_timeout: int = 300
+    ollama_timeout: int = 900
     ollama_max_retries: int = 2
+    ollama_num_ctx: int = 8192
+    ollama_vision_max_images: int = 1
+    ollama_vision_max_pixels: int = 512
+    ollama_vision_jpeg_quality: int = 75
+    ollama_vision_num_ctx: int = 4096
+    ollama_vision_num_predict: int = 256
+    ollama_vision_batch_size: int = 4
+    ollama_vision_min_scene_duration: float = 1.0
+    ollama_text_batch_size: int = 20
+    ollama_text_num_ctx: int = 4096
+    ollama_text_num_predict: int = 512
+    ollama_keep_alive: str = "15m"
+    ollama_num_thread: int = 6
+    ollama_warm_on_start: bool = True
+
+    whisper_cpu_threads: int = 6
+    whisper_num_workers: int = 1
+    worker_idle_sleep: float = 1.5
 
     data_dir: Path = Field(default_factory=lambda: _project_root() / "data")
     temp_dir: Path | None = None
@@ -43,7 +79,7 @@ class Settings(BaseSettings):
     default_max_duration: float | None = None
 
     enable_whisper: bool = True
-    whisper_model: str = "small"
+    whisper_model: str = "base"
     whisper_device: str = "auto"
     enable_scene_detection: bool = True
     enable_visual_analysis: bool = True
@@ -76,6 +112,18 @@ class Settings(BaseSettings):
         if value is None or value == "":
             return None
         return Path(value)
+
+    @model_validator(mode="after")
+    def _normalize_paths(self) -> Settings:
+        self.data_dir = resolve_project_path(self.data_dir)
+        self.frontend_dist = resolve_project_path(self.frontend_dist)
+        if self.temp_dir:
+            self.temp_dir = resolve_project_path(self.temp_dir)
+        if self.database_path:
+            self.database_path = resolve_project_path(self.database_path)
+        if self.sample_video:
+            self.sample_video = resolve_project_path(self.sample_video)
+        return self
 
     @property
     def sample_video_path(self) -> Path:

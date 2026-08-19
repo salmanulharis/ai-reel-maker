@@ -187,7 +187,7 @@ def main() -> int:
     return 0
 
 
-def _wait(job_id: str, timeout: int = 900) -> dict:
+def _wait(job_id: str, timeout: int = 3600) -> dict:
     started = time.time()
     last = ""
     while time.time() - started < timeout:

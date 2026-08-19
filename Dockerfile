@@ -1,5 +1,3 @@
-# syntax=docker/dockerfile:1
-
 FROM node:20-alpine AS frontend
 WORKDIR /ui
 COPY frontend/package.json frontend/package-lock.json* ./

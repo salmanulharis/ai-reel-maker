@@ -67,11 +67,31 @@ def _priority_set(priorities) -> set[str]:
     return values
 
 
-def desired_auto_length(candidate: dict, cap: float, priorities: list[str] | None = None) -> tuple[float, str]:
+def sequence_min(config) -> float:
+    raw = getattr(config, "min_sequence_duration", None)
+    if raw is None:
+        return AUTO_MIN
+    return max(0.5, float(raw))
+
+
+def _clamp_sequence_length(length: float, natural: float, cap: float, min_len: float) -> float:
+    length = min(max(0.0, float(length)), natural, cap)
+    if natural + 1e-9 >= min_len:
+        length = max(length, min_len)
+    return round(length, 3)
+
+
+def desired_auto_length(
+    candidate: dict,
+    cap: float,
+    priorities: list[str] | None = None,
+    min_len: float | None = None,
+) -> tuple[float, str]:
+    floor = max(0.4, float(min_len if min_len is not None else AUTO_MIN))
     start = float(candidate["start"])
     end = float(candidate["end"])
     natural = max(0.0, end - start)
-    cap = max(AUTO_MIN, float(cap))
+    cap = max(floor, float(cap))
     if natural <= 0:
         return 0.0, "Empty span"
 
@@ -96,7 +116,7 @@ def desired_auto_length(candidate: dict, cap: float, priorities: list[str] | Non
         + 0.16 * max(0.0, hook - 0.35)
     )
     content = max(0.0, min(1.0, content - 0.40 * repetition - 0.25 * silence - 0.30 * filler))
-    needed = AUTO_MIN + (16.0 * content)
+    needed = floor + (16.0 * content)
     reasons: list[str] = []
 
     if hook >= 0.75 and importance < 0.8:
@@ -120,7 +140,7 @@ def desired_auto_length(candidate: dict, cap: float, priorities: list[str] | Non
         needed = min(needed, 3.0)
         reasons.append("cut filler and repeated setup")
     if silence >= 0.45:
-        needed = min(needed, max(AUTO_MIN, natural * 0.45))
+        needed = min(needed, max(floor, natural * 0.45))
         reasons.append("removed dead time")
 
     if "speech" in focus or "information" in focus:
@@ -135,7 +155,7 @@ def desired_auto_length(candidate: dict, cap: float, priorities: list[str] | Non
         needed = max(needed, min(natural, 6.0))
         reasons.append("magic-moment priority")
 
-    length = min(natural, max(AUTO_MIN, needed), cap)
+    length = _clamp_sequence_length(min(natural, max(floor, needed)), natural, cap, floor)
     if natural <= cap and natural - length <= 0.45:
         length = natural
         lead = f"{length:.1f}s — kept the natural scene/speech length"
@@ -152,18 +172,21 @@ def fit_candidate(
     cap: float,
     mode: str = "custom",
     priorities: list[str] | None = None,
+    min_len: float | None = None,
 ) -> dict:
     item = dict(candidate)
     cap = max(0.4, float(cap))
+    floor = max(0.4, float(min_len if min_len is not None else AUTO_MIN))
     natural = max(0.0, float(item["end"]) - float(item["start"]))
     if (mode or "custom") == "auto":
-        length, reason = desired_auto_length(item, cap, priorities=priorities)
+        length, reason = desired_auto_length(item, cap, priorities=priorities, min_len=floor)
     elif natural > cap + 1e-9:
         length = cap
         reason = f"{cap:.0f}s max — kept the peak of a {natural:.1f}s moment"
     else:
         length = natural
         reason = f"{natural:.1f}s — full moment is under the {cap:.0f}s maximum"
+    length = _clamp_sequence_length(length, natural, cap, floor)
     start, end = keep_best_span(item["start"], item["end"], length, peak_from_candidate(item))
     item["start"] = start
     item["end"] = end

@@ -97,6 +97,7 @@ export interface HighlightForm {
   remove_repetition: boolean;
   allow_repeated_content: boolean;
   max_sequence_duration: number;
+  min_sequence_duration: number | null;
   sequence_duration_mode: "auto" | "custom";
   content_priorities: string[];
   priority_weights: Record<string, number>;

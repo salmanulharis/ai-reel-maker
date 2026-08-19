@@ -27,6 +27,31 @@ VISUAL_SCHEMA = {
     ],
 }
 
+VISUAL_SCENE_SCHEMA_FAST = {
+    "type": "object",
+    "properties": {
+        "scene_id": {"type": "integer"},
+        "visual_importance": {"type": "number"},
+        "action_strength": {"type": "number"},
+        "information_density": {"type": "number"},
+        "visual_change": {"type": "number"},
+        "repetition_likelihood": {"type": "number"},
+        "context_dependency": {"type": "number"},
+    },
+    "required": ["scene_id", "visual_importance", "action_strength", "information_density"],
+}
+
+VISUAL_BATCH_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "scenes": {
+            "type": "array",
+            "items": VISUAL_SCENE_SCHEMA_FAST,
+        }
+    },
+    "required": ["scenes"],
+}
+
 SEGMENT_SCHEMA = {
     "type": "object",
     "properties": {
@@ -42,6 +67,36 @@ SEGMENT_SCHEMA = {
         "reason": {"type": "string"},
     },
     "required": ["importance", "novelty", "information_density"],
+}
+
+TRANSCRIPT_BATCH_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "segments": {
+            "type": "array",
+            "items": SEGMENT_SCHEMA,
+        }
+    },
+    "required": ["segments"],
+}
+
+TRANSCRIPT_BATCH_SCHEMA_FAST = {
+    "type": "object",
+    "properties": {
+        "segments": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "importance": {"type": "number"},
+                    "novelty": {"type": "number"},
+                    "information_density": {"type": "number"},
+                },
+                "required": ["importance", "novelty", "information_density"],
+            },
+        }
+    },
+    "required": ["segments"],
 }
 
 ORDER_SCHEMA = {
@@ -65,8 +120,22 @@ action is meaningful, whether the scene looks repetitive, introductory, or an en
 Score every numeric field from 0.0 to 1.0."""
 
 
+def visual_batch_prompt(scenes: list[dict], custom_focus: str = "") -> str:
+    extra = f" Focus: {custom_focus}." if custom_focus else ""
+    lines = "\n".join(
+        f"{idx}. scene_id={scene['scene_id']} [{scene['start']:.1f}-{scene['end']:.1f}s]"
+        for idx, scene in enumerate(scenes)
+    )
+    return f"""Analyze each scene from its frame image. Image order matches scene order.{extra}
+Return compact JSON only:
+{{"scenes":[{{"scene_id":n,"visual_importance":0-1,"action_strength":0-1,"information_density":0-1,"visual_change":0-1,"repetition_likelihood":0-1,"context_dependency":0-1}}]}}
+Use the same scene_id values. Score 0.0-1.0. Penalize intros, endings, repetition, and empty frames.
+Scenes:
+{lines}"""
+
+
 def transcript_batch_prompt(style: str, custom_focus: str, segments: list[dict]) -> str:
-    extra = f"\nCustom instruction: {custom_focus}" if custom_focus else ""
+    extra = f" Focus: {custom_focus}." if custom_focus else ""
     lines = "\n".join(
         f"{idx}. [{item['start']:.1f}-{item['end']:.1f}] {item['text']}"
         for idx, item in enumerate(segments)
@@ -81,6 +150,19 @@ Prefer complete thoughts over greetings and repetition.
 Segments:
 {lines}
 Return JSON: {{"segments":[...in the same order...]}}."""
+
+
+def transcript_batch_prompt_fast(style: str, custom_focus: str, segments: list[dict]) -> str:
+    extra = f" Focus: {custom_focus}." if custom_focus else ""
+    lines = "\n".join(
+        f"{idx}. [{item['start']:.1f}-{item['end']:.1f}] {item['text']}"
+        for idx, item in enumerate(segments)
+    )
+    return f"""Score highlight value for each segment (0.0-1.0). Style: {style}.{extra}
+Return compact JSON only: {{"segments":[{{"importance":n,"novelty":n,"information_density":n}}]}}
+Keep the same order. Penalize filler, greetings, and repetition.
+Segments:
+{lines}"""
 
 
 def order_prompt(clips: list[dict]) -> str:

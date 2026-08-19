@@ -1,4 +1,4 @@
-from app.analysis.sequence_limits import keep_best_span, fit_candidate, sequence_cap
+from app.analysis.sequence_limits import keep_best_span, fit_candidate, sequence_cap, sequence_min
 from app.analysis.optimizer import ClipOptimizer
 from app.analysis.candidates import generate_candidates
 from app.analysis.scorer import HighlightScorer
@@ -158,6 +158,39 @@ def test_auto_fit_lets_important_moments_exceed_five_seconds():
     assert duration >= 12.0
     assert duration <= 30.0
     assert fitted["duration_reason"]
+
+
+def test_auto_fit_respects_custom_minimum_floor():
+    fitted = fit_candidate(
+        _c(
+            "hook",
+            0,
+            20,
+            0.9,
+            peak=1.0,
+            metrics={"hook_strength": 0.92, "importance": 0.55},
+        ),
+        cap=12.0,
+        mode="auto",
+        min_len=3.0,
+    )
+    assert fitted["end"] - fitted["start"] >= 3.0
+
+
+def test_custom_fit_respects_min_and_max_sequence_duration():
+    fitted = fit_candidate(_c("long", 10, 30, 0.9, peak=18.0), cap=8.0, mode="custom", min_len=3.0)
+    duration = fitted["end"] - fitted["start"]
+    assert 3.0 <= duration <= 8.0 + 1e-6
+
+
+def test_sequence_min_uses_default_when_unset():
+    config = HighlightConfig(sequence_duration_mode="auto")
+    assert sequence_min(config) == 1.5
+
+
+def test_sequence_min_honors_explicit_auto_minimum():
+    config = HighlightConfig(sequence_duration_mode="auto", min_sequence_duration=3, min_duration=20, max_duration=30)
+    assert sequence_min(config) == 3.0
 
 
 def test_auto_fit_keeps_hooks_short():

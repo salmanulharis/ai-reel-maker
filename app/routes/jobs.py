@@ -250,8 +250,9 @@ def download_job(job_id: str):
     outputs = manager.job_dir(job_id) / "outputs"
     files = sorted(outputs.glob("highlight.*"))
     video = next((f for f in files if f.suffix.lower() in {".mp4", ".webm"}), None)
-    if not video:
+    if not video or not video.is_file():
         return jsonify({"error": "no output"}), 404
+    video = video.resolve()
     return send_file(video, as_attachment=True, download_name=video.name)
 
 

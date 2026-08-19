@@ -85,6 +85,7 @@ class JobManager:
             used_names.add(filename)
             dest = source_dir / f"{source_id_for(index)}_{filename}"
             item.save(dest)
+            dest = dest.resolve()
             try:
                 meta = runner.probe(dest)
             except Exception:

@@ -10,6 +10,7 @@ from sqlalchemy import (
     String,
     Text,
     create_engine,
+    event,
     text,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker, scoped_session
@@ -142,7 +143,23 @@ SessionLocal = None
 def init_db(path) -> None:
     global engine, SessionLocal
     url = f"sqlite:///{path}"
-    engine = create_engine(url, echo=False, future=True, connect_args={"check_same_thread": False})
+    engine = create_engine(
+        url,
+        echo=False,
+        future=True,
+        connect_args={"check_same_thread": False},
+        pool_pre_ping=True,
+    )
+
+    @event.listens_for(engine, "connect")
+    def _sqlite_pragmas(dbapi_connection, _connection_record) -> None:  # noqa: ANN001
+        cursor = dbapi_connection.cursor()
+        cursor.execute("PRAGMA journal_mode=WAL")
+        cursor.execute("PRAGMA synchronous=NORMAL")
+        cursor.execute("PRAGMA temp_store=MEMORY")
+        cursor.execute("PRAGMA cache_size=-64000")
+        cursor.close()
+
     SessionLocal = scoped_session(sessionmaker(bind=engine, autoflush=False, autocommit=False))
     Base.metadata.create_all(engine)
     _ensure_columns()

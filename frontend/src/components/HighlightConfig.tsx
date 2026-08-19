@@ -118,25 +118,57 @@ export function HighlightConfigPanel({
         <button
           type="button"
           className={`chip ${form.sequence_duration_mode === "custom" ? "active" : ""}`}
-          onClick={() => update({ sequence_duration_mode: "custom" })}
+          onClick={() => update({ sequence_duration_mode: "custom", min_sequence_duration: form.min_sequence_duration ?? 1.5 })}
         >
           {messages.config.sequenceCustom}
         </button>
       </div>
       {form.sequence_duration_mode === "auto" ? (
-        <p className="field-hint">{messages.config.sequenceAutoHint}</p>
+        <>
+          <p className="field-hint">{messages.config.sequenceAutoHint}</p>
+          <div className="field" style={{ marginTop: 12 }}>
+            <label htmlFor="seqMinAuto">{messages.config.minSequence}</label>
+            <input
+              id="seqMinAuto"
+              type="number"
+              min={0.5}
+              step={0.5}
+              placeholder="1.5"
+              value={form.min_sequence_duration ?? ""}
+              onChange={(e) => {
+                const raw = e.target.value.trim();
+                update({ min_sequence_duration: raw ? Number(raw) : null });
+              }}
+            />
+            <p className="field-hint">{messages.config.minSequenceHint}</p>
+          </div>
+        </>
       ) : (
-        <div className="field" style={{ marginTop: 12 }}>
-          <label htmlFor="seqMax">{messages.config.maxSequence}</label>
-          <input
-            id="seqMax"
-            type="number"
-            min={1}
-            step={1}
-            value={form.max_sequence_duration}
-            onChange={(e) => update({ max_sequence_duration: Number(e.target.value) })}
-          />
-          <p className="field-hint">{messages.config.maxSequenceHint}</p>
+        <div className="grid-2" style={{ marginTop: 12 }}>
+          <div className="field">
+            <label htmlFor="seqMin">{messages.config.minSequence}</label>
+            <input
+              id="seqMin"
+              type="number"
+              min={0.5}
+              step={0.5}
+              value={form.min_sequence_duration ?? 1.5}
+              onChange={(e) => update({ min_sequence_duration: Number(e.target.value) })}
+            />
+            <p className="field-hint">{messages.config.minSequenceCustomHint}</p>
+          </div>
+          <div className="field">
+            <label htmlFor="seqMax">{messages.config.maxSequence}</label>
+            <input
+              id="seqMax"
+              type="number"
+              min={1}
+              step={0.5}
+              value={form.max_sequence_duration}
+              onChange={(e) => update({ max_sequence_duration: Number(e.target.value) })}
+            />
+            <p className="field-hint">{messages.config.maxSequenceHint}</p>
+          </div>
         </div>
       )}
 
@@ -310,6 +342,7 @@ export const defaultForm = (): HighlightForm => ({
   remove_repetition: true,
   allow_repeated_content: false,
   max_sequence_duration: 5,
+  min_sequence_duration: null,
   sequence_duration_mode: "auto",
   content_priorities: ["balanced"],
   priority_weights: { action: 3, speech: 3, magic: 3, visual: 3, information: 3 },
