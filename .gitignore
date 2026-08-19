@@ -11,12 +11,22 @@ env/
 .coverage
 htmlcov/
 
-# Data / uploads
+# Data / uploads / local runtime
 data/jobs/*
 data/cache/*
 data/tmp/*
 data/app.db
+data/app.db-*
+data/perf_baseline.json
+data/e2e-test.log
 !data/**/.gitkeep
+
+# Codebase memory (MCP / local index — not part of the app)
+code_memory.db
+code_memory.db-*
+
+# Local-only dev / ad-hoc scripts
+scripts/test_ollama_api.py
 
 # Frontend
 frontend/node_modules/
