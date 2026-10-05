@@ -115,6 +115,72 @@ export interface HighlightForm {
   must_exclude: string;
 }
 
+export interface ModelSpec {
+  name: string;
+  kind: string;
+  disk_gb: number;
+  min_vram_gb: number;
+  min_ram_gb: number;
+  summary: string;
+  speed: string;
+}
+
+export interface Placement {
+  measured?: boolean;
+  mode?: string | null;
+  label?: string;
+  model?: string | null;
+  gpu_fraction?: number | null;
+  size?: number | null;
+  size_vram?: number | null;
+}
+
+export interface RuntimeStatus {
+  mode?: string;
+  label?: string;
+  measured?: boolean;
+  hint?: string;
+  placement?: Placement;
+}
+
+export interface PullStatus {
+  state?: string;
+  status?: string;
+  completed?: number;
+  total?: number;
+  error?: string | null;
+}
+
+export interface ProbeResult {
+  ok?: boolean;
+  skipped?: boolean;
+  model?: string;
+  error?: string | null;
+  warning?: string | null;
+  message?: string;
+  text?: string;
+  elapsed_sec?: number;
+  load_sec?: number | null;
+  tokens_per_sec?: number | null;
+  eval_count?: number;
+  device?: string;
+  compute_type?: string | null;
+  fallback?: string | null;
+  audio_sec?: number;
+  realtime_factor?: number;
+  placement?: Placement;
+}
+
+export interface AiTestResult {
+  ok?: boolean;
+  error?: string | null;
+  warning?: string | null;
+  text?: ProbeResult | null;
+  vision?: ProbeResult | null;
+  whisper?: ProbeResult | null;
+  runtime?: RuntimeStatus;
+}
+
 export interface OllamaStatus {
   connected: boolean;
   version?: string | null;
@@ -123,7 +189,11 @@ export interface OllamaStatus {
   vision_present: boolean;
   text_present: boolean;
   models: string[];
+  model_details?: Array<{ name: string; size?: number }>;
   error?: string | null;
   base_url?: string;
-  pull?: Record<string, string>;
+  pull?: Record<string, PullStatus>;
+  runtime?: RuntimeStatus;
+  test?: { state?: string; result?: AiTestResult | null };
+  whisper_download?: { state?: string; model?: string | null; error?: string | null };
 }

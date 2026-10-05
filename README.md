@@ -80,21 +80,41 @@ systemctl enable --now ollama
 
 ---
 
-## Recommended models (best for this app)
+## Recommended models
 
-This app needs two local models:
+This app needs two Ollama models, plus Whisper for speech:
 
 1. **Vision** — score sampled scene frames (what is happening, intro vs demo, on-screen text, action).
 2. **Text** — score transcript segments (importance, hooks, filler, repetition).
+3. **Whisper** — transcribe speech with word timestamps (`faster-whisper`).
 
-**Use this pair:**
+On startup the app reads CPU, RAM, and GPU memory and, in **Automatic** mode, selects a pair that fits. A large amount of system RAM does not select an 8B or 30B model. Those stay available as manual choices. Settings shows the reason, and **Test local AI** checks that Ollama is actually using the GPU.
+
+Ollama remains the runtime for vision and text (CPU, NVIDIA CUDA, AMD ROCm, Vulkan, and Apple Metal). vLLM is a poor fit for a single desktop, especially a CPU-only one. Whisper stays on faster-whisper: CUDA when an NVIDIA card has memory left, and CPU `int8` otherwise.
+
+| Machine | Vision | Text | Whisper |
+|---------|--------|------|---------|
+| CPU, under 16 GB RAM | `qwen3-vl:2b` | `qwen3:4b` | `tiny` or `base` |
+| CPU, 16 GB RAM or more | `qwen3-vl:4b` | `qwen3:4b` | `base` |
+| GPU under 6 GB free | `qwen3-vl:2b` or `:4b` | `qwen3:4b` | `base` on CPU |
+| GPU about 6–10 GB | `qwen3-vl:4b` | `qwen3:4b` | `small` (CUDA only if about 2 GB stays free) |
+| GPU about 10–16 GB | `qwen3-vl:8b` | `qwen3:8b` | `small`, one model loaded at a time |
+| GPU 16 GB and above | `qwen3-vl:8b` | `qwen3:8b` | `distil-large-v3` on CUDA |
+| GPU 24 GB and above, with room free | `qwen3-vl:30b` | `qwen3:8b` | `distil-large-v3` (`large-v3` stays optional) |
 
 ```bash
+# CPU or 6–8 GB VRAM
+ollama pull qwen3-vl:4b
+ollama pull qwen3:4b
+
+# About 10 GB VRAM or more
 ollama pull qwen3-vl:8b
 ollama pull qwen3:8b
 ```
 
-### Why `qwen3-vl:8b` is the best default
+You can install these from Settings. The app does not download the 30B models unless you choose them.
+
+### Why Qwen3-VL is the vision family
 
 | Criterion | Winner |
 |-----------|--------|
@@ -118,23 +138,13 @@ Requires **Ollama 0.12.7+** for Qwen3-VL.
 |-------|----------------|-------------|
 | `qwen3-vl:2b` | ~1.9 GB | CPU / very low VRAM only |
 | `qwen3-vl:4b` | ~3.3 GB | Fast path; 6–8 GB VRAM; many scenes |
-| **`qwen3-vl:8b`** | **~6.1 GB** | **Recommended default for this app** |
+| **`qwen3-vl:8b`** | **~6.1 GB** | **Best default when the GPU has about 8 GB free** |
 | `qwen3-vl:30b` / `:32b` | ~20–21 GB | Higher quality if you have the VRAM |
 | `qwen3-vl:235b` | ~143 GB | Do not pull unless you know the hardware |
 
-Text model: `qwen3:8b` with the 8B vision default; `qwen3:4b` with the 4B vision default.
+Text model: `qwen3:8b` when the vision model is 8B and the GPU can hold it; `qwen3:4b` otherwise. `qwen3:30b` is an advanced option on a 20 GB GPU, and it should not stay loaded next to a 30B vision model.
 
-```bash
-# Lightweight
-ollama pull qwen3-vl:4b
-ollama pull qwen3:4b
-
-# Stronger machine
-ollama pull qwen3-vl:30b
-ollama pull qwen3:30b
-```
-
-The Settings page also shows a VRAM warning and a hardware-based suggestion. Do not auto-download the largest variant.
+Settings installs a model only when you ask, shows download progress, and refuses a download that will not fit on disk.
 
 ---
 
@@ -258,7 +268,9 @@ Hardware encoding (NVENC) needs the NVIDIA Container Toolkit and an image with F
 
 ### CPU-only mode
 
-Leave Ollama unset or offline. Set `ENABLE_VISUAL_ANALYSIS=false` if you want to skip vision calls entirely. Transcription still works on CPU via `faster-whisper` (slower). Rendering uses libx264.
+Leave Ollama unset or offline and the app still analyzes video with scene, audio, and transcript heuristics. Automatic mode selects `qwen3-vl:4b` or `qwen3-vl:2b` instead of a large model. Set `ENABLE_VISUAL_ANALYSIS=false` to skip vision calls entirely. Transcription uses `faster-whisper` on CPU (`int8`). Rendering uses libx264.
+
+If a GPU is listed in Settings but **Test local AI** reports CPU, Ollama did not place the model in VRAM. Check the driver, run Ollama on the machine with the GPU, or pick a smaller model. On AMD, restart Ollama with `OLLAMA_VULKAN=1` when ROCm cannot load Qwen3-VL.
 
 ---
 
@@ -334,7 +346,8 @@ Unit tests cover timestamps, scoring, repetition, duration optimization, FFmpeg 
 | Permission denied | Data directory must be writable (`DATA_DIR`) |
 | Out of disk space | Settings → Storage; clear tmp/cache; retention days |
 | Unsupported codec | Re-wrap/transcode the source locally; FFmpeg must decode it |
-| Very slow inference | Use `qwen3-vl:4b` / Whisper `base` or `tiny`; enable GPU for Ollama |
+| Very slow inference | Settings → Use recommended setup, or pick `qwen3-vl:4b` / Whisper `base` or `tiny` |
+| GPU listed, test says CPU | Driver, Ollama on the GPU machine, a smaller model, or `OLLAMA_VULKAN=1` on AMD |
 | Container cannot reach host Ollama | Linux `host-gateway`, `OLLAMA_HOST=0.0.0.0`, or a LAN URL |
 | Job failed mid-vision | Retry continues from cache; one failed scene uses fallback scoring |
 

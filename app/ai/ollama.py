@@ -94,6 +94,8 @@ class OllamaClient:
             "connected": False,
             "version": None,
             "models": [],
+            "model_details": [],
+            "running": [],
             "vision_model": self.settings.ollama_vision_model,
             "text_model": self.settings.ollama_text_model,
             "vision_present": False,
@@ -107,15 +109,77 @@ class OllamaClient:
                 info["version"] = (version_resp.json() or {}).get("version")
             tags_resp = self._request("GET", "/api/tags")
             tags_resp.raise_for_status()
-            models = [m.get("name") for m in (tags_resp.json() or {}).get("models", []) if m.get("name")]
+            raw_models = (tags_resp.json() or {}).get("models", [])
+            details = []
+            for item in raw_models:
+                name = item.get("name")
+                if not name:
+                    continue
+                details.append({"name": name, "size": item.get("size") or 0})
+            models = [item["name"] for item in details]
             info["models"] = models
+            info["model_details"] = details
             info["connected"] = True
             info["base_url"] = self.root
             info["vision_present"] = _model_present(self.settings.ollama_vision_model, models)
             info["text_present"] = _model_present(self.settings.ollama_text_model, models)
+            info["running"] = self.running_models()
         except Exception as exc:  # noqa: BLE001
             info["error"] = str(exc)
         return info
+
+    def running_models(self) -> list[dict[str, Any]]:
+        try:
+            response = self._request("GET", "/api/ps")
+            if not response.ok:
+                return []
+            models = (response.json() or {}).get("models") or []
+            return [item for item in models if isinstance(item, dict)]
+        except Exception:
+            return []
+
+    def probe_chat(
+        self,
+        model: str,
+        prompt: str,
+        images: list[str] | None = None,
+        num_predict: int = 32,
+    ) -> dict[str, Any]:
+        started = time.perf_counter()
+        user: dict[str, Any] = {"role": "user", "content": prompt}
+        if images:
+            user["images"] = images
+        payload = {
+            "model": model,
+            "messages": [user],
+            "stream": False,
+            "think": False,
+            "keep_alive": self.settings.ollama_keep_alive,
+            "options": {
+                "temperature": 0,
+                "num_predict": num_predict,
+                "num_ctx": 1024,
+                "num_thread": self.settings.ollama_num_thread,
+            },
+        }
+        response = self._request("POST", "/api/chat", json=payload)
+        elapsed = time.perf_counter() - started
+        if not response.ok:
+            raise OllamaError(response.text[:500])
+        body = response.json()
+        eval_count = int(body.get("eval_count") or 0)
+        eval_ns = int(body.get("eval_duration") or 0)
+        load_ns = int(body.get("load_duration") or 0)
+        tokens_per_sec = round(eval_count / (eval_ns / 1e9), 2) if eval_ns else None
+        return {
+            "ok": True,
+            "text": _extract_message_text(body),
+            "elapsed_sec": round(elapsed, 3),
+            "load_sec": round(load_ns / 1e9, 3) if load_ns else None,
+            "eval_count": eval_count,
+            "tokens_per_sec": tokens_per_sec,
+            "total_sec": round(int(body.get("total_duration") or 0) / 1e9, 3),
+        }
 
     def warm_model(self, model: str) -> None:
         payload = {
@@ -234,7 +298,7 @@ class OllamaClient:
             data = buffer.getvalue()
         return base64.b64encode(data).decode("ascii")
 
-    def pull_model(self, name: str) -> None:
+    def pull_model(self, name: str, on_progress=None) -> None:
         timeout = max(3600, self.timeout)
         response = self._request(
             "POST",
@@ -245,8 +309,63 @@ class OllamaClient:
         )
         if not response.ok:
             raise OllamaError(response.text[:1000])
-        for _line in response.iter_lines():
-            pass
+        for line in response.iter_lines():
+            if not line or on_progress is None:
+                continue
+            try:
+                body = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            on_progress(
+                {
+                    "status": body.get("status") or "",
+                    "completed": body.get("completed") or 0,
+                    "total": body.get("total") or 0,
+                }
+            )
+
+
+def describe_placement(models: list[dict[str, Any]], prefer: str | None = None) -> dict[str, Any]:
+    empty = {
+        "measured": False,
+        "mode": None,
+        "label": "Not measured",
+        "model": None,
+        "gpu_fraction": None,
+        "size": None,
+        "size_vram": None,
+    }
+    if not models:
+        return empty
+    chosen = None
+    if prefer:
+        for item in models:
+            name = str(item.get("name") or item.get("model") or "")
+            if name == prefer or name.startswith(prefer + ":"):
+                chosen = item
+                break
+    if chosen is None:
+        chosen = max(models, key=lambda item: int(item.get("size") or 0))
+    size = int(chosen.get("size") or 0)
+    size_vram = int(chosen.get("size_vram") or 0)
+    fraction = (size_vram / size) if size else 0.0
+    if fraction >= 0.9:
+        mode, label = "gpu", "GPU"
+    elif fraction <= 0.05:
+        mode, label = "cpu", "CPU"
+    else:
+        cpu_pct = round((1 - fraction) * 100)
+        gpu_pct = round(fraction * 100)
+        mode, label = "split", f"{cpu_pct}% CPU / {gpu_pct}% GPU"
+    return {
+        "measured": True,
+        "mode": mode,
+        "label": label,
+        "model": chosen.get("name") or chosen.get("model"),
+        "gpu_fraction": round(fraction, 3),
+        "size": size,
+        "size_vram": size_vram,
+    }
 
 
 def _model_present(name: str, models: list[str]) -> bool:

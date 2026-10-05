@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { UploadZone } from "../components/UploadZone";
 import { HighlightConfigPanel, defaultForm } from "../components/HighlightConfig";
 import { VideoCropPreview } from "../components/VideoCrop";
@@ -18,6 +18,18 @@ export default function Dashboard() {
   const [form, setForm] = useState<HighlightForm>(defaultForm());
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [aiNotice, setAiNotice] = useState(false);
+
+  useEffect(() => {
+    if (sessionStorage.getItem("ai-setup-dismissed")) return;
+    api
+      .ollama()
+      .then((status) => {
+        const missing = !status.connected || !status.vision_present || !status.text_present;
+        setAiNotice(missing);
+      })
+      .catch(() => setAiNotice(true));
+  }, []);
 
   const previewFile = files[previewIndex] || files[0] || null;
 
@@ -99,6 +111,24 @@ export default function Dashboard() {
 
   return (
     <div>
+      {aiNotice && (
+        <div className="notice">
+          <span>
+            {messages.localAi.notice}{" "}
+            <Link to="/settings">{messages.localAi.action}</Link>
+          </span>
+          <button
+            className="btn"
+            type="button"
+            onClick={() => {
+              sessionStorage.setItem("ai-setup-dismissed", "1");
+              setAiNotice(false);
+            }}
+          >
+            {messages.localAi.dismiss}
+          </button>
+        </div>
+      )}
       <UploadZone onFiles={addFiles} files={files} onRemove={removeFile} />
       <div className="btn-row" style={{ marginTop: 8, marginBottom: 12 }}>
         <button className="btn" type="button" disabled={busy || files.length >= MAX_FILES} onClick={useSample}>

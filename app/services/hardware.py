@@ -1,64 +1,87 @@
 from __future__ import annotations
 
+import csv
+import io
 import os
 import platform
 import shutil
 import subprocess
 from typing import Any
 
+from app.services.model_catalog import recommend_setup
 
-def detect_hardware() -> dict[str, Any]:
+
+def detect_hardware(*, include_encoders: bool = False) -> dict[str, Any]:
+    """Fast hardware snapshot. Encoder probes stay off unless include_encoders is set."""
+    memory = _memory()
     info: dict[str, Any] = {
-        "cpu": platform.processor() or platform.machine(),
+        "cpu": memory.get("cpu") or platform.processor() or platform.machine(),
+        "cpu_cores": memory.get("cores"),
+        "cpu_threads": memory.get("threads"),
         "system": platform.system(),
-        "ram_gb": None,
+        "ram_gb": memory.get("ram_gb"),
+        "ram_available_gb": memory.get("ram_available_gb"),
         "gpu": None,
+        "gpu_vendor": None,
         "vram_gb": None,
+        "vram_free_gb": None,
+        "vram_note": None,
+        "driver": None,
         "cuda": False,
+        "disk_free_gb": _disk_free_gb(),
         "ffmpeg": bool(shutil.which("ffmpeg")),
         "ffprobe": bool(shutil.which("ffprobe")),
         "encoders": [],
-        "acceleration": "CPU fallback",
-        "recommended_vision_model": "qwen3-vl:8b",
-        "recommended_text_model": "qwen3:8b",
+        "encoders_checked": False,
+        "encode_acceleration": "Not checked",
+        "acceleration": "Not checked",
+        "inference_mode": "cpu",
+        "inference_label": "CPU-only",
+        "inference_measured": False,
     }
-    try:
-        import psutil
+    gpu = _best_gpu(info.get("ram_gb"))
+    if gpu:
+        info.update(gpu)
+    has_vram = (info.get("vram_gb") or 0) >= 2
+    if has_vram and info.get("gpu_vendor") in {"nvidia", "amd", "intel", "apple"}:
+        info["inference_mode"] = "gpu"
+    info["inference_label"] = "GPU-accelerated" if info["inference_mode"] == "gpu" else "CPU-only"
+    if include_encoders:
+        encoders, encode_label = _encode_status()
+        info["encoders"] = encoders
+        info["encoders_checked"] = True
+        info["encode_acceleration"] = encode_label
+        info["acceleration"] = encode_label
+    recommendation = recommend_setup(
+        info.get("vram_gb"),
+        info.get("ram_gb"),
+        info.get("vram_free_gb"),
+        info.get("cpu_cores") or info.get("cpu_threads"),
+    )
+    info["recommendation"] = recommendation
+    info["recommended_vision_model"] = recommendation["vision_model"]
+    info["recommended_text_model"] = recommendation["text_model"]
+    info["recommended_whisper_model"] = recommendation["whisper_model"]
+    info["recommended_whisper_device"] = recommendation["whisper_device"]
+    return info
 
-        info["ram_gb"] = round(psutil.virtual_memory().total / (1024**3), 1)
-        info["cpu"] = platform.processor() or info["cpu"]
-    except Exception:
-        pass
-    smi = _nvidia_smi_name()
-    if smi:
-        info["gpu"] = smi.split(",")[0].strip()
-        info["cuda"] = True
-        try:
-            mem = smi.split(",")[1].strip()
-            if "MiB" in mem:
-                info["vram_gb"] = round(float(mem.replace("MiB", "").strip()) / 1024, 1)
-        except Exception:
-            pass
-    if not info["gpu"]:
-        info["gpu"] = _sysfs_gpu()
-    info["encoders"] = detect_ffmpeg_encoders()
+
+def _encode_status() -> tuple[list[str], str]:
+    encoders = detect_ffmpeg_encoders()
     hw = preferred_hw_encoder()
     labels = {
-        "h264_nvenc": "NVIDIA NVENC detected",
-        "h264_qsv": "Intel Quick Sync detected",
-        "h264_amf": "AMD hardware encoding detected",
-        "h264_videotoolbox": "Apple VideoToolbox detected",
+        "h264_nvenc": "NVIDIA NVENC",
+        "h264_qsv": "Intel Quick Sync",
+        "h264_amf": "AMD hardware encoding",
+        "h264_videotoolbox": "Apple VideoToolbox",
     }
     if hw:
-        info["acceleration"] = labels.get(hw, hw)
-    elif any("nvenc" in e for e in info["encoders"]):
-        info["acceleration"] = "CPU fallback (NVENC listed but CUDA is unavailable)"
-    elif any(e in {"h264_qsv", "h264_amf", "h264_videotoolbox"} for e in info["encoders"]):
-        info["acceleration"] = "CPU fallback (hardware encoder not usable)"
-    info["recommended_vision_model"], info["recommended_text_model"] = recommend_models(
-        info.get("vram_gb"), info.get("ram_gb")
-    )
-    return info
+        return encoders, labels.get(hw, hw)
+    if any("nvenc" in encoder for encoder in encoders):
+        return encoders, "CPU encoding (NVENC listed but CUDA is unavailable)"
+    if any(encoder in {"h264_qsv", "h264_amf", "h264_videotoolbox"} for encoder in encoders):
+        return encoders, "CPU encoding (hardware encoder not usable)"
+    return encoders, "CPU encoding (libx264)"
 
 
 def detect_ffmpeg_encoders() -> list[str]:
@@ -160,16 +183,224 @@ def preferred_hw_encoder() -> str | None:
     return None
 
 
-def recommend_models(vram_gb: float | None, ram_gb: float | None) -> tuple[str, str]:
-    vram = vram_gb or 0
-    ram = ram_gb or 0
-    if vram >= 20 or ram >= 64:
-        return "qwen3-vl:30b", "qwen3:30b"
-    if vram >= 8 or ram >= 24:
-        return "qwen3-vl:8b", "qwen3:8b"
-    if vram >= 4 or ram >= 12:
-        return "qwen3-vl:4b", "qwen3:4b"
-    return "qwen3-vl:2b", "qwen3:4b"
+def recommend_models(
+    vram_gb: float | None,
+    ram_gb: float | None,
+    free_vram_gb: float | None = None,
+) -> tuple[str, str]:
+    setup = recommend_setup(vram_gb, ram_gb, free_vram_gb)
+    return setup["vision_model"], setup["text_model"]
+
+
+def _memory() -> dict[str, Any]:
+    info: dict[str, Any] = {
+        "cpu": platform.processor() or platform.machine(),
+        "ram_gb": None,
+        "ram_available_gb": None,
+        "cores": None,
+        "threads": None,
+    }
+    try:
+        import psutil
+
+        memory = psutil.virtual_memory()
+        info["ram_gb"] = round(memory.total / (1024**3), 1)
+        info["ram_available_gb"] = round(memory.available / (1024**3), 1)
+        info["cores"] = psutil.cpu_count(logical=False) or psutil.cpu_count()
+        info["threads"] = psutil.cpu_count(logical=True)
+        info["cpu"] = platform.processor() or info["cpu"]
+    except Exception:
+        pass
+    return info
+
+
+def _disk_free_gb() -> float | None:
+    try:
+        from app.config import get_settings
+
+        path = get_settings().data_dir
+    except Exception:
+        path = os.getcwd()
+    try:
+        usage = shutil.disk_usage(path)
+    except OSError:
+        return None
+    return round(usage.free / (1024**3), 1)
+
+
+def _best_gpu(ram_gb: float | None) -> dict[str, Any] | None:
+    nvidia = _nvidia_gpus()
+    if nvidia:
+        best = max(nvidia, key=lambda item: item.get("vram_gb") or 0)
+        best["cuda"] = True
+        best["gpu_vendor"] = "nvidia"
+        return best
+    apple = _apple_gpu(ram_gb)
+    if apple:
+        return apple
+    rocm = _rocm_gpu()
+    if rocm:
+        return rocm
+    windows = _windows_gpu()
+    if windows:
+        return windows
+    if _sysfs_gpu():
+        return {
+            "gpu": "GPU details unavailable",
+            "gpu_vendor": None,
+            "vram_gb": None,
+            "vram_free_gb": None,
+            "cuda": False,
+        }
+    return None
+
+
+def _nvidia_gpus() -> list[dict[str, Any]]:
+    smi = shutil.which("nvidia-smi")
+    if not smi:
+        return []
+    try:
+        result = subprocess.run(
+            [
+                smi,
+                "--query-gpu=name,memory.total,memory.free,driver_version",
+                "--format=csv,noheader,nounits",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=8,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return []
+    found = []
+    for row in csv.reader(io.StringIO(result.stdout or "")):
+        if len(row) < 2:
+            continue
+        name = row[0].strip()
+        if not name:
+            continue
+        entry: dict[str, Any] = {
+            "gpu": name,
+            "vram_gb": _mib_to_gb(row[1]) if len(row) > 1 else None,
+            "vram_free_gb": _mib_to_gb(row[2]) if len(row) > 2 else None,
+            "driver": row[3].strip() if len(row) > 3 else None,
+        }
+        found.append(entry)
+    return found
+
+
+def _mib_to_gb(value: str) -> float | None:
+    text = (value or "").strip().replace("MiB", "")
+    if not text or text.upper() == "[N/A]":
+        return None
+    try:
+        return round(float(text) / 1024, 1)
+    except ValueError:
+        return None
+
+
+def _apple_gpu(ram_gb: float | None) -> dict[str, Any] | None:
+    if platform.system() != "Darwin":
+        return None
+    if platform.machine().lower() not in {"arm64", "aarch64"}:
+        return None
+    if not ram_gb:
+        budget = None
+    else:
+        budget = round(min(ram_gb * 0.5, max(ram_gb - 4, 0)), 1)
+    return {
+        "gpu": "Apple Silicon",
+        "gpu_vendor": "apple",
+        "vram_gb": budget,
+        "vram_free_gb": None,
+        "vram_note": "Unified memory estimate, not discrete VRAM.",
+        "cuda": False,
+        "driver": None,
+    }
+
+
+def _rocm_gpu() -> dict[str, Any] | None:
+    smi = shutil.which("rocm-smi")
+    if not smi:
+        return None
+    try:
+        result = subprocess.run(
+            [smi, "--showproductname"],
+            capture_output=True,
+            text=True,
+            timeout=4,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode != 0 and not (result.stdout or "").strip():
+        return None
+    name = None
+    for line in (result.stdout or "").splitlines():
+        if ":" not in line:
+            continue
+        label, value = line.split(":", 1)
+        if "card" in label.lower() or "gpu" in label.lower() or "series" in label.lower() or "name" in label.lower():
+            candidate = value.strip()
+            if candidate and candidate.lower() not in {"n/a", "none"}:
+                name = candidate
+                break
+    return {
+        "gpu": name or "AMD GPU",
+        "gpu_vendor": "amd",
+        "vram_gb": None,
+        "vram_free_gb": None,
+        "cuda": False,
+        "driver": None,
+    }
+
+
+def _windows_gpu() -> dict[str, Any] | None:
+    if platform.system() != "Windows":
+        return None
+    try:
+        result = subprocess.run(
+            [
+                "powershell",
+                "-NoProfile",
+                "-Command",
+                "Get-CimInstance Win32_VideoController | Select-Object -ExpandProperty Name",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=4,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    names = []
+    for line in (result.stdout or "").splitlines():
+        name = line.strip()
+        if not name or "basic display" in name.lower():
+            continue
+        names.append(name)
+    if not names:
+        return None
+    name = names[0]
+    lowered = name.lower()
+    if "nvidia" in lowered or "geforce" in lowered or "quadro" in lowered:
+        vendor = "nvidia"
+    elif "amd" in lowered or "radeon" in lowered:
+        vendor = "amd"
+    elif "intel" in lowered or "arc" in lowered:
+        vendor = "intel"
+    else:
+        vendor = "unknown"
+    return {
+        "gpu": name,
+        "gpu_vendor": vendor,
+        "vram_gb": None,
+        "vram_free_gb": None,
+        "cuda": False,
+        "driver": None,
+        "vram_note": "Memory was not read. Install the vendor tool or run Test local AI to confirm acceleration.",
+    }
 
 
 def _nvidia_smi_name() -> str | None:

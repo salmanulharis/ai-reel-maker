@@ -119,9 +119,29 @@ export const api = {
   timeline: (id: string) => http<Record<string, unknown>>(`/api/jobs/${id}/timeline`),
   deleteJob: (id: string) => http(`/api/jobs/${id}`, { method: "DELETE" }),
   ollama: () => http<OllamaStatus>("/api/system/ollama/status"),
-  info: () => http<Record<string, unknown>>("/api/system/info"),
+  info: (opts?: { refresh?: boolean; encoders?: boolean }) => {
+    const params = new URLSearchParams();
+    if (opts?.refresh) params.set("refresh", "1");
+    if (opts?.encoders) params.set("encoders", "1");
+    const query = params.toString();
+    return http<Record<string, unknown>>(`/api/system/info${query ? `?${query}` : ""}`);
+  },
   pullModel: (model: string) =>
     http("/api/system/ollama/pull", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model }),
+    }),
+  pullModels: (models: string[]) =>
+    http("/api/system/ollama/pull", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ models }),
+    }),
+  applyRecommended: () => http<Record<string, unknown>>("/api/system/ai/apply-recommended", { method: "POST" }),
+  startAiTest: () => http("/api/system/ai/test", { method: "POST" }),
+  downloadWhisper: (model: string) =>
+    http("/api/system/whisper/download", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ model }),

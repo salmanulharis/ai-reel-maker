@@ -18,10 +18,14 @@ export function OllamaStatus() {
   }, []);
 
   const connected = Boolean(status?.connected);
+  const runtime = status?.runtime;
+  const accel = !connected ? "" : runtime?.mode === "gpu" ? "GPU" : runtime?.mode === "split" ? "Partial GPU" : runtime ? "CPU" : "";
+  const title = [runtime?.hint, runtime?.label, status?.error, status?.base_url].filter(Boolean).join(" · ");
   return (
-    <div className="ollama-chip" title={status?.error || status?.base_url || "Ollama"}>
+    <div className="ollama-chip" title={title || "Ollama"}>
       <span className={`status-dot ${connected ? "ok" : "err"}`} />
       Ollama {connected ? "Connected" : "Offline"}
+      {accel && <span className="chip-accel">{accel}</span>}
       {status && (
         <span style={{ color: "var(--muted)" }}>
           {status.vision_model} {status.vision_present ? "✓" : "✗"} · {status.text_model}{" "}

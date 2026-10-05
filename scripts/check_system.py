@@ -18,7 +18,7 @@ from app.ai.ollama import OllamaClient  # noqa: E402
 
 def main() -> None:
     settings = get_settings()
-    hw = detect_hardware()
+    hw = detect_hardware(include_encoders=True)
     ollama = OllamaClient(settings).health()
     report = {
         "ffmpeg": hw["ffmpeg"],
@@ -26,6 +26,8 @@ def main() -> None:
         "cpu": hw["cpu"],
         "ram_gb": hw["ram_gb"],
         "gpu": hw["gpu"],
+        "inference_mode": hw["inference_mode"],
+        "encode_acceleration": hw["encode_acceleration"],
         "acceleration": hw["acceleration"],
         "data_dir": str(settings.data_dir),
         "ollama": ollama,

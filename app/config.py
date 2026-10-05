@@ -81,6 +81,7 @@ class Settings(BaseSettings):
     enable_whisper: bool = True
     whisper_model: str = "base"
     whisper_device: str = "auto"
+    ai_config_mode: str = "auto"
     enable_scene_detection: bool = True
     enable_visual_analysis: bool = True
     enable_repetition_analysis: bool = True

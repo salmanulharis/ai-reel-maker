@@ -8,13 +8,23 @@ from flask import Blueprint, jsonify, request
 
 from app.ai.ollama import OllamaError
 from app.config import get_settings
+from app.services.ai_profile import apply_recommendation, resolve_runtime, sync_hardware_profile
+from app.services.ai_test import (
+    explain_ai_error,
+    start_ai_test,
+    start_whisper_download,
+    test_status,
+    whisper_download_status,
+    whisper_installed,
+)
 from app.services.hardware import detect_hardware
 from app.services.job_manager import get_job_manager
+from app.services.model_catalog import CATALOG, catalog_entry
 from app.services.ollama_runtime import get_ollama_client
 
 system_bp = Blueprint("system", __name__)
 _pull_lock = threading.Lock()
-_pull_status: dict[str, str] = {}
+_pull_status: dict[str, dict] = {}
 
 
 @system_bp.get("/health")
@@ -25,64 +35,179 @@ def health():
 @system_bp.get("/system/info")
 def system_info():
     settings = get_settings()
-    hw = detect_hardware()
+    refresh = request.args.get("refresh") in {"1", "true", "yes"}
+    include_encoders = request.args.get("encoders") in {"1", "true", "yes"}
+    profile = sync_hardware_profile(settings, refresh=refresh, include_encoders=include_encoders)
+    hardware = profile["hardware"]
+    ollama = profile["ollama"]
     checks = {
         "python": True,
-        "ffmpeg": hw["ffmpeg"],
-        "ffprobe": hw["ffprobe"],
+        "ffmpeg": hardware.get("ffmpeg"),
+        "ffprobe": hardware.get("ffprobe"),
         "storage": settings.data_dir.exists() and settings.data_dir.is_dir(),
+        "ollama": bool(ollama.get("connected")),
+        "vision_model": bool(ollama.get("vision_present")),
+        "text_model": bool(ollama.get("text_present")),
     }
-    ollama = get_ollama_client(settings).health()
-    checks["ollama"] = bool(ollama.get("connected"))
-    checks["vision_model"] = bool(ollama.get("vision_present"))
-    checks["text_model"] = bool(ollama.get("text_present"))
+    whisper_cache = {item["name"]: whisper_installed(item["name"]) for item in CATALOG["whisper"]}
     return jsonify(
         {
-            "hardware": hw,
+            **profile,
             "checks": checks,
+            "whisper_cache": whisper_cache,
             "privacy": "Everything runs locally. Your videos are not uploaded to third-party AI services.",
             "settings": {
                 "ollama_base_url": settings.ollama_base_url,
                 "vision_model": settings.ollama_vision_model,
                 "text_model": settings.ollama_text_model,
+                "whisper_model": settings.whisper_model,
+                "whisper_device": settings.whisper_device,
+                "ai_config_mode": settings.ai_config_mode,
             },
         }
     )
 
 
+@system_bp.post("/system/ai/apply-recommended")
+def apply_recommended():
+    settings = get_settings()
+    profile = sync_hardware_profile(settings, refresh=True)
+    summary = apply_recommendation(settings, profile.get("recommendation") or {})
+    profile["profile"]["auto_summary"] = summary
+    profile["profile"]["mode"] = "auto"
+    profile["profile"]["applied_now"] = True
+    profile["settings"] = {
+        "ollama_base_url": settings.ollama_base_url,
+        "vision_model": settings.ollama_vision_model,
+        "text_model": settings.ollama_text_model,
+        "whisper_model": settings.whisper_model,
+        "whisper_device": settings.whisper_device,
+        "ai_config_mode": settings.ai_config_mode,
+    }
+    return jsonify(profile)
+
+
+@system_bp.post("/system/ai/test")
+def start_test():
+    return jsonify(start_ai_test(get_settings()))
+
+
+@system_bp.get("/system/ai/test")
+def read_test():
+    return jsonify(test_status())
+
+
+@system_bp.post("/system/whisper/download")
+def download_whisper():
+    data = request.get_json(silent=True) or {}
+    name = data.get("model") or get_settings().whisper_model
+    if not _valid_model_name(name):
+        return jsonify({"error": "invalid model name"}), 400
+    return jsonify(start_whisper_download(name, get_settings()))
+
+
+@system_bp.get("/system/whisper/download")
+def whisper_download():
+    return jsonify(whisper_download_status())
+
+
 @system_bp.get("/system/ollama/status")
 def ollama_status():
-    client = get_ollama_client()
+    settings = get_settings()
+    client = get_ollama_client(settings)
     health = client.health()
-    health["pull"] = dict(_pull_status)
+    hardware = _cached_or_fast_hardware()
+    health["runtime"] = resolve_runtime(hardware, health.get("running") or [])
+    health["pull"] = {key: dict(value) for key, value in _pull_status.items()}
+    health["test"] = test_status()
+    health["whisper_download"] = whisper_download_status()
     return jsonify(health)
 
 
 @system_bp.post("/system/ollama/pull")
 def ollama_pull():
     data = request.get_json(silent=True) or {}
-    name = data.get("model") or get_settings().ollama_vision_model
-    if not name or any(c in name for c in ";&|$`\n"):
+    names = data.get("models") or [data.get("model") or get_settings().ollama_vision_model]
+    names = [name for name in names if name]
+    if not names or any(not _valid_model_name(name) for name in names):
         return jsonify({"error": "invalid model name"}), 400
+    for name in names:
+        problem = _disk_problem(name)
+        if problem:
+            return jsonify({"error": problem}), 400
+    if not _pull_lock.acquire(blocking=False):
+        return jsonify({"ok": True, "models": names, "status": "running", "pull": dict(_pull_status)})
 
     def _run():
-        _pull_status[name] = "running"
         try:
-            client = get_ollama_client()
-            try:
-                client.pull_model(name)
-            except OllamaError:
-                ollama_bin = shutil.which("ollama")
-                if not ollama_bin:
-                    raise
-                subprocess.run([ollama_bin, "pull", name], check=True, timeout=3600)
-            _pull_status[name] = "done"
-        except Exception as exc:  # noqa: BLE001
-            _pull_status[name] = f"error: {exc}"
+            for name in names:
+                _pull_one(name)
+        finally:
+            _pull_lock.release()
 
     thread = threading.Thread(target=_run, daemon=True)
     thread.start()
-    return jsonify({"ok": True, "model": name, "status": "started"})
+    return jsonify({"ok": True, "models": names, "status": "started"})
+
+
+def _pull_one(name: str) -> None:
+    _pull_status[name] = {"state": "running", "status": "starting", "completed": 0, "total": 0, "error": None}
+
+    def _progress(progress: dict) -> None:
+        _pull_status[name] = {
+            "state": "running",
+            "status": progress.get("status") or "",
+            "completed": progress.get("completed") or 0,
+            "total": progress.get("total") or 0,
+            "error": None,
+        }
+
+    try:
+        client = get_ollama_client()
+        try:
+            client.pull_model(name, on_progress=_progress)
+        except OllamaError:
+            ollama_bin = shutil.which("ollama")
+            if not ollama_bin:
+                raise
+            _pull_status[name]["status"] = "downloading"
+            subprocess.run([ollama_bin, "pull", name], check=True, timeout=3600)
+        _pull_status[name] = {"state": "done", "status": "success", "completed": 1, "total": 1, "error": None}
+    except Exception as exc:  # noqa: BLE001
+        _pull_status[name] = {
+            "state": "error",
+            "status": "error",
+            "completed": 0,
+            "total": 0,
+            "error": explain_ai_error(str(exc)),
+        }
+
+
+def _valid_model_name(name: str) -> bool:
+    return bool(name) and not any(char in name for char in ";&|$`\n\r")
+
+
+def _disk_problem(name: str) -> str | None:
+    entry = catalog_entry(name)
+    need_gb = float(entry["disk_gb"]) if entry else 4.0
+    hardware = _cached_or_fast_hardware()
+    free = hardware.get("disk_free_gb")
+    if free is None:
+        return None
+    if float(free) < need_gb * 1.15:
+        return (
+            f"Not enough free disk space for {name}. It needs about {need_gb:g} GB and "
+            f"{float(free):.1f} GB is free."
+        )
+    return None
+
+
+def _cached_or_fast_hardware() -> dict:
+    try:
+        profile = sync_hardware_profile(refresh=False)
+        return profile.get("hardware") or {}
+    except Exception:
+        return detect_hardware()
 
 
 @system_bp.get("/system/queue")

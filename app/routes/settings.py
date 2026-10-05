@@ -1,12 +1,11 @@
 from __future__ import annotations
 
-from pathlib import Path
-
 from flask import Blueprint, jsonify, request
 
 from app.config import get_settings
-from app.models.db_models import SettingRow, get_session
+from app.models.db_models import get_session
 from app.services.job_manager import get_job_manager
+from app.services.settings_store import apply_values, effective_settings
 from app.services.storage import clear_cache, clear_tmp, delete_job_files, storage_report
 
 settings_bp = Blueprint("settings", __name__)
@@ -17,7 +16,14 @@ EDITABLE = {
     "ollama_text_model",
     "ollama_timeout",
     "ollama_max_retries",
+    "ollama_vision_batch_size",
+    "ollama_vision_num_ctx",
+    "ollama_text_num_ctx",
+    "ollama_num_thread",
     "whisper_model",
+    "whisper_device",
+    "whisper_cpu_threads",
+    "ai_config_mode",
     "scene_threshold",
     "maximum_candidates",
     "silence_threshold_db",
@@ -32,40 +38,21 @@ EDITABLE = {
     "enable_repetition_analysis",
 }
 
-
-def _json_safe(value):
-    if isinstance(value, Path):
-        return str(value)
-    if isinstance(value, dict):
-        return {k: _json_safe(v) for k, v in value.items()}
-    if isinstance(value, list):
-        return [_json_safe(v) for v in value]
-    return value
+CUSTOM_ON_EDIT = {
+    "ollama_vision_model",
+    "ollama_text_model",
+    "whisper_model",
+    "whisper_device",
+    "ollama_vision_batch_size",
+    "ollama_vision_num_ctx",
+    "ollama_text_num_ctx",
+    "ollama_num_thread",
+    "whisper_cpu_threads",
+}
 
 
 def _current() -> dict:
-    settings = get_settings()
-    data = settings.model_dump()
-    data["data_dir"] = str(settings.data_dir)
-    data["temp_dir"] = str(settings.tmp_dir)
-    session = get_session()
-    try:
-        rows = session.query(SettingRow).all()
-        for row in rows:
-            if row.key in data:
-                current = data[row.key]
-                if isinstance(current, bool):
-                    data[row.key] = row.value.lower() in {"1", "true", "yes"}
-                elif isinstance(current, int):
-                    data[row.key] = int(row.value)
-                elif isinstance(current, float):
-                    data[row.key] = float(row.value)
-                else:
-                    data[row.key] = row.value
-                setattr(settings, row.key, data[row.key])
-    finally:
-        session.close()
-    return _json_safe({k: data[k] for k in data if not str(k).startswith("_")})
+    return effective_settings(get_settings())
 
 
 @settings_bp.get("/settings")
@@ -75,29 +62,12 @@ def get_settings_route():
 
 @settings_bp.post("/settings")
 def save_settings():
-    payload = request.get_json(silent=True) or {}
-    session = get_session()
-    settings = get_settings()
-    try:
-        for key, value in payload.items():
-            if key not in EDITABLE:
-                continue
-            row = session.get(SettingRow, key) or SettingRow(key=key)
-            row.value = str(value)
-            session.merge(row)
-            if hasattr(settings, key):
-                target = getattr(settings, key)
-                if isinstance(target, bool):
-                    setattr(settings, key, str(value).lower() in {"1", "true", "yes"})
-                elif isinstance(target, int):
-                    setattr(settings, key, int(value))
-                elif isinstance(target, float):
-                    setattr(settings, key, float(value))
-                else:
-                    setattr(settings, key, value)
-        session.commit()
-    finally:
-        session.close()
+    payload = dict(request.get_json(silent=True) or {})
+    editing_models = any(key in payload for key in CUSTOM_ON_EDIT)
+    if editing_models and payload.get("ai_config_mode") != "auto":
+        payload["ai_config_mode"] = "custom"
+    values = {key: value for key, value in payload.items() if key in EDITABLE}
+    apply_values(values, get_settings())
     return jsonify({"settings": _current()})
 
 

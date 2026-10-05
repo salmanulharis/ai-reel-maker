@@ -26,9 +26,9 @@ def test_model_present_accepts_tagged_alias():
     assert _model_present("qwen3-vl:8b", ["qwen3-vl:8b:latest"])
 
 
-def test_recommend_models_for_16gb_ram_no_vram():
+def test_recommend_models_for_cpu_under_16gb():
     vision, text = recommend_models(None, 14.8)
-    assert vision == "qwen3-vl:4b"
+    assert vision == "qwen3-vl:2b"
     assert text == "qwen3:4b"
 
 
