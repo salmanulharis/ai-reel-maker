@@ -135,7 +135,9 @@ def sync_hardware_profile(
         if mode == "auto" and current_fp != stored_fp:
             auto_summary = apply_recommendation(settings, hardware.get("recommendation") or {})
             applied = True
-            _refresh_model_presence(ollama, settings)
+            if ollama.get("connected"):
+                # Presence, capabilities, and version checks depend on the models just selected.
+                ollama = _safe_health(settings)
         snapshot = {
             "fingerprint": current_fp,
             "saved_at": time.time(),
@@ -221,6 +223,9 @@ def _payload(
             "model_details": ollama.get("model_details") or [],
             "vision_present": bool(ollama.get("vision_present")),
             "text_present": bool(ollama.get("text_present")),
+            "vision_capable": ollama.get("vision_capable"),
+            "vision_ready": bool(ollama.get("vision_ready", ollama.get("vision_present"))),
+            "warnings": list(ollama.get("warnings") or []),
             "error": ollama.get("error"),
             "base_url": ollama.get("base_url") or settings.ollama_base_url,
         },
@@ -232,22 +237,6 @@ def _payload(
             "applied_now": False,
         },
     }
-
-
-def _refresh_model_presence(ollama: dict[str, Any], settings: Settings) -> None:
-    models = list(ollama.get("models") or [])
-    ollama["vision_model"] = settings.ollama_vision_model
-    ollama["text_model"] = settings.ollama_text_model
-    ollama["vision_present"] = _name_present(settings.ollama_vision_model, models)
-    ollama["text_present"] = _name_present(settings.ollama_text_model, models)
-
-
-def _name_present(name: str, models: list[str]) -> bool:
-    if not name:
-        return False
-    if name in models:
-        return True
-    return any(item == name or item.startswith(name + ":") for item in models)
 
 
 def _config_mode(settings: Settings) -> str:

@@ -124,13 +124,22 @@ WHISPER_MODELS: list[dict[str, Any]] = [
         "speed": "Heavy on CPU. Prefer an NVIDIA GPU.",
     },
     {
-        "name": "distil-large-v3",
+        "name": "large-v3-turbo",
         "kind": "whisper",
-        "disk_gb": 0.8,
+        "disk_gb": 1.6,
         "min_vram_gb": 3,
         "min_ram_gb": 8,
-        "summary": "Fast large-model accuracy.",
-        "speed": "Best on NVIDIA GPUs when a couple of GB stay free.",
+        "summary": "Close to large-v3 accuracy in all languages, several times faster.",
+        "speed": "Best on NVIDIA GPUs when a couple of GB stay free. Slow on CPU.",
+    },
+    {
+        "name": "distil-large-v3",
+        "kind": "whisper",
+        "disk_gb": 1.5,
+        "min_vram_gb": 3,
+        "min_ram_gb": 8,
+        "summary": "Fast large-model accuracy. English only.",
+        "speed": "Best on NVIDIA GPUs when a couple of GB stay free. Use it only for English videos.",
     },
     {
         "name": "large-v3",
@@ -274,13 +283,14 @@ def _gpu_setup(total: float, budget: float, threads: int) -> dict[str, Any]:
 
 def _whisper_choice(vision: str, total: float, budget: float) -> tuple[str, str, list[str]]:
     spare = budget - VISION_FIT_GB.get(vision, 4)
+    # large-v3-turbo is the large default: distil-large-v3 is faster but transcribes English only.
     if total >= 16 and budget >= 8:
-        alts = ["medium", "large-v3"] if total >= 24 else ["medium", "small"]
+        alts = ["large-v3", "distil-large-v3"] if total >= 24 else ["medium", "small", "distil-large-v3"]
         if spare >= 2 or budget >= 10:
-            return "distil-large-v3", "cuda", alts
+            return "large-v3-turbo", "cuda", alts
         return "small", "cpu", alts
     if total >= 10:
-        alts = ["distil-large-v3"] if budget >= 12 else []
+        alts = ["large-v3-turbo"] if budget >= 12 else []
         if spare >= 2:
             return "small", "cuda", alts
         return "small", "cpu", alts

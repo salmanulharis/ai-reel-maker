@@ -99,8 +99,10 @@ Ollama remains the runtime for vision and text (CPU, NVIDIA CUDA, AMD ROCm, Vulk
 | GPU under 6 GB free | `qwen3-vl:2b` or `:4b` | `qwen3:4b` | `base` on CPU |
 | GPU about 6–10 GB | `qwen3-vl:4b` | `qwen3:4b` | `small` (CUDA only if about 2 GB stays free) |
 | GPU about 10–16 GB | `qwen3-vl:8b` | `qwen3:8b` | `small`, one model loaded at a time |
-| GPU 16 GB and above | `qwen3-vl:8b` | `qwen3:8b` | `distil-large-v3` on CUDA |
-| GPU 24 GB and above, with room free | `qwen3-vl:30b` | `qwen3:8b` | `distil-large-v3` (`large-v3` stays optional) |
+| GPU 16 GB and above | `qwen3-vl:8b` | `qwen3:8b` | `large-v3-turbo` on CUDA |
+| GPU 24 GB and above, with room free | `qwen3-vl:30b` | `qwen3:8b` | `large-v3-turbo` (`large-v3` stays optional) |
+
+`distil-large-v3` is faster still, but it transcribes **English only**. Choose it in Settings only for English videos.
 
 ```bash
 # CPU or 6–8 GB VRAM
@@ -130,7 +132,7 @@ The official Ollama library tags `qwen3-vl:latest` to **`qwen3-vl:8b`**. Indepen
 
 Gemma 3 is a weaker fit here: combining visual frames with speech context (exactly what this pipeline does) has been shown to *hurt* Gemma 3 while *helping* Qwen3-VL. Llama 3.2 Vision is behind Qwen3-VL on current local VLM comparisons. Newer Qwen 3.6 vision builds are not a reliable Ollama one-liner yet.
 
-Requires **Ollama 0.12.7+** for Qwen3-VL.
+Requires **Ollama 0.12.7+** for Qwen3-VL. Settings shows a warning, and analysis falls back to motion scoring, when Ollama is older or the selected vision model cannot read images.
 
 ### Size guide
 
@@ -168,16 +170,13 @@ APP_HOST=0.0.0.0
 APP_PORT=5000
 FLASK_ENV=production
 
-# Ollama API root (do not hard-code localhost in application code)
-# Docker → host Ollama:
-OLLAMA_BASE_URL=http://host.docker.internal:11434
-# Native Python on the same machine:
-# OLLAMA_BASE_URL=http://127.0.0.1:11434
-# Ollama on another LAN box:
+# Ollama API root. Leave it unset: Docker uses http://host.docker.internal:11434
+# and a native install uses http://127.0.0.1:11434.
+# Set it for Ollama on another LAN box, or for the Compose "ollama" profile:
 # OLLAMA_BASE_URL=http://192.168.1.50:11434
 OLLAMA_VISION_MODEL=qwen3-vl:8b
 OLLAMA_TEXT_MODEL=qwen3:8b
-OLLAMA_TIMEOUT=300
+OLLAMA_TIMEOUT=900
 OLLAMA_MAX_RETRIES=2
 
 DATA_DIR=/app/data
@@ -188,7 +187,7 @@ TARGET_MIN_DURATION=20
 TARGET_MAX_DURATION=30
 
 ENABLE_WHISPER=true
-WHISPER_MODEL=small
+WHISPER_MODEL=base
 ENABLE_SCENE_DETECTION=true
 ENABLE_VISUAL_ANALYSIS=true
 ENABLE_REPETITION_ANALYSIS=true
@@ -246,6 +245,8 @@ extra_hosts:
 | Windows / macOS Docker Desktop | `host.docker.internal` already points at the host. The extra host is harmless. |
 | Linux | `host-gateway` maps `host.docker.internal` to the host, so `http://host.docker.internal:11434` reaches host Ollama. |
 
+If `OLLAMA_BASE_URL` still points at `127.0.0.1` inside the container (an older `.env`), the app also tries `host.docker.internal` and the Compose `ollama` service before giving up.
+
 If Ollama listens only on localhost, that is usually enough. If the container still cannot connect:
 
 1. Confirm `curl http://localhost:11434/api/tags` on the host
@@ -283,7 +284,6 @@ source .venv/bin/activate
 pip install -r requirements.txt
 cd frontend && npm install && npm run build && cd ..
 copy .env.example .env   # Windows
-# set OLLAMA_BASE_URL=http://127.0.0.1:11434
 python run.py
 ```
 
@@ -350,6 +350,7 @@ Unit tests cover timestamps, scoring, repetition, duration optimization, FFmpeg 
 | GPU listed, test says CPU | Driver, Ollama on the GPU machine, a smaller model, or `OLLAMA_VULKAN=1` on AMD |
 | Container cannot reach host Ollama | Linux `host-gateway`, `OLLAMA_HOST=0.0.0.0`, or a LAN URL |
 | Job failed mid-vision | Retry continues from cache; one failed scene uses fallback scoring |
+| Analysis ran while Ollama or Whisper was down | Start them and run the analysis again: scenes and transcript segments that used fallback scores are re-scored, and a failed transcription is retried |
 
 ---
 

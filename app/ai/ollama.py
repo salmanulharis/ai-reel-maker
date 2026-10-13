@@ -6,19 +6,92 @@ import io
 import json
 import time
 from typing import Any
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlsplit, urlunsplit
 
 import requests
 from PIL import Image
 
 from app.ai.json_util import parse_model_json
-from app.config import Settings, get_settings
+from app.config import Settings, get_settings, running_in_docker
 
-_LOCAL_OLLAMA = "http://127.0.0.1:11434"
+_COMPOSE_OLLAMA = "http://ollama:11434"
+_DOCKER_HOST = "host.docker.internal"
+_LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
+_FALLBACK_CONNECT_TIMEOUT = 3
+_MEMORY_ERROR_TOKENS = (
+    "out of memory",
+    "insufficient memory",
+    "requires more system memory",
+    "cudamalloc failed",
+)
+
+# Oldest Ollama release that can load each model family.
+MIN_OLLAMA_VERSION: dict[str, tuple[int, ...]] = {"qwen3-vl": (0, 12, 7)}
 
 
 class OllamaError(RuntimeError):
     pass
+
+
+class OllamaConnectionError(OllamaError):
+    """Ollama could not be reached, so further calls in the same job will fail too."""
+
+
+class OllamaTruncatedError(OllamaError):
+    """The reply hit the num_predict limit before the JSON was complete."""
+
+
+class OllamaPullError(OllamaError):
+    """Ollama reported an error while downloading a model."""
+
+
+def _with_host(root: str, host: str) -> str:
+    parts = urlsplit(root)
+    netloc = host if parts.port is None else f"{host}:{parts.port}"
+    return urlunsplit((parts.scheme or "http", netloc, parts.path, "", ""))
+
+
+def fallback_roots(root: str) -> list[str]:
+    """Other addresses that usually reach the same Ollama when the configured one is unreachable."""
+    host = (urlsplit(root).hostname or "").lower()
+    if host == _DOCKER_HOST:
+        return [_with_host(root, "127.0.0.1")]
+    if host in _LOOPBACK_HOSTS and running_in_docker():
+        return [_with_host(root, _DOCKER_HOST), _COMPOSE_OLLAMA]
+    return []
+
+
+def version_tuple(version: str | None) -> tuple[int, ...] | None:
+    numbers: list[int] = []
+    for part in str(version or "").split("-", 1)[0].split("."):
+        if not part.isdigit():
+            break
+        numbers.append(int(part))
+    if not numbers or not any(numbers):
+        return None
+    return tuple(numbers)
+
+
+def version_problem(version: str | None, model: str) -> str | None:
+    family = (model or "").split(":", 1)[0].lower()
+    required = MIN_OLLAMA_VERSION.get(family)
+    current = version_tuple(version)
+    if not required or current is None or current >= required:
+        return None
+    needed = ".".join(str(part) for part in required)
+    return f"Ollama {version} is too old for {model}. Update Ollama to {needed} or newer."
+
+
+def predict_budget(configured: int, items: int, per_item: int, num_ctx: int) -> int:
+    """num_predict for a batched JSON reply: room for every item, but never more than half the
+    context window so the prompt still fits. Never below the configured value."""
+    wanted = max(configured, per_item * max(1, items) + 64)
+    return min(wanted, max(configured, num_ctx // 2))
+
+
+def is_memory_error(message: str) -> bool:
+    text = (message or "").lower()
+    return any(token in text for token in _MEMORY_ERROR_TOKENS)
 
 
 def _extract_message_text(body: dict[str, Any]) -> str:
@@ -42,21 +115,23 @@ class OllamaClient:
         if configured.endswith("/api"):
             configured = configured[: -len("/api")]
         self.root = configured
-        self._fallback_root = (
-            _LOCAL_OLLAMA if "host.docker.internal" in self.root and self.root != _LOCAL_OLLAMA else None
-        )
+        self._configured_root = configured
         self.timeout = self.settings.ollama_timeout
         self.retries = self.settings.ollama_max_retries
         self._session = requests.Session()
+        self._capabilities: dict[tuple[str, str, str], list[str] | None] = {}
+
+    @staticmethod
+    def _join(root: str, path: str) -> str:
+        return urljoin(root.rstrip("/") + "/", path.lstrip("/"))
 
     def _url(self, path: str) -> str:
-        return urljoin(self.root.rstrip("/") + "/", path.lstrip("/"))
+        return self._join(self.root, path)
 
-    def _switch_to_fallback_root(self) -> bool:
-        if self._fallback_root and self.root != self._fallback_root:
-            self.root = self._fallback_root
-            return True
-        return False
+    def is_local(self) -> bool:
+        """True when Ollama runs on this machine, so its disk and GPU are the ones detected here."""
+        host = (urlsplit(self.root).hostname or "").lower()
+        return host in _LOOPBACK_HOSTS and not running_in_docker()
 
     def _default_options(self) -> dict[str, Any]:
         return {
@@ -65,28 +140,53 @@ class OllamaClient:
             "num_thread": self.settings.ollama_num_thread,
         }
 
+    def role_options(self, role: str) -> dict[str, Any]:
+        """Runner options for one role. Warm-up, probes, and real calls share them because
+        Ollama reloads a model whenever num_ctx or num_thread change."""
+        num_ctx = self.settings.ollama_vision_num_ctx if role == "vision" else self.settings.ollama_text_num_ctx
+        return {"num_ctx": num_ctx, "num_thread": self.settings.ollama_num_thread}
+
+    def _role_for(self, model: str) -> str:
+        return "vision" if model == self.settings.ollama_vision_model else "text"
+
+    def _try_fallback_roots(self, method: str, path: str, kwargs: dict[str, Any]) -> requests.Response | None:
+        timeout = kwargs.get("timeout")
+        read_timeout = timeout if isinstance(timeout, (int, float)) else self.timeout
+        trial = {**kwargs, "timeout": (min(_FALLBACK_CONNECT_TIMEOUT, read_timeout), read_timeout)}
+        for candidate in [self._configured_root, *fallback_roots(self._configured_root)]:
+            if candidate == self.root:
+                continue
+            try:
+                response = self._session.request(method, self._join(candidate, path), **trial)
+            except requests.RequestException:
+                continue
+            self.root = candidate
+            return response
+        return None
+
     def _request(self, method: str, path: str, **kwargs) -> requests.Response:
-        kwargs.setdefault(
-            "timeout",
-            2 if path.rstrip("/").endswith(("tags", "version")) else self.timeout,
-        )
-        last_error = None
         quick = path.rstrip("/").endswith(("tags", "version"))
+        kwargs.setdefault("timeout", 2 if quick else self.timeout)
         attempts = 1 if quick else max(1, self.retries + 1)
+        last_error: Exception | None = None
         for attempt in range(attempts):
             try:
-                response = self._session.request(method, self._url(path), **kwargs)
-                return response
+                return self._session.request(method, self._url(path), **kwargs)
+            except requests.ConnectionError as exc:
+                last_error = exc
+                response = self._try_fallback_roots(method, path, kwargs)
+                if response is not None:
+                    return response
+            except requests.Timeout as exc:
+                # The server is up but slow. Sending the same request again only doubles the wait.
+                raise OllamaError(f"Ollama timed out after {kwargs['timeout']}s on {path}") from exc
             except requests.RequestException as exc:
                 last_error = exc
-                if self._switch_to_fallback_root():
-                    try:
-                        return self._session.request(method, self._url(path), **kwargs)
-                    except requests.RequestException as retry_exc:
-                        last_error = retry_exc
-                if quick:
-                    break
-                time.sleep(min(2**attempt, 8))
+            if quick or attempt + 1 >= attempts:
+                break
+            time.sleep(min(2**attempt, 8))
+        if isinstance(last_error, requests.ConnectionError):
+            raise OllamaConnectionError(str(last_error))
         raise OllamaError(str(last_error))
 
     def health(self) -> dict[str, Any]:
@@ -100,6 +200,9 @@ class OllamaClient:
             "text_model": self.settings.ollama_text_model,
             "vision_present": False,
             "text_present": False,
+            "vision_capable": None,
+            "vision_ready": False,
+            "warnings": [],
             "base_url": self.root,
             "error": None,
         }
@@ -115,7 +218,7 @@ class OllamaClient:
                 name = item.get("name")
                 if not name:
                     continue
-                details.append({"name": name, "size": item.get("size") or 0})
+                details.append({"name": name, "size": item.get("size") or 0, "digest": item.get("digest")})
             models = [item["name"] for item in details]
             info["models"] = models
             info["model_details"] = details
@@ -124,9 +227,48 @@ class OllamaClient:
             info["vision_present"] = _model_present(self.settings.ollama_vision_model, models)
             info["text_present"] = _model_present(self.settings.ollama_text_model, models)
             info["running"] = self.running_models()
+            self._check_readiness(info, details)
         except Exception as exc:  # noqa: BLE001
             info["error"] = str(exc)
         return info
+
+    def _check_readiness(self, info: dict[str, Any], details: list[dict[str, Any]]) -> None:
+        vision = self.settings.ollama_vision_model
+        warnings: list[str] = info["warnings"]
+        if info["vision_present"]:
+            capabilities = self.model_capabilities(vision, _digest_for(vision, details))
+            if capabilities is not None:
+                info["vision_capable"] = "vision" in capabilities
+                if not info["vision_capable"]:
+                    warnings.append(
+                        f"{vision} cannot read images, so it cannot score video frames. "
+                        "Choose a vision model such as qwen3-vl:4b."
+                    )
+        vision_version = version_problem(info.get("version"), vision)
+        for model in (vision, self.settings.ollama_text_model):
+            problem = version_problem(info.get("version"), model)
+            if problem and problem not in warnings:
+                warnings.append(problem)
+        info["vision_ready"] = bool(
+            info["vision_present"] and info["vision_capable"] is not False and not vision_version
+        )
+
+    def model_capabilities(self, name: str, digest: str | None = None) -> list[str] | None:
+        """Capabilities reported by /api/show, or None when this Ollama does not report them."""
+        key = (self.root, name, digest or "")
+        if key in self._capabilities:
+            return self._capabilities[key]
+        try:
+            response = self._request("POST", "/api/show", json={"model": name}, timeout=10)
+            if not response.ok:
+                return None
+            body = response.json()
+        except (OllamaError, ValueError):
+            return None
+        raw = body.get("capabilities") if isinstance(body, dict) else None
+        capabilities = [str(item) for item in raw] if isinstance(raw, list) else None
+        self._capabilities[key] = capabilities
+        return capabilities
 
     def running_models(self) -> list[dict[str, Any]]:
         try:
@@ -144,6 +286,7 @@ class OllamaClient:
         prompt: str,
         images: list[str] | None = None,
         num_predict: int = 32,
+        role: str | None = None,
     ) -> dict[str, Any]:
         started = time.perf_counter()
         user: dict[str, Any] = {"role": "user", "content": prompt}
@@ -158,14 +301,13 @@ class OllamaClient:
             "options": {
                 "temperature": 0,
                 "num_predict": num_predict,
-                "num_ctx": 1024,
-                "num_thread": self.settings.ollama_num_thread,
+                **self.role_options(role or self._role_for(model)),
             },
         }
         response = self._request("POST", "/api/chat", json=payload)
         elapsed = time.perf_counter() - started
         if not response.ok:
-            raise OllamaError(response.text[:500])
+            raise OllamaError(_response_error(response))
         body = response.json()
         eval_count = int(body.get("eval_count") or 0)
         eval_ns = int(body.get("eval_duration") or 0)
@@ -181,7 +323,7 @@ class OllamaClient:
             "total_sec": round(int(body.get("total_duration") or 0) / 1e9, 3),
         }
 
-    def warm_model(self, model: str) -> None:
+    def warm_model(self, model: str, role: str | None = None) -> None:
         payload = {
             "model": model,
             "messages": [{"role": "user", "content": "ping"}],
@@ -190,13 +332,12 @@ class OllamaClient:
             "keep_alive": self.settings.ollama_keep_alive,
             "options": {
                 "num_predict": 1,
-                "num_ctx": 512,
-                "num_thread": self.settings.ollama_num_thread,
+                **self.role_options(role or self._role_for(model)),
             },
         }
         response = self._request("POST", "/api/chat", json=payload)
         if not response.ok:
-            raise OllamaError(response.text[:500])
+            raise OllamaError(_response_error(response))
 
     def chat(
         self,
@@ -220,21 +361,15 @@ class OllamaClient:
         if schema and schema_first:
             attempts.append({"format": schema, "messages": copy.deepcopy(messages), "images": images})
         attempts.append({"format": schema or "json", "messages": copy.deepcopy(messages), "images": images})
-        if images and len(images) > 1:
-            attempts.append(
-                {
-                    "format": "json",
-                    "messages": copy.deepcopy(messages),
-                    "images": [images[len(images) // 2]],
-                }
-            )
 
         chat_options = self._default_options()
         if options:
             chat_options.update(options)
 
+        # Transport failures propagate: _request has already retried them. Only replies that
+        # a second try can fix (empty, malformed, or a runner crash) are retried here.
         last_error = None
-        for attempt_index, attempt in enumerate(attempts):
+        for attempt in attempts:
             payload: dict[str, Any] = {
                 "model": model,
                 "messages": attempt["messages"],
@@ -246,38 +381,43 @@ class OllamaClient:
             }
             if attempt.get("images"):
                 payload["messages"][-1]["images"] = attempt["images"]
-            for retry in range(max(1, self.retries + 1)):
+            for _retry in range(max(1, self.retries + 1)):
+                response = self._request("POST", "/api/chat", json=payload)
+                if not response.ok:
+                    message = _response_error(response)
+                    last_error = f"HTTP {response.status_code}: {message}"
+                    if response.status_code < 500 or is_memory_error(message):
+                        # Missing model, bad request, or out of memory: the same request fails again.
+                        raise OllamaError(last_error)
+                    continue
+                body = response.json()
+                content = _extract_message_text(body)
+                done_reason = body.get("done_reason") or "unknown"
+                if not content:
+                    if done_reason == "length":
+                        raise OllamaTruncatedError("The model used its whole output budget without replying.")
+                    last_error = f"Empty model response (done_reason={done_reason})"
+                    payload["messages"] = attempt["messages"] + [
+                        {
+                            "role": "user",
+                            "content": "Reply with strict JSON only. Do not leave the response empty.",
+                        }
+                    ]
+                    continue
                 try:
-                    response = self._request("POST", "/api/chat", json=payload)
-                    if not response.ok:
-                        last_error = f"HTTP {response.status_code}: {response.text[:500]}"
-                        continue
-                    body = response.json()
-                    content = _extract_message_text(body)
-                    if not content:
-                        done_reason = body.get("done_reason") or "unknown"
-                        last_error = f"Empty model response (done_reason={done_reason})"
-                        payload["messages"] = attempt["messages"] + [
-                            {
-                                "role": "user",
-                                "content": "Reply with strict JSON only. Do not leave the response empty.",
-                            }
-                        ]
-                        continue
-                    try:
-                        return parse_model_json(content)
-                    except ValueError as exc:
-                        last_error = str(exc)
-                        payload["messages"] = attempt["messages"] + [
-                            {
-                                "role": "user",
-                                "content": "Your previous reply was invalid. Reply with strict JSON only matching the schema.",
-                            }
-                        ]
-                except OllamaError as exc:
+                    return parse_model_json(content)
+                except ValueError as exc:
+                    if done_reason == "length":
+                        raise OllamaTruncatedError(
+                            "The model reply was cut off before the JSON was complete."
+                        ) from exc
                     last_error = str(exc)
-            if attempt_index + 1 < len(attempts):
-                continue
+                    payload["messages"] = attempt["messages"] + [
+                        {
+                            "role": "user",
+                            "content": "Your previous reply was invalid. Reply with strict JSON only matching the schema.",
+                        }
+                    ]
         raise OllamaError(last_error or "Ollama chat failed")
 
     def encode_image(self, path: str, max_pixels: int | None = None) -> str:
@@ -308,21 +448,50 @@ class OllamaClient:
             stream=True,
         )
         if not response.ok:
-            raise OllamaError(response.text[:1000])
+            raise OllamaPullError(_response_error(response, limit=1000))
+        finished = False
         for line in response.iter_lines():
-            if not line or on_progress is None:
+            if not line:
                 continue
             try:
                 body = json.loads(line)
             except json.JSONDecodeError:
                 continue
-            on_progress(
-                {
-                    "status": body.get("status") or "",
-                    "completed": body.get("completed") or 0,
-                    "total": body.get("total") or 0,
-                }
-            )
+            if not isinstance(body, dict):
+                continue
+            # Ollama reports download failures inside the stream after an HTTP 200.
+            if body.get("error"):
+                raise OllamaPullError(str(body["error"]))
+            status = body.get("status") or ""
+            if status == "success":
+                finished = True
+            if on_progress is not None:
+                on_progress(
+                    {
+                        "status": status,
+                        "completed": body.get("completed") or 0,
+                        "total": body.get("total") or 0,
+                    }
+                )
+        if not finished:
+            raise OllamaPullError(f"The download of {name} stopped before Ollama confirmed it.")
+
+
+def _response_error(response: requests.Response, limit: int = 500) -> str:
+    try:
+        body = response.json()
+    except ValueError:
+        body = None
+    if isinstance(body, dict) and body.get("error"):
+        return str(body["error"])[:limit]
+    return (response.text or "")[:limit]
+
+
+def _digest_for(name: str, details: list[dict[str, Any]]) -> str | None:
+    for item in details:
+        if item.get("name") == name or str(item.get("name") or "").startswith(name + ":"):
+            return item.get("digest")
+    return None
 
 
 def describe_placement(models: list[dict[str, Any]], prefer: str | None = None) -> dict[str, Any]:

@@ -35,30 +35,35 @@ def warm_ollama_models(settings: Settings | None = None) -> None:
     health = client.health()
     if not health.get("connected"):
         return
-    models = _models_to_warm(settings, health)
-    for model in models:
+    from app.services.hardware import detect_hardware
+
+    recommendation = detect_hardware().get("recommendation") or {}
+    models = _models_to_warm(settings, health, warm_both=bool(recommendation.get("warm_both")))
+    for model, role in models:
         try:
-            client.warm_model(model)
+            client.warm_model(model, role=role)
             _log.info("Warmed Ollama model %s", model)
         except Exception as exc:  # noqa: BLE001
             _log.warning("Failed to warm Ollama model %s: %s", model, exc)
 
 
-def _models_to_warm(settings: Settings, health: dict) -> list[str]:
-    from app.services.hardware import detect_hardware
+def _models_to_warm(settings: Settings, health: dict, *, warm_both: bool) -> list[tuple[str, str]]:
+    """Models to load ahead of the first job, in the order a job uses them.
 
-    hardware = detect_hardware()
-    recommendation = hardware.get("recommendation") or {}
+    Visual analysis runs before transcript scoring, so the vision model goes first when it is
+    used. Without room for both, only the first one that is installed is loaded.
+    """
     installed = set(health.get("models") or [])
-    candidates = [settings.ollama_text_model]
-    if recommendation.get("warm_both"):
-        candidates.append(settings.ollama_vision_model)
-    elif settings.ollama_text_model not in installed:
-        candidates.append(settings.ollama_vision_model)
-    warmed: list[str] = []
-    for model in candidates:
-        if model and model not in warmed and _installed(model, installed):
-            warmed.append(model)
+    order = [(settings.ollama_text_model, "text")]
+    if settings.enable_visual_analysis and health.get("vision_ready", True):
+        order.insert(0, (settings.ollama_vision_model, "vision"))
+    warmed: list[tuple[str, str]] = []
+    for model, role in order:
+        if not model or any(model == name for name, _ in warmed) or not _installed(model, installed):
+            continue
+        warmed.append((model, role))
+        if not warm_both:
+            break
     return warmed
 
 

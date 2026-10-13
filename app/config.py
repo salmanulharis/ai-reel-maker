@@ -18,13 +18,17 @@ def resolve_project_path(path: str | Path) -> Path:
     return (_project_root() / candidate).resolve()
 
 
-def default_ollama_base_url() -> str:
+def running_in_docker() -> bool:
     docker_markers = (
         Path("/.dockerenv"),
         Path("\\.dockerenv"),
         _project_root() / ".dockerenv",
     )
-    if any(marker.exists() for marker in docker_markers):
+    return any(marker.exists() for marker in docker_markers)
+
+
+def default_ollama_base_url() -> str:
+    if running_in_docker():
         return "http://host.docker.internal:11434"
     return "http://127.0.0.1:11434"
 

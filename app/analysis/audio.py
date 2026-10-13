@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import threading
 from pathlib import Path
 
@@ -8,6 +9,68 @@ from app.video.ffmpeg_runner import FFmpegRunner, FFmpegError
 
 _whisper_models: dict[tuple[str, str, str, int, int], object] = {}
 _whisper_lock = threading.Lock()
+
+# Hugging Face repos behind faster-whisper's model names, for when the installed
+# faster-whisper is missing or older than the catalog.
+_WHISPER_REPOS = {
+    "distil-large-v2": "Systran/faster-distil-whisper-large-v2",
+    "distil-large-v3": "Systran/faster-distil-whisper-large-v3",
+    "distil-medium.en": "Systran/faster-distil-whisper-medium.en",
+    "distil-small.en": "Systran/faster-distil-whisper-small.en",
+    "large": "Systran/faster-whisper-large-v3",
+    "large-v3-turbo": "mobiuslabsgmbh/faster-whisper-large-v3-turbo",
+    "turbo": "mobiuslabsgmbh/faster-whisper-large-v3-turbo",
+}
+
+
+def whisper_repo(model: str) -> str:
+    try:
+        from faster_whisper.utils import _MODELS
+
+        repo = _MODELS.get(model)
+        if repo:
+            return repo
+    except Exception:  # noqa: BLE001
+        pass
+    if "/" in model:
+        return model
+    return _WHISPER_REPOS.get(model, f"Systran/faster-whisper-{model}")
+
+
+def _hf_hub_cache() -> Path:
+    try:
+        from huggingface_hub import constants
+
+        cache = getattr(constants, "HF_HUB_CACHE", None) or getattr(constants, "HUGGINGFACE_HUB_CACHE", None)
+        if cache:
+            return Path(cache)
+    except Exception:  # noqa: BLE001
+        pass
+    cache = os.environ.get("HF_HUB_CACHE") or os.environ.get("HUGGINGFACE_HUB_CACHE")
+    if cache:
+        return Path(cache)
+    home = os.environ.get("HF_HOME")
+    if home:
+        return Path(home) / "hub"
+    return Path.home() / ".cache" / "huggingface" / "hub"
+
+
+def whisper_model_cached(model: str) -> bool:
+    """True when a complete copy of the model is in the Hugging Face cache."""
+    local = Path(model)
+    if local.is_dir():
+        return (local / "model.bin").exists()
+    snapshots = _hf_hub_cache() / ("models--" + whisper_repo(model).replace("/", "--")) / "snapshots"
+    if not snapshots.is_dir():
+        return False
+    return any((snapshot / "model.bin").exists() for snapshot in snapshots.iterdir())
+
+
+def download_whisper_model(model: str) -> str:
+    """Download model files without loading them into memory."""
+    from faster_whisper import download_model
+
+    return download_model(model)
 
 
 def extract_audio(runner: FFmpegRunner, video_path: Path, wav_path: Path) -> Path:
@@ -41,10 +104,6 @@ def transcribe(
 ) -> Transcript:
     transcript, _info = transcribe_detailed(wav_path, model_size, device, cpu_threads, num_workers)
     return transcript
-
-
-def preload_whisper(model_size: str, cpu_threads: int = 6, num_workers: int = 1):
-    return _get_whisper_model(model_size, "cpu", "int8", cpu_threads, num_workers)
 
 
 def transcribe_detailed(

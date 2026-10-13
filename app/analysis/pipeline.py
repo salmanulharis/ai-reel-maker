@@ -4,12 +4,13 @@ import json
 import time
 from pathlib import Path
 
-from app.ai.ollama import OllamaClient, OllamaError
+from app.ai.ollama import OllamaClient, OllamaConnectionError, OllamaTruncatedError, predict_budget
 from app.ai.prompts import (
     TRANSCRIPT_BATCH_SCHEMA_FAST,
     transcript_batch_prompt_fast,
 )
-from app.analysis.audio import detect_silence, extract_audio, transcribe
+from app.analysis import score_source
+from app.analysis.audio import detect_silence, extract_audio, transcribe_detailed
 from app.analysis.candidates import generate_candidates
 from app.analysis.optimizer import ClipOptimizer
 from app.analysis.repetition import RepetitionAnalyzer
@@ -34,6 +35,9 @@ STAGES = [
     ("repetition", "Removing repetition"),
     ("planning", "Planning highlight"),
 ]
+
+# Upper bound on reply tokens per segment in a batched transcript-scoring reply.
+_TEXT_TOKENS_PER_SEGMENT = 40
 
 
 class PipelineProgress:
@@ -70,11 +74,13 @@ class VideoAnalyzer:
         runner: FFmpegRunner,
         ollama: OllamaClient | None,
         vision_enabled: bool = True,
+        text_enabled: bool = True,
     ):
         self.settings = settings
         self.runner = runner
         self.ollama = ollama
         self.vision_enabled = vision_enabled
+        self.text_enabled = text_enabled
         self.scorer = HighlightScorer()
         self.repetition = RepetitionAnalyzer()
         self.optimizer = ClipOptimizer()
@@ -123,26 +129,15 @@ class VideoAnalyzer:
         transcript_data = cache.get("transcript")
         if transcript_data is None:
             progress.stage("transcript", "running")
+            transcribed = True
             if wav.exists() and self.settings.enable_whisper:
-                try:
-                    transcript = transcribe(
-                        wav,
-                        self.settings.whisper_model,
-                        self.settings.whisper_device,
-                        cpu_threads=self.settings.whisper_cpu_threads,
-                        num_workers=self.settings.whisper_num_workers,
-                    )
-                    transcript_data = transcript.model_dump()
-                    nseg = len(transcript.segments)
-                    progress.log(f"Transcription completed ({nseg} segment{'s' if nseg != 1 else ''})")
-                except Exception as exc:  # noqa: BLE001
-                    progress.log(f"Transcription failed: {exc}", "WARNING")
-                    transcript_data = Transcript().model_dump()
+                transcript_data, transcribed = self._transcribe(wav, progress)
             else:
                 transcript_data = Transcript().model_dump()
                 progress.log("No transcript available; continuing with visual/scene analysis", "WARNING")
-            _write(job_dir / "transcript.json", transcript_data)
-            progress.stage("transcript", "done")
+            if transcribed:
+                _write(job_dir / "transcript.json", transcript_data)
+            progress.stage("transcript", "done", "" if transcribed else "Transcription failed")
         cache["transcript"] = transcript_data
         transcript = Transcript.model_validate(transcript_data)
 
@@ -189,21 +184,30 @@ class VideoAnalyzer:
             progress.stage("frames", "done")
         cache["frames"] = frame_map
 
-        visual = cache.get("visual") or {}
-        if not visual:
+        visual = dict(cache.get("visual") or {})
+        ollama_ok = bool(self.ollama)
+        vision_ok = ollama_ok and self.vision_enabled
+        vision_ready = vision_ok and self.settings.enable_visual_analysis
+        pending_scenes = [
+            scene
+            for scene in scenes
+            if str(scene["scene_id"]) not in visual
+            or (vision_ready and score_source.needs_ai(visual[str(scene["scene_id"])]))
+        ]
+        if pending_scenes or not visual:
             progress.stage("visual", "running")
-            ollama_ok = bool(self.ollama)
-            vision_ok = ollama_ok and self.vision_enabled
             if ollama_ok and not vision_ok:
                 progress.log(
-                    f"Vision model '{self.settings.ollama_vision_model}' is not installed. Using deterministic visual scoring.",
+                    f"Vision model '{self.settings.ollama_vision_model}' is not available. Using deterministic visual scoring.",
                     "WARNING",
                 )
             elif not ollama_ok:
                 progress.log("Ollama is unavailable. Using deterministic visual scoring.", "WARNING")
+            if visual and pending_scenes:
+                progress.log(f"Re-running visual AI for {len(pending_scenes)} scene(s) that used fallback scores")
             ai_scene_count = sum(
                 1
-                for scene in scenes
+                for scene in pending_scenes
                 if float(scene.get("duration") or 0) >= self.settings.ollama_vision_min_scene_duration
             )
             batch_count = max(
@@ -229,10 +233,10 @@ class VideoAnalyzer:
                     total,
                 )
 
-            results, errors = analyze_scenes_visual(
+            results, errors, fallback_reasons = analyze_scenes_visual(
                 self.ollama,
                 self.settings.ollama_vision_model,
-                scenes,
+                pending_scenes,
                 frame_map,
                 source_duration,
                 config.custom_focus,
@@ -240,10 +244,12 @@ class VideoAnalyzer:
                 settings=self.settings,
                 on_batch_start=_visual_batch_progress,
             )
-            for scene in scenes:
+            for scene in pending_scenes:
                 scene_id = int(scene["scene_id"])
                 if scene_id in results:
-                    visual[str(scene_id)] = results[scene_id].model_dump()
+                    visual[str(scene_id)] = score_source.tag(
+                        results[scene_id].model_dump(), fallback_reasons.get(scene_id)
+                    )
             for message in errors:
                 progress.log(message, "WARNING")
             progress.stage("visual", "done", f"Analyzed {len(results)} scene(s)", batch_count, batch_count)
@@ -252,9 +258,10 @@ class VideoAnalyzer:
         cache["visual"] = visual
 
         progress.stage("content", "running")
-        segment_scores = cache.get("segment_scores")
-        if segment_scores is None:
-            segment_scores = self._score_transcript(transcript, config, progress)
+        segment_scores, scores_changed = self._score_transcript(
+            transcript, config, progress, cache.get("segment_scores")
+        )
+        if scores_changed:
             _write(job_dir / "segment_scores.json", segment_scores)
         cache["segment_scores"] = segment_scores
 
@@ -418,61 +425,142 @@ class VideoAnalyzer:
         progress.stage("planning", "done")
         return cache
 
-    def _score_transcript(self, transcript: Transcript, config: HighlightConfig, progress: PipelineProgress) -> list[dict]:
-        results = []
-        if not transcript.segments:
-            return results
-        if self.ollama is None:
-            progress.log("Text model unavailable; using heuristic transcript scores.", "WARNING")
-            return [_heuristic_segment(seg) for seg in transcript.segments]
-        batch_size = max(1, self.settings.ollama_text_batch_size)
-        total = len(transcript.segments)
-        batch_count = (total + batch_size - 1) // batch_size
-        text_options = {
-            "num_ctx": self.settings.ollama_text_num_ctx,
-            "num_predict": self.settings.ollama_text_num_predict,
-        }
-        for start in range(0, total, batch_size):
-            self._check_cancel()
-            batch = transcript.segments[start : start + batch_size]
-            batch_no = start // batch_size + 1
+    def _transcribe(self, wav: Path, progress: PipelineProgress) -> tuple[dict, bool]:
+        """Transcript data, and whether it is worth caching. A failed run is not cached, so the
+        next analysis tries again instead of reusing an empty transcript."""
+        try:
+            transcript, info = transcribe_detailed(
+                wav,
+                self.settings.whisper_model,
+                self.settings.whisper_device,
+                cpu_threads=self.settings.whisper_cpu_threads,
+                num_workers=self.settings.whisper_num_workers,
+            )
+        except Exception as exc:  # noqa: BLE001
+            transcript, info = Transcript(), {"ok": False, "error": str(exc)}
+        if not info.get("ok"):
             progress.log(
-                f"Scoring transcript batch {batch_no}/{batch_count} "
+                f"Transcription failed: {info.get('error') or 'unknown error'}. "
+                "Continuing without speech; the next analysis will try again.",
+                "WARNING",
+            )
+            return Transcript().model_dump(), False
+        if info.get("warning"):
+            progress.log(str(info["warning"]), "WARNING")
+        nseg = len(transcript.segments)
+        progress.log(f"Transcription completed ({nseg} segment{'s' if nseg != 1 else ''})")
+        return transcript.model_dump(), True
+
+    def _score_transcript(
+        self,
+        transcript: Transcript,
+        config: HighlightConfig,
+        progress: PipelineProgress,
+        existing: list[dict] | None = None,
+    ) -> tuple[list[dict], bool]:
+        """Score every transcript segment, reusing cached scores.
+
+        Cached fallback scores are redone when the text model is ready. Returns the scores and
+        whether they differ from ``existing``."""
+        segments = transcript.segments
+        if not segments:
+            return [], existing != []
+        cached = existing if isinstance(existing, list) and len(existing) == len(segments) else None
+        text_ready = self.ollama is not None and self.text_enabled
+        results: list[dict | None] = list(cached) if cached is not None else [None] * len(segments)
+        pending = [
+            index
+            for index, item in enumerate(results)
+            if item is None or (text_ready and score_source.needs_ai(item))
+        ]
+        if not pending:
+            return results, False
+        if not text_ready:
+            if self.ollama is None:
+                progress.log("Text model unavailable; using heuristic transcript scores.", "WARNING")
+            for index in pending:
+                results[index] = _heuristic_segment(segments[index], score_source.AI_UNAVAILABLE)
+            return results, True
+        if cached is not None:
+            progress.log(f"Re-scoring {len(pending)} transcript segment(s) that used fallback scores")
+
+        batch_size = max(1, self.settings.ollama_text_batch_size)
+        batches = [pending[start : start + batch_size] for start in range(0, len(pending), batch_size)]
+        unreachable = False
+        for batch_no, indexes in enumerate(batches, start=1):
+            self._check_cancel()
+            batch = [segments[index] for index in indexes]
+            progress.log(
+                f"Scoring transcript batch {batch_no}/{len(batches)} "
                 f"({len(batch)} segment{'s' if len(batch) != 1 else ''})"
             )
             progress.stage(
                 "content",
                 "running",
-                f"Scoring speech {batch_no}/{batch_count}",
+                f"Scoring speech {batch_no}/{len(batches)}",
                 batch_no,
-                batch_count,
+                len(batches),
             )
-            payload = [{"start": s.start, "end": s.end, "text": s.text} for s in batch]
-            try:
-                data = self.ollama.chat(
-                    self.settings.ollama_text_model,
-                    transcript_batch_prompt_fast(config.style, config.custom_focus, payload),
-                    schema=TRANSCRIPT_BATCH_SCHEMA_FAST,
-                    options=text_options,
-                    schema_first=False,
-                )
-                items = data.get("segments") or []
-                for i, seg in enumerate(batch):
-                    raw = items[i] if i < len(items) else {}
-                    score = _expand_segment_score(raw, seg)
-                    results.append(
-                        {
-                            "start": seg.start,
-                            "end": seg.end,
-                            "text": seg.text,
-                            "score": score.model_dump(),
-                            "reason": self.scorer.reason_for(score),
-                        }
+            if unreachable:
+                scored = [_heuristic_segment(seg, score_source.AI_FAILED) for seg in batch]
+            else:
+                try:
+                    scored = self._score_text_batch(batch, config)
+                except CancelledError:
+                    raise
+                except OllamaConnectionError as exc:
+                    unreachable = True
+                    progress.log(
+                        f"Ollama stopped responding ({exc}); using heuristic scores for the rest of the transcript.",
+                        "WARNING",
                     )
-            except (OllamaError, Exception) as exc:  # noqa: BLE001
-                progress.log(f"Transcript batch scoring failed ({exc}); using fallback.", "WARNING")
-                results.extend(_heuristic_segment(seg) for seg in batch)
-        return results
+                    scored = [_heuristic_segment(seg, score_source.AI_FAILED) for seg in batch]
+                except Exception as exc:  # noqa: BLE001
+                    progress.log(f"Transcript batch scoring failed ({exc}); using fallback.", "WARNING")
+                    scored = [_heuristic_segment(seg, score_source.AI_FAILED) for seg in batch]
+            for index, item in zip(indexes, scored):
+                results[index] = item
+        return results, True
+
+    def _score_text_batch(self, batch: list, config: HighlightConfig) -> list[dict]:
+        """AI scores for one batch. A reply cut off by the token limit is retried as two smaller batches."""
+        self._check_cancel()
+        payload = [{"start": s.start, "end": s.end, "text": s.text} for s in batch]
+        options = self.ollama.role_options("text")
+        options["num_predict"] = predict_budget(
+            self.settings.ollama_text_num_predict, len(batch), _TEXT_TOKENS_PER_SEGMENT, options["num_ctx"]
+        )
+        try:
+            data = self.ollama.chat(
+                self.settings.ollama_text_model,
+                transcript_batch_prompt_fast(config.style, config.custom_focus, payload),
+                schema=TRANSCRIPT_BATCH_SCHEMA_FAST,
+                options=options,
+                schema_first=False,
+            )
+        except OllamaTruncatedError:
+            if len(batch) <= 1:
+                raise
+            middle = len(batch) // 2
+            return self._score_text_batch(batch[:middle], config) + self._score_text_batch(batch[middle:], config)
+        scored = []
+        for seg, raw in zip(batch, align_segment_scores(data.get("segments"), len(batch))):
+            if raw is None:
+                scored.append(_heuristic_segment(seg, score_source.AI_FAILED))
+                continue
+            score = _expand_segment_score(raw, seg)
+            scored.append(
+                score_source.tag(
+                    {
+                        "start": seg.start,
+                        "end": seg.end,
+                        "text": seg.text,
+                        "score": score.model_dump(),
+                        "reason": self.scorer.reason_for(score),
+                    }
+                )
+            )
+        return scored
 
     def _check_cancel(self) -> None:
         if self.runner.cancel_event.is_set():
@@ -538,7 +626,31 @@ def _expand_segment_score(raw: dict, seg) -> CandidateScore:
     )
 
 
-def _heuristic_segment(seg) -> dict:
+def align_segment_scores(items, count: int) -> list[dict | None]:
+    """Match reply rows to the batch's segments by their "i" index.
+
+    Falls back to reply order only when the reply has exactly one row per segment. Segments
+    without a trustworthy row get None."""
+    rows = [item for item in (items or []) if isinstance(item, dict)]
+    by_index: dict[int, dict] | None = {}
+    for row in rows:
+        try:
+            index = int(row.get("i"))
+        except (TypeError, ValueError):
+            by_index = None
+            break
+        if not 0 <= index < count or index in by_index:
+            by_index = None
+            break
+        by_index[index] = row
+    if rows and by_index is not None:
+        return [by_index.get(index) for index in range(count)]
+    if len(rows) == count:
+        return rows
+    return [None] * count
+
+
+def _heuristic_segment(seg, reason: str = score_source.AI_UNAVAILABLE) -> dict:
     text = seg.text.strip()
     lower = text.lower()
     filler = 0.8 if lower in {"um", "uh", "you know", "like"} or len(text.split()) < 3 else 0.05
@@ -553,13 +665,16 @@ def _heuristic_segment(seg) -> dict:
         context_dependency=intro,
         emotional_intensity=0.3,
     )
-    return {
-        "start": seg.start,
-        "end": seg.end,
-        "text": text,
-        "score": score.model_dump(),
-        "reason": "Useful information" if score.importance > 0.4 else "Low-value speech",
-    }
+    return score_source.tag(
+        {
+            "start": seg.start,
+            "end": seg.end,
+            "text": text,
+            "score": score.model_dump(),
+            "reason": "Useful information" if score.importance > 0.4 else "Low-value speech",
+        },
+        reason,
+    )
 
 
 def _write(path: Path, data) -> None:

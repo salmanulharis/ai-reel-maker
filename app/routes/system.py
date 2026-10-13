@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+import platform
 import shutil
 import subprocess
 import threading
+from pathlib import Path
 
 from flask import Blueprint, jsonify, request
 
-from app.ai.ollama import OllamaError
+from app.ai.ollama import OllamaError, OllamaPullError
+from app.ai.registry_pull import models_root
 from app.config import get_settings
 from app.services.ai_profile import apply_recommendation, resolve_runtime, sync_hardware_profile
 from app.services.ai_test import (
@@ -46,7 +49,7 @@ def system_info():
         "ffprobe": hardware.get("ffprobe"),
         "storage": settings.data_dir.exists() and settings.data_dir.is_dir(),
         "ollama": bool(ollama.get("connected")),
-        "vision_model": bool(ollama.get("vision_present")),
+        "vision_model": bool(ollama.get("vision_ready")),
         "text_model": bool(ollama.get("text_present")),
     }
     whisper_cache = {item["name"]: whisper_installed(item["name"]) for item in CATALOG["whisper"]}
@@ -166,9 +169,12 @@ def _pull_one(name: str) -> None:
         client = get_ollama_client()
         try:
             client.pull_model(name, on_progress=_progress)
+        except OllamaPullError:
+            # Ollama answered and refused the download; the CLI would hit the same error.
+            raise
         except OllamaError:
             ollama_bin = shutil.which("ollama")
-            if not ollama_bin:
+            if not ollama_bin or not client.is_local():
                 raise
             _pull_status[name]["status"] = "downloading"
             subprocess.run([ollama_bin, "pull", name], check=True, timeout=3600)
@@ -190,8 +196,7 @@ def _valid_model_name(name: str) -> bool:
 def _disk_problem(name: str) -> str | None:
     entry = catalog_entry(name)
     need_gb = float(entry["disk_gb"]) if entry else 4.0
-    hardware = _cached_or_fast_hardware()
-    free = hardware.get("disk_free_gb")
+    free = _ollama_disk_free_gb()
     if free is None:
         return None
     if float(free) < need_gb * 1.15:
@@ -200,6 +205,20 @@ def _disk_problem(name: str) -> str | None:
             f"{float(free):.1f} GB is free."
         )
     return None
+
+
+def _ollama_disk_free_gb() -> float | None:
+    """Free space where Ollama stores models, or None when that disk is not on this machine."""
+    if not get_ollama_client().is_local():
+        return None
+    candidates = [models_root()]
+    if platform.system() == "Linux":
+        candidates.append(Path("/usr/share/ollama/.ollama/models"))
+    folder = next((path for path in candidates if path.is_dir()), Path.home())
+    try:
+        return round(shutil.disk_usage(folder).free / (1024**3), 1)
+    except OSError:
+        return None
 
 
 def _cached_or_fast_hardware() -> dict:

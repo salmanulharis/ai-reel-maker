@@ -140,13 +140,17 @@ def _run_analysis(app: Flask, job_id: str) -> None:
     progress = PipelineProgress(emit)
     ollama = None
     vision_enabled = False
+    text_enabled = False
     try:
         client = get_ollama_client(settings)
         health = client.health()
         if health.get("connected"):
             ollama = client
-            vision_enabled = bool(health.get("vision_present"))
-            if not health.get("text_present"):
+            vision_enabled = bool(health.get("vision_ready", health.get("vision_present")))
+            text_enabled = bool(health.get("text_present"))
+            for warning in health.get("warnings") or []:
+                progress.log(str(warning), "WARNING")
+            if not text_enabled:
                 progress.log(
                     f"Text model '{settings.ollama_text_model}' is not installed. Transcript scoring will use heuristics.",
                     "WARNING",
@@ -160,7 +164,7 @@ def _run_analysis(app: Flask, job_id: str) -> None:
     except Exception:
         progress.log("Ollama is unavailable. Continuing in degraded mode.", "WARNING")
 
-    analyzer = VideoAnalyzer(settings, runner, ollama, vision_enabled=vision_enabled)
+    analyzer = VideoAnalyzer(settings, runner, ollama, vision_enabled=vision_enabled, text_enabled=text_enabled)
     try:
         sources, cache = _prepare_all_sources(manager, job, original, job_dir, config, runner, progress, cache)
         cache = analyzer.analyze_sources(job_dir, sources, config, progress, cache)

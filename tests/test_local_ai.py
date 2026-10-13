@@ -43,8 +43,9 @@ def test_large_gpu_can_select_30b_vision():
     setup = recommend_setup(24, 64, 20, 16)
     assert setup["vision_model"] == "qwen3-vl:30b"
     assert setup["text_model"] == "qwen3:8b"
-    assert setup["whisper_model"] == "distil-large-v3"
+    assert setup["whisper_model"] == "large-v3-turbo"
     assert setup["whisper_device"] == "cuda"
+    assert "distil-large-v3" in setup["alternatives"]["whisper"]
 
 
 def test_large_card_with_little_free_memory_steps_down():

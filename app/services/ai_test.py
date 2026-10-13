@@ -25,6 +25,10 @@ def explain_ai_error(message: str, *, gpu_present: bool = False, placement_mode:
         return "Ollama is not reachable. Install it, start it, and check the Ollama URL in Advanced settings."
     if "timeout" in text or "timed out" in text:
         return "The model took too long. Pick a smaller model, or check that Ollama is running."
+    if "pull model manifest" in text or "file does not exist" in text:
+        return "Ollama could not find this model in its library. Check the model name and tag."
+    if "too old for" in text or "requires a newer version" in text:
+        return "This model needs a newer Ollama. Update Ollama from ollama.com/download and restart it."
     if "not found" in text or "try pulling" in text:
         return "That model is not installed. Use Install on the model card."
     if any(token in text for token in ("out of memory", "cuda out", "insufficient memory", "requires more system memory")):
@@ -35,6 +39,8 @@ def explain_ai_error(message: str, *, gpu_present: bool = False, placement_mode:
             "computer with the GPU, or pick a smaller model. On AMD, set OLLAMA_VULKAN=1 and restart Ollama "
             "if ROCm cannot load the model."
         )
+    if "invalid model size" in text:
+        return "This Whisper model needs a newer faster-whisper. Run pip install -U faster-whisper, or pick another Whisper model."
     if "faster-whisper" in text or "no module named" in text:
         return "Whisper is not installed in this Python environment. Install the app requirements and try again."
     return message or "The test failed. Check that Ollama is running and the selected model is installed."
@@ -115,16 +121,25 @@ def _execute(settings: Settings, profile: dict[str, Any]) -> dict[str, Any]:
         settings.ollama_text_model,
         ollama.get("text_present"),
         "Reply with the single word ready.",
+        role="text",
         gpu_present=gpu_present,
     )
-    report["vision"] = _probe_model(
-        client,
-        settings.ollama_vision_model,
-        ollama.get("vision_present"),
-        "What color is this image? Reply with one word.",
-        images=[_sample_image()],
-        gpu_present=gpu_present,
-    )
+    if ollama.get("vision_present") and ollama.get("vision_capable") is False:
+        report["vision"] = {
+            "ok": False,
+            "model": settings.ollama_vision_model,
+            "error": f"{settings.ollama_vision_model} cannot read images. Choose a vision model such as qwen3-vl:4b.",
+        }
+    else:
+        report["vision"] = _probe_model(
+            client,
+            settings.ollama_vision_model,
+            ollama.get("vision_present"),
+            "What color is this image? Reply with one word.",
+            images=[_sample_image()],
+            role="vision",
+            gpu_present=gpu_present,
+        )
     health = client.health()
     runtime = resolve_runtime(hardware, health.get("running") or [])
     report["runtime"] = runtime
@@ -133,6 +148,8 @@ def _execute(settings: Settings, profile: dict[str, Any]) -> dict[str, Any]:
         report["warning"] = runtime.get("hint")
     elif gpu_present and placement.get("mode") == "cpu":
         report["warning"] = runtime.get("hint") or explain_ai_error("", gpu_present=True, placement_mode="cpu")
+    if not report["warning"] and ollama.get("warnings"):
+        report["warning"] = " ".join(str(item) for item in ollama["warnings"])
     report["whisper"] = _probe_whisper(settings)
     failed = [item for item in (report["text"], report["vision"], report["whisper"]) if item and not item.get("ok")]
     if failed:
@@ -141,7 +158,15 @@ def _execute(settings: Settings, profile: dict[str, Any]) -> dict[str, Any]:
     return report
 
 
-def _probe_model(client, model: str, present: bool, prompt: str, images: list[str] | None = None, gpu_present: bool = False) -> dict[str, Any]:
+def _probe_model(
+    client,
+    model: str,
+    present: bool,
+    prompt: str,
+    images: list[str] | None = None,
+    role: str = "text",
+    gpu_present: bool = False,
+) -> dict[str, Any]:
     if not present:
         return {
             "ok": False,
@@ -149,7 +174,7 @@ def _probe_model(client, model: str, present: bool, prompt: str, images: list[st
             "error": explain_ai_error(f"model '{model}' not found, try pulling it"),
         }
     try:
-        result = client.probe_chat(model, prompt, images=images, num_predict=16)
+        result = client.probe_chat(model, prompt, images=images, num_predict=16, role=role)
     except OllamaError as exc:
         return {"ok": False, "model": model, "error": explain_ai_error(str(exc), gpu_present=gpu_present)}
     except Exception as exc:  # noqa: BLE001
@@ -196,13 +221,9 @@ def _probe_whisper(settings: Settings) -> dict[str, Any]:
 
 def _download_whisper(model: str, settings: Settings) -> None:
     try:
-        from app.analysis.audio import preload_whisper
+        from app.analysis.audio import download_whisper_model
 
-        preload_whisper(
-            model,
-            cpu_threads=settings.whisper_cpu_threads,
-            num_workers=settings.whisper_num_workers,
-        )
+        download_whisper_model(model)
         state = {"state": "done", "model": model, "error": None}
     except Exception as exc:  # noqa: BLE001
         state = {"state": "error", "model": model, "error": explain_ai_error(str(exc))}
@@ -227,10 +248,6 @@ def _write_silence(path, seconds: float, sample_rate: int = 16000) -> None:
 
 
 def whisper_installed(model: str) -> bool:
-    import os
-    from pathlib import Path
+    from app.analysis.audio import whisper_model_cached
 
-    cache = os.environ.get("HUGGINGFACE_HUB_CACHE") or os.environ.get("HF_HUB_CACHE")
-    root = Path(cache) if cache else Path.home() / ".cache" / "huggingface" / "hub"
-    folder = root / f"models--Systran--faster-whisper-{model}"
-    return folder.is_dir()
+    return whisper_model_cached(model)

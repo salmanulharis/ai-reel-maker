@@ -7,8 +7,9 @@ import numpy as np
 
 from collections.abc import Callable
 
-from app.ai.ollama import OllamaClient, OllamaError
+from app.ai.ollama import OllamaClient, OllamaConnectionError, OllamaTruncatedError, predict_budget
 from app.ai.prompts import VISUAL_BATCH_SCHEMA, visual_batch_prompt
+from app.analysis import score_source
 from app.models.schemas import Scene, VisualAnalysis
 from app.utils.timefmt import clamp_timestamp
 
@@ -122,6 +123,10 @@ def _expand_visual_score(raw: dict, fallback: VisualAnalysis, scene: Scene) -> V
     )
 
 
+# Upper bound on reply tokens per scene in a batched visual reply.
+_VISION_TOKENS_PER_SCENE = 80
+
+
 def analyze_scenes_visual(
     client: OllamaClient | None,
     model: str,
@@ -132,23 +137,32 @@ def analyze_scenes_visual(
     enabled: bool = True,
     settings: Settings | None = None,
     on_batch_start: Callable[[int, int, int], None] | None = None,
-) -> tuple[dict[int, VisualAnalysis], list[str]]:
+) -> tuple[dict[int, VisualAnalysis], list[str], dict[int, str]]:
+    """Score scenes with the vision model, falling back to motion scoring per scene.
+
+    Returns the scores, log messages, and the fallback reason for every scene that did not get
+    an AI score (see app.analysis.score_source)."""
     from app.config import get_settings
 
     cfg = settings or get_settings()
     results: dict[int, VisualAnalysis] = {}
     errors: list[str] = []
+    reasons: dict[int, str] = {}
     ai_queue: list[tuple[Scene, list[Path], Path, VisualAnalysis]] = []
+
+    def use_fallback(scene_model: Scene, fallback: VisualAnalysis, reason: str) -> None:
+        results[scene_model.scene_id] = fallback
+        reasons[scene_model.scene_id] = reason
 
     for scene in scenes:
         scene_model = Scene.model_validate(scene)
         paths = [Path(entry["image_path"]) for entry in frame_map.get(str(scene_model.scene_id), [])]
         fallback = fallback_visual(paths, scene_model, source_duration)
         if not enabled or client is None:
-            results[scene_model.scene_id] = fallback
+            use_fallback(scene_model, fallback, score_source.AI_UNAVAILABLE)
             continue
         if scene_model.duration < cfg.ollama_vision_min_scene_duration:
-            results[scene_model.scene_id] = fallback
+            use_fallback(scene_model, fallback, score_source.SHORT_SCENE)
             errors.append(
                 f"Scene {scene_model.scene_id} skipped ({scene_model.duration:.1f}s < "
                 f"{cfg.ollama_vision_min_scene_duration:.1f}s); using motion fallback."
@@ -156,55 +170,93 @@ def analyze_scenes_visual(
             continue
         frame = _pick_representative_frame(paths)
         if frame is None:
-            results[scene_model.scene_id] = fallback
+            use_fallback(scene_model, fallback, score_source.NO_FRAME)
             errors.append(f"Scene {scene_model.scene_id}: no frame image; using motion fallback.")
             continue
         ai_queue.append((scene_model, paths, frame, fallback))
 
     if not ai_queue or client is None:
-        return results, errors
+        return results, errors, reasons
 
     batch_size = max(1, cfg.ollama_vision_batch_size)
-    vision_options = {
-        "num_ctx": cfg.ollama_vision_num_ctx,
-        "num_predict": cfg.ollama_vision_num_predict,
-    }
     batch_count = (len(ai_queue) + batch_size - 1) // batch_size
+    unreachable = False
 
     for batch_index, start in enumerate(range(0, len(ai_queue), batch_size), start=1):
         batch = ai_queue[start : start + batch_size]
         if on_batch_start:
             on_batch_start(batch_index, batch_count, len(batch))
-        scene_meta = [
-            {"scene_id": scene.scene_id, "start": scene.start, "end": scene.end}
-            for scene, _, _, _ in batch
-        ]
+        if unreachable:
+            for scene_model, _, _, fallback in batch:
+                use_fallback(scene_model, fallback, score_source.AI_FAILED)
+            continue
         try:
-            images = [client.encode_image(str(frame)) for _, _, frame, _ in batch]
-            data = client.chat(
-                model=model,
-                prompt=visual_batch_prompt(scene_meta, custom_focus),
-                images=images,
-                schema=VISUAL_BATCH_SCHEMA,
-                options=vision_options,
-                schema_first=False,
-            )
-            by_id = {
-                int(row.get("scene_id")): row
-                for row in (data.get("scenes") or [])
-                if row.get("scene_id") is not None
-            }
-            for scene_model, paths, _, fallback in batch:
+            by_id = _score_visual_batch(client, model, batch, custom_focus, cfg)
+            for scene_model, _, _, fallback in batch:
                 raw = by_id.get(scene_model.scene_id, {})
                 if not raw:
-                    results[scene_model.scene_id] = fallback
+                    use_fallback(scene_model, fallback, score_source.AI_FAILED)
                     errors.append(f"Scene {scene_model.scene_id}: missing AI score; using motion fallback.")
                     continue
                 results[scene_model.scene_id] = _expand_visual_score(raw, fallback, scene_model)
-        except (OllamaError, Exception) as exc:  # noqa: BLE001
+        except OllamaConnectionError as exc:
+            unreachable = True
+            detail = str(exc).replace("\n", " ").strip()[:220]
+            errors.append(
+                f"Ollama stopped responding during visual batch {batch_index}/{batch_count} ({detail}); "
+                "using motion fallback for the remaining scenes."
+            )
+            for scene_model, _, _, fallback in batch:
+                use_fallback(scene_model, fallback, score_source.AI_FAILED)
+        except Exception as exc:  # noqa: BLE001
             detail = str(exc).replace("\n", " ").strip()[:220]
             errors.append(f"Visual batch {batch_index}/{batch_count} failed ({detail}); using motion fallback.")
-            for scene_model, paths, _, fallback in batch:
-                results[scene_model.scene_id] = fallback
+            for scene_model, _, _, fallback in batch:
+                use_fallback(scene_model, fallback, score_source.AI_FAILED)
 
-    return results, errors
+    return results, errors, reasons
+
+
+def _score_visual_batch(
+    client: OllamaClient,
+    model: str,
+    batch: list[tuple[Scene, list[Path], Path, VisualAnalysis]],
+    custom_focus: str,
+    cfg: Settings,
+) -> dict[int, dict]:
+    """Raw AI rows by scene id. A reply cut off by the token limit is retried as two smaller batches."""
+    scene_meta = [
+        {"scene_id": scene.scene_id, "start": scene.start, "end": scene.end}
+        for scene, _, _, _ in batch
+    ]
+    options = client.role_options("vision")
+    options["num_predict"] = predict_budget(
+        cfg.ollama_vision_num_predict, len(batch), _VISION_TOKENS_PER_SCENE, options["num_ctx"]
+    )
+    images = [client.encode_image(str(frame)) for _, _, frame, _ in batch]
+    try:
+        data = client.chat(
+            model=model,
+            prompt=visual_batch_prompt(scene_meta, custom_focus),
+            images=images,
+            schema=VISUAL_BATCH_SCHEMA,
+            options=options,
+            schema_first=False,
+        )
+    except OllamaTruncatedError:
+        if len(batch) <= 1:
+            raise
+        middle = len(batch) // 2
+        return {
+            **_score_visual_batch(client, model, batch[:middle], custom_focus, cfg),
+            **_score_visual_batch(client, model, batch[middle:], custom_focus, cfg),
+        }
+    by_id: dict[int, dict] = {}
+    for row in data.get("scenes") or []:
+        if not isinstance(row, dict) or row.get("scene_id") is None:
+            continue
+        try:
+            by_id[int(row["scene_id"])] = row
+        except (TypeError, ValueError):
+            continue
+    return by_id

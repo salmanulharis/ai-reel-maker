@@ -88,11 +88,12 @@ TRANSCRIPT_BATCH_SCHEMA_FAST = {
             "items": {
                 "type": "object",
                 "properties": {
+                    "i": {"type": "integer"},
                     "importance": {"type": "number"},
                     "novelty": {"type": "number"},
                     "information_density": {"type": "number"},
                 },
-                "required": ["importance", "novelty", "information_density"],
+                "required": ["i", "importance", "novelty", "information_density"],
             },
         }
     },
@@ -159,8 +160,8 @@ def transcript_batch_prompt_fast(style: str, custom_focus: str, segments: list[d
         for idx, item in enumerate(segments)
     )
     return f"""Score highlight value for each segment (0.0-1.0). Style: {style}.{extra}
-Return compact JSON only: {{"segments":[{{"importance":n,"novelty":n,"information_density":n}}]}}
-Keep the same order. Penalize filler, greetings, and repetition.
+Return compact JSON only: {{"segments":[{{"i":n,"importance":n,"novelty":n,"information_density":n}}]}}
+One entry per segment, in the same order. "i" is the segment number shown before it. Penalize filler, greetings, and repetition.
 Segments:
 {lines}"""
 
