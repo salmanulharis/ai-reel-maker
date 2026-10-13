@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { api, formatBytes } from "../services/api";
 import { messages } from "../i18n";
+import { Alert, InlineStatus, PageLoader, Spinner } from "../components/Feedback";
 import type { AiTestResult, ModelSpec, OllamaStatus, PullStatus, RuntimeStatus } from "../types";
 
 type Info = {
@@ -65,6 +66,19 @@ export default function Settings() {
     setSettings((cur) => ({ ...cur, [key]: value }));
   }
 
+  /** Run a button's request with a busy state and shared error handling. */
+  async function act(key: string, call: () => Promise<unknown>) {
+    setError("");
+    setBusy(key);
+    try {
+      await call();
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setBusy("");
+    }
+  }
+
   async function saveAdvanced() {
     const inferenceKeys = [
       "ollama_vision_model",
@@ -89,15 +103,12 @@ export default function Settings() {
     for (const key of inferenceKeys) {
       if (String(settings[key] ?? "") !== String(loaded[key] ?? "")) payload[key] = settings[key];
     }
-    setError("");
-    try {
+    await act("save", async () => {
       await api.saveSettings(payload);
-      setSaved(copy.saved);
-      setTimeout(() => setSaved(""), 1500);
       await load();
-    } catch (err) {
-      setError((err as Error).message);
-    }
+      setSaved(copy.saved);
+      setTimeout(() => setSaved(""), 2000);
+    });
   }
 
   async function useModel(key: string, name: string) {
@@ -180,6 +191,8 @@ export default function Settings() {
   const textName = String(recommendation.text_model || "");
   const missingRecommended = [visionName, textName].filter((name) => name && !modelPresent(name, ollama));
 
+  if (!info && !error) return <PageLoader />;
+
   return (
     <div>
       <p className="privacy" style={{ marginTop: 0 }}>
@@ -227,20 +240,37 @@ export default function Settings() {
               {String(note)}
             </p>
           ))}
+        {(ollama?.warnings || []).map((warning) => (
+          <Alert key={warning}>{warning}</Alert>
+        ))}
         <div className="btn-row stack-buttons">
-          <button className="btn primary" disabled={busy === "apply"} onClick={applyRecommended}>
+          <button className="btn primary" disabled={busy === "apply"} aria-busy={busy === "apply"} onClick={applyRecommended}>
+            {busy === "apply" && <Spinner />}
             {copy.useRecommended}
           </button>
-          <button className={`btn ${mode === "custom" ? "primary" : ""}`} onClick={setCustom}>
+          <button className={`btn ${mode === "custom" ? "primary" : ""}`} aria-pressed={mode === "custom"} onClick={setCustom}>
             {copy.custom}
           </button>
-          <button className="btn" disabled={testBusy} onClick={runTest}>
+          <button className="btn" disabled={testBusy} aria-busy={testBusy} onClick={runTest}>
+            {testBusy && <Spinner />}
             {testBusy ? copy.testing : copy.test}
           </button>
-          <button className="btn" disabled={!missingRecommended.length || pullBusy} onClick={() => install(missingRecommended)}>
+          <button
+            className="btn"
+            disabled={!missingRecommended.length || pullBusy}
+            aria-busy={pullBusy}
+            onClick={() => install(missingRecommended)}
+          >
+            {pullBusy && <Spinner />}
             {copy.installRecommended}
           </button>
-          <button className="btn" onClick={() => load(true).catch((err) => setError((err as Error).message))}>
+          <button
+            className="btn"
+            disabled={busy === "refresh"}
+            aria-busy={busy === "refresh"}
+            onClick={() => act("refresh", () => load(true))}
+          >
+            {busy === "refresh" && <Spinner />}
             {copy.refresh}
           </button>
         </div>
@@ -276,7 +306,7 @@ export default function Settings() {
                 <header>
                   <strong>{model.name}</strong>
                   <span className="tag-row">
-                    {model.name === recommendation.whisper_model && <span className="tag">{copy.recommended}</span>}
+                    {model.name === recommendation.whisper_model && <span className="tag accent">{copy.recommended}</span>}
                     <span className={`tag ${cached ? "ok" : ""}`}>{cached ? copy.installed : copy.missing}</span>
                   </span>
                 </header>
@@ -288,7 +318,8 @@ export default function Settings() {
                   <button className="btn" disabled={active || busy === model.name} onClick={() => useModel("whisper_model", model.name)}>
                     {copy.useModel}
                   </button>
-                  <button className="btn" disabled={cached || downloading} onClick={() => downloadWhisper(model.name)}>
+                  <button className="btn" disabled={cached || downloading} aria-busy={downloading} onClick={() => downloadWhisper(model.name)}>
+                    {downloading && <Spinner />}
                     {downloading ? copy.downloading : copy.download}
                   </button>
                 </div>
@@ -353,10 +384,11 @@ export default function Settings() {
           <NumberField label={copy.crf} value={settings.output_crf} onChange={(value) => set("output_crf", value)} />
         </div>
         <div className="btn-row stack-buttons">
-          <button className="btn primary" onClick={saveAdvanced}>
+          <button className="btn primary" disabled={busy === "save"} aria-busy={busy === "save"} onClick={saveAdvanced}>
+            {busy === "save" && <Spinner />}
             {copy.save}
           </button>
-          {saved && <span>{saved}</span>}
+          {saved && <InlineStatus ok>{saved}</InlineStatus>}
         </div>
       </details>
 
@@ -369,18 +401,39 @@ export default function Settings() {
           <Stat label="Completed videos" value={formatBytes(Number(storage.outputs_bytes || 0))} />
         </div>
         <div className="btn-row stack-buttons">
-          <button className="btn" onClick={() => api.clearTmp().then(() => load())}>
+          <button
+            className="btn"
+            disabled={busy === "tmp"}
+            aria-busy={busy === "tmp"}
+            onClick={() => act("tmp", () => api.clearTmp().then(() => load()))}
+          >
+            {busy === "tmp" && <Spinner />}
             Clear temporary files
           </button>
-          <button className="btn" onClick={() => api.clearCache().then(() => load())}>
+          <button
+            className="btn"
+            disabled={busy === "cache"}
+            aria-busy={busy === "cache"}
+            onClick={() => act("cache", () => api.clearCache().then(() => load()))}
+          >
+            {busy === "cache" && <Spinner />}
             Clear cache
           </button>
-          <button className="btn danger" onClick={() => api.deleteCompleted().then(() => load())}>
+          <button
+            className="btn danger"
+            disabled={busy === "completed"}
+            aria-busy={busy === "completed"}
+            onClick={() => {
+              if (!window.confirm(messages.common.confirmDeleteCompleted)) return;
+              void act("completed", () => api.deleteCompleted().then(() => load()));
+            }}
+          >
+            {busy === "completed" && <Spinner />}
             Delete all completed jobs
           </button>
         </div>
       </div>
-      {error && <p className="error-text">{error}</p>}
+      {error && <Alert>{error}</Alert>}
     </div>
   );
 }
@@ -445,7 +498,7 @@ function ModelGroup({
               <header>
                 <strong>{model.name}</strong>
                 <span className="tag-row">
-                  {model.name === recommended && <span className="tag">{copy.recommended}</span>}
+                  {model.name === recommended && <span className="tag accent">{copy.recommended}</span>}
                   <span className={`tag ${present ? "ok" : ""}`}>{present ? copy.installed : copy.missing}</span>
                 </span>
               </header>
@@ -454,10 +507,17 @@ function ModelGroup({
                 {copy.disk.replace("{size}", String(model.disk_gb))} · {model.min_vram_gb} GB VRAM · {model.speed}
               </p>
               <div className="btn-row stack-buttons">
-                <button className="btn" disabled={active === model.name || busy === model.name} onClick={() => onUse(model.name)}>
+                <button
+                  className="btn"
+                  disabled={active === model.name || busy === model.name}
+                  aria-busy={busy === model.name}
+                  onClick={() => onUse(model.name)}
+                >
+                  {busy === model.name && <Spinner />}
                   {copy.useModel}
                 </button>
-                <button className="btn" disabled={present || running} onClick={() => onInstall(model.name)}>
+                <button className="btn" disabled={present || running} aria-busy={running} onClick={() => onInstall(model.name)}>
+                  {running && <Spinner />}
                   {running ? copy.installing : copy.install}
                 </button>
               </div>
@@ -477,7 +537,14 @@ function PullBar({ pull }: { pull?: PullStatus }) {
   const pct = total > 0 ? Math.min(100, Math.round((completed / total) * 100)) : 0;
   return (
     <div>
-      <div className="progress-line" aria-hidden="true">
+      <div
+        className="progress-line"
+        role="progressbar"
+        aria-label={pull?.status || copy.installing}
+        aria-valuemin={0}
+        aria-valuemax={100}
+        aria-valuenow={total > 0 ? pct : undefined}
+      >
         <span style={{ width: `${pct}%` }} />
       </div>
       <p className="hint">{pull?.status || copy.installing}{total > 0 ? ` · ${pct}%` : ""}</p>

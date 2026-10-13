@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { api, formatBytes, formatTime } from "../services/api";
 import { messages } from "../i18n";
+import { CheckIcon, PageLoader } from "../components/Feedback";
 import type { Job } from "../types";
 
 export default function Result() {
@@ -15,7 +16,7 @@ export default function Result() {
     api.job(id).then(setJob);
   }, [id]);
 
-  if (!job || !id) return <p>Loading…</p>;
+  if (!job || !id) return <PageLoader />;
   const original = job.metadata?.duration || 0;
   const output = job.outputs?.[0];
   const highlight = output?.duration || 0;
@@ -23,15 +24,20 @@ export default function Result() {
 
   return (
     <div>
-      <h3>{messages.result.ready}</h3>
+      <h3 className="result-title">
+        <span className="check-icon">
+          <CheckIcon size={16} />
+        </span>
+        {messages.result.ready}
+      </h3>
       <video className="preview" src={`/api/media/${id}/output`} controls />
       <div className="meta-grid">
         <div>
-          <span>Original</span>
+          <span>{messages.result.original}</span>
           {formatTime(original)}
         </div>
         <div>
-          <span>Highlight</span>
+          <span>{messages.result.highlight}</span>
           {formatTime(highlight)}
         </div>
         <div>
@@ -68,14 +74,19 @@ export default function Result() {
         <button className="btn" onClick={() => navigate(`/jobs/${id}/review`)}>
           {messages.result.edit}
         </button>
-        <button className="btn" onClick={() => setAnalysis((v) => !v)}>
-          {messages.result.analysis}
+        <button className="btn" aria-expanded={analysis} aria-controls="clip-analysis" onClick={() => setAnalysis((v) => !v)}>
+          {analysis ? messages.result.hideAnalysis : messages.result.analysis}
         </button>
         <button className="btn" onClick={() => navigate("/")}>
           {messages.result.another}
         </button>
       </div>
-      <h3 style={{ marginTop: 24 }}>{messages.result.compare}</h3>
+      {analysis && (
+        <pre className="log" id="clip-analysis" style={{ marginTop: 16 }}>
+          {JSON.stringify(job.clips, null, 2)}
+        </pre>
+      )}
+      <h3 className="subheading">{messages.result.compare}</h3>
       {(job.sources || []).length > 1 && (
         <div className="source-used">
           <p>{messages.result.sources}</p>
@@ -85,7 +96,7 @@ export default function Result() {
               return (
                 <li key={source.id}>
                   {source.filename}
-                  {used ? "" : " (not used)"}
+                  {used ? "" : ` (${messages.result.notUsed})`}
                 </li>
               );
             })}
@@ -94,19 +105,14 @@ export default function Result() {
       )}
       <div className="compare">
         <div>
-          <p>{(job.sources || []).length > 1 ? messages.result.sources : "Original"}</p>
+          <p>{(job.sources || []).length > 1 ? messages.result.sources : messages.result.original}</p>
           <video src={`/api/media/${id}/source`} controls />
         </div>
         <div>
-          <p>Highlight</p>
+          <p>{messages.result.highlight}</p>
           <video src={`/api/media/${id}/output`} controls />
         </div>
       </div>
-      {analysis && (
-        <pre className="log" style={{ marginTop: 16 }}>
-          {JSON.stringify(job.clips, null, 2)}
-        </pre>
-      )}
     </div>
   );
 }

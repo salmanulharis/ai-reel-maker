@@ -24,7 +24,7 @@ export function ThemeToggle() {
       title={t("theme.switchTo").replace("{mode}", label)}
     >
       <span aria-hidden="true">{theme === "dark" ? "☀" : "☾"}</span>
-      {label}
+      <span className="theme-label">{label}</span>
     </button>
   );
 }

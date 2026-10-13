@@ -1,5 +1,7 @@
 import { useRef, useState } from "react";
 import { messages } from "../i18n";
+import { formatBytes } from "../services/api";
+import { UploadIcon } from "./Feedback";
 
 const ACCEPT = ".mp4,.mov,.mkv,.avi,.webm,.m4v,video/*";
 const MAX_FILES = 8;
@@ -35,7 +37,9 @@ export function UploadZone({
           e.preventDefault();
           setDrag(true);
         }}
-        onDragLeave={() => setDrag(false)}
+        onDragLeave={(e) => {
+          if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setDrag(false);
+        }}
         onDrop={(e) => {
           e.preventDefault();
           setDrag(false);
@@ -43,17 +47,26 @@ export function UploadZone({
         }}
         role="button"
         tabIndex={0}
-        onKeyDown={(e) => e.key === "Enter" && input.current?.click()}
-        aria-label={messages.upload.drop}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            input.current?.click();
+          }
+        }}
+        aria-label={`${messages.upload.drop}. ${messages.upload.browse}`}
+        aria-describedby="upload-formats"
       >
         <div>
+          <div className="upload-icon">
+            <UploadIcon size={20} />
+          </div>
           <h3>{messages.upload.drop}</h3>
           <p>
-            {messages.upload.or}
-            <br />
-            <strong>{messages.upload.browse}</strong>
+            {messages.upload.or} <span className="browse">{messages.upload.browse}</span>
           </p>
-          <p style={{ color: "var(--muted)", fontSize: 12 }}>{messages.upload.formats}</p>
+          <p className="formats" id="upload-formats">
+            {messages.upload.formats}
+          </p>
         </div>
         <input
           ref={input}
@@ -75,12 +88,14 @@ export function UploadZone({
           <ol>
             {files.map((file, index) => (
               <li key={`${file.name}-${file.size}-${index}`}>
-                <span>
+                <span className="file-name" title={file.name}>
                   Video {index + 1}: {file.name}
+                  <span className="file-size">{formatBytes(file.size)}</span>
                 </span>
                 <button
-                  className="btn"
+                  className="btn ghost sm"
                   type="button"
+                  aria-label={`${messages.upload.removeFile} ${file.name}`}
                   onClick={(e) => {
                     e.stopPropagation();
                     onRemove(index);

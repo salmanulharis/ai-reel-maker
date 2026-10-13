@@ -3,6 +3,7 @@ import { useNavigate, useParams } from "react-router-dom";
 import { io } from "socket.io-client";
 import { api, formatTime } from "../services/api";
 import { messages } from "../i18n";
+import { Alert, CheckIcon, PageLoader, Spinner } from "../components/Feedback";
 import type { Job, JobSource } from "../types";
 
 const LABELS: Record<string, string> = {
@@ -19,11 +20,33 @@ const LABELS: Record<string, string> = {
   rendering: "Rendering",
 };
 
-function mark(status: string) {
-  if (status === "done") return { cls: "done", ch: "✓" };
-  if (status === "running") return { cls: "run", ch: "●" };
-  return { cls: "", ch: "○" };
+function StageMark({ status }: { status: string }) {
+  if (status === "done") {
+    return (
+      <span className="stage-mark done">
+        <CheckIcon size={12} />
+      </span>
+    );
+  }
+  if (status === "running") {
+    return (
+      <span className="stage-mark run">
+        <Spinner />
+      </span>
+    );
+  }
+  if (status === "error" || status === "failed") return <span className="stage-mark error">✕</span>;
+  if (status === "skipped") return <span className="stage-mark skipped">–</span>;
+  return <span className="stage-mark" />;
 }
+
+const STATUS_TEXT: Record<string, string> = {
+  done: "done",
+  running: "in progress",
+  error: "failed",
+  failed: "failed",
+  skipped: "skipped",
+};
 
 function SourcePreview({ jobId, sources }: { jobId: string; sources: JobSource[] }) {
   const [current, setCurrent] = useState(sources[0]?.id || "v0");
@@ -50,7 +73,25 @@ export default function Analysis() {
   const [job, setJob] = useState<Job | null>(null);
   const [logs, setLogs] = useState<Array<{ level: string; message: string }>>([]);
   const [openLog, setOpenLog] = useState(true);
+  const [action, setAction] = useState<"" | "cancel" | "retry">("");
   const queued = useRef(false);
+  const logRef = useRef<HTMLDivElement>(null);
+  const stickToBottom = useRef(true);
+
+  // Follow new log lines unless the user has scrolled up to read earlier ones.
+  useEffect(() => {
+    const box = logRef.current;
+    if (box && stickToBottom.current) box.scrollTop = box.scrollHeight;
+  }, [logs, openLog]);
+
+  async function run(kind: "cancel" | "retry", call: () => Promise<unknown>) {
+    setAction(kind);
+    try {
+      await call();
+    } finally {
+      setAction("");
+    }
+  }
 
   useEffect(() => {
     if (!id) return;
@@ -90,10 +131,12 @@ export default function Analysis() {
     };
   }, [id, navigate]);
 
-  if (!job || !id) return <p>Loading…</p>;
+  if (!job || !id) return <PageLoader />;
   const sources = job.sources || [];
   const previewSrc =
     sources.length > 1 ? `/api/media/${id}/source/${sources[0].id}` : `/api/media/${id}/source`;
+  const percent = Math.max(0, Math.min(100, Math.round(job.progress || 0)));
+  const current = job.last_stage ? LABELS[job.last_stage] || job.last_stage : job.status;
 
   return (
     <div>
@@ -104,39 +147,77 @@ export default function Analysis() {
       )}
       <div className="panel">
         <h3>{messages.progress.title}</h3>
-        <p>
-          {messages.progress.overall}: {Math.round(job.progress)}% · {messages.progress.elapsed}:{" "}
-          {formatTime(job.processing_seconds)} · {messages.progress.current}: {job.last_stage || job.status}
+        <p className="progress-summary">
+          <strong>{percent}%</strong>
+          <span>
+            {messages.progress.elapsed}: {formatTime(job.processing_seconds)}
+          </span>
+          <span>
+            {messages.progress.current}: {current}
+          </span>
         </p>
+        <div
+          className="progress-line lg"
+          role="progressbar"
+          aria-label={messages.progress.overall}
+          aria-valuemin={0}
+          aria-valuemax={100}
+          aria-valuenow={percent}
+        >
+          <span style={{ width: `${percent}%` }} />
+        </div>
         <ul className="stage-list">
-          {(job.stages || []).map((stage) => {
-            const m = mark(stage.status);
-            return (
-              <li key={stage.name}>
-                <span className={`stage-mark ${m.cls}`}>{m.ch}</span>
-                <div>
-                  <strong>{LABELS[stage.name] || stage.name}</strong>
-                  {stage.detail && <div style={{ color: "var(--muted)" }}>{stage.detail}</div>}
-                </div>
-              </li>
-            );
-          })}
+          {(job.stages || []).map((stage) => (
+            <li key={stage.name} className={stage.status || "pending"}>
+              <StageMark status={stage.status} />
+              <div>
+                <strong>{LABELS[stage.name] || stage.name}</strong>
+                <span className="sr-only"> — {STATUS_TEXT[stage.status] || "waiting"}</span>
+                {stage.detail && <div className="stage-detail">{stage.detail}</div>}
+              </div>
+            </li>
+          ))}
         </ul>
-        <div className="btn-row" style={{ marginTop: 12 }}>
-          <button className="btn danger" onClick={() => api.cancel(id)}>
-            {messages.progress.cancel}
+        <div className="btn-row" style={{ marginTop: 16 }}>
+          <button
+            className="btn danger"
+            disabled={action !== ""}
+            aria-busy={action === "cancel"}
+            onClick={() => run("cancel", () => api.cancel(id))}
+          >
+            {action === "cancel" && <Spinner />}
+            {action === "cancel" ? messages.common.cancelling : messages.progress.cancel}
           </button>
           {job.status === "failed" && (
-            <button className="btn" onClick={() => api.retry(id)}>
-              Retry
+            <button
+              className="btn"
+              disabled={action !== ""}
+              aria-busy={action === "retry"}
+              onClick={() => run("retry", () => api.retry(id))}
+            >
+              {action === "retry" && <Spinner />}
+              {messages.common.retry}
             </button>
           )}
         </div>
-        {job.error && <p style={{ color: "var(--err)" }}>{job.error}</p>}
+        {job.error && <Alert>{job.error}</Alert>}
       </div>
-      <details open={openLog} onToggle={(e) => setOpenLog((e.target as HTMLDetailsElement).open)}>
+      <details
+        className="log-details"
+        open={openLog}
+        onToggle={(e) => setOpenLog((e.target as HTMLDetailsElement).open)}
+      >
         <summary>{messages.progress.logs}</summary>
-        <div className="log">
+        <div
+          className="log"
+          ref={logRef}
+          tabIndex={0}
+          aria-label={messages.progress.logs}
+          onScroll={(e) => {
+            const box = e.currentTarget;
+            stickToBottom.current = box.scrollHeight - box.scrollTop - box.clientHeight < 24;
+          }}
+        >
           {logs.map((line, i) => (
             <div key={i} className={line.level}>
               [{line.level}] {line.message}

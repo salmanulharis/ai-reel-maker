@@ -3,6 +3,7 @@ import { Link, useNavigate } from "react-router-dom";
 import { UploadZone } from "../components/UploadZone";
 import { HighlightConfigPanel, defaultForm } from "../components/HighlightConfig";
 import { VideoCropPreview } from "../components/VideoCrop";
+import { Alert, InlineStatus, Spinner } from "../components/Feedback";
 import { api, formatBytes, formatTime } from "../services/api";
 import { messages } from "../i18n";
 import type { HighlightForm, Job } from "../types";
@@ -17,6 +18,7 @@ export default function Dashboard() {
   const [job, setJob] = useState<Job | null>(null);
   const [form, setForm] = useState<HighlightForm>(defaultForm());
   const [busy, setBusy] = useState(false);
+  const [starting, setStarting] = useState(false);
   const [error, setError] = useState("");
   const [aiNotice, setAiNotice] = useState(false);
 
@@ -25,7 +27,8 @@ export default function Dashboard() {
     api
       .ollama()
       .then((status) => {
-        const missing = !status.connected || !status.vision_present || !status.text_present;
+        const visionReady = status.vision_ready ?? status.vision_present;
+        const missing = !status.connected || !visionReady || !status.text_present;
         setAiNotice(missing);
       })
       .catch(() => setAiNotice(true));
@@ -95,6 +98,7 @@ export default function Dashboard() {
   async function analyze() {
     if (!job) return;
     setBusy(true);
+    setStarting(true);
     setError("");
     try {
       await api.analyze(job.id, form);
@@ -103,6 +107,7 @@ export default function Dashboard() {
       setError((err as Error).message);
     } finally {
       setBusy(false);
+      setStarting(false);
     }
   }
 
@@ -112,13 +117,13 @@ export default function Dashboard() {
   return (
     <div>
       {aiNotice && (
-        <div className="notice">
+        <div className="notice" role="status">
           <span>
             {messages.localAi.notice}{" "}
             <Link to="/settings">{messages.localAi.action}</Link>
           </span>
           <button
-            className="btn"
+            className="btn sm"
             type="button"
             onClick={() => {
               sessionStorage.setItem("ai-setup-dismissed", "1");
@@ -130,10 +135,11 @@ export default function Dashboard() {
         </div>
       )}
       <UploadZone onFiles={addFiles} files={files} onRemove={removeFile} />
-      <div className="btn-row" style={{ marginTop: 8, marginBottom: 12 }}>
-        <button className="btn" type="button" disabled={busy || files.length >= MAX_FILES} onClick={useSample}>
+      <div className="btn-row" style={{ marginTop: 10, marginBottom: 12 }}>
+        <button className="btn ghost" type="button" disabled={busy || files.length >= MAX_FILES} onClick={useSample}>
           {messages.upload.sample}
         </button>
+        {busy && !starting && <InlineStatus busy>{messages.common.preparing}</InlineStatus>}
       </div>
       {preview && (
         <>
@@ -197,12 +203,15 @@ export default function Dashboard() {
         </div>
       )}
       <HighlightConfigPanel form={form} setForm={setForm} />
-      <div className="btn-row" style={{ marginTop: 16 }}>
-        <button className="btn primary" disabled={!job || busy} onClick={analyze}>
-          {files.length > 1 ? messages.config.analyzeMany : messages.config.analyze}
-        </button>
+      {error && <Alert>{error}</Alert>}
+      <div className="action-bar">
+        <div className="btn-row">
+          <button className="btn primary" disabled={!job || busy} aria-busy={starting} onClick={analyze}>
+            {starting && <Spinner />}
+            {files.length > 1 ? messages.config.analyzeMany : messages.config.analyze}
+          </button>
+        </div>
       </div>
-      {error && <p style={{ color: "var(--err)" }}>{error}</p>}
     </div>
   );
 }

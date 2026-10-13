@@ -188,6 +188,11 @@ export interface OllamaStatus {
   text_model: string;
   vision_present: boolean;
   text_present: boolean;
+  /** False when the vision model cannot read images; null when Ollama does not say. */
+  vision_capable?: boolean | null;
+  /** Installed, able to read images, and supported by this Ollama version. */
+  vision_ready?: boolean;
+  warnings?: string[];
   models: string[];
   model_details?: Array<{ name: string; size?: number }>;
   error?: string | null;

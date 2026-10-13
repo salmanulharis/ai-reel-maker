@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { api, formatTime } from "../services/api";
 import { messages } from "../i18n";
+import { Alert, InlineStatus, PageLoader, Spinner } from "../components/Feedback";
 import type { Clip, Job, JobSource } from "../types";
 
 const REGEN = [
@@ -24,6 +25,8 @@ export default function Review() {
   const [job, setJob] = useState<Job | null>(null);
   const [clips, setClips] = useState<Clip[]>([]);
   const [duration, setDuration] = useState(0);
+  const [pending, setPending] = useState("");
+  const [error, setError] = useState("");
 
   async function refresh() {
     if (!id) return;
@@ -58,11 +61,33 @@ export default function Review() {
 
   async function generate() {
     if (!id) return;
-    await api.render(id, clips.filter((c) => c.kept !== false));
-    navigate(`/jobs/${id}/analysis`);
+    setPending("render");
+    setError("");
+    try {
+      await api.render(id, clips.filter((c) => c.kept !== false));
+      navigate(`/jobs/${id}/analysis`);
+    } catch (err) {
+      setError((err as Error).message);
+      setPending("");
+    }
   }
 
-  if (!job || !id) return <p>Loading…</p>;
+  async function regenerate(preset: string) {
+    if (!id) return;
+    setPending(preset);
+    setError("");
+    try {
+      const result = await api.regenerate(id, preset);
+      if (result.job) setJob(result.job);
+      await refresh();
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setPending("");
+    }
+  }
+
+  if (!job || !id) return <PageLoader />;
   const estimated = clips.filter((c) => c.kept !== false).reduce((s, c) => s + (c.end - c.start), 0);
   const kept = clips.filter((c) => c.kept !== false);
   const sources: JobSource[] =
@@ -73,16 +98,28 @@ export default function Review() {
 
   return (
     <div>
-      <p>
-        Target {job.min_duration}–{job.max_duration}s · Estimated {estimated.toFixed(1)}s · {clips.length} clips
-        {multi ? ` · ${sources.length} source videos` : ""}
-      </p>
+      <div className="summary-bar">
+        <span>
+          {messages.review.target} <strong>{job.min_duration}–{job.max_duration}s</strong>
+        </span>
+        <span className={estimated > job.max_duration ? "over" : ""}>
+          {messages.review.estimated} <strong>{estimated.toFixed(1)}s</strong>
+        </span>
+        <span>
+          {messages.review.clips} <strong>{kept.length}/{clips.length}</strong>
+        </span>
+        {multi && (
+          <span>
+            {messages.review.sources} <strong>{sources.length}</strong>
+          </span>
+        )}
+      </div>
       {sources.map((source) => {
         const sourceClips = clips.filter((clip) => (clip.source_id || sources[0].id) === source.id);
         const sourceDuration = source.duration || duration;
         return (
           <div key={source.id}>
-            <p style={{ color: "var(--muted)" }}>
+            <p className="section-label">
               {messages.review.sourceTimeline.replace("{name}", source.filename || source.id)}
             </p>
             <div className="timeline" aria-label={`${source.filename} timeline`}>
@@ -102,7 +139,7 @@ export default function Review() {
           </div>
         );
       })}
-      <p style={{ color: "var(--muted)" }}>{messages.review.highlightOrder}</p>
+      <p className="section-label">{messages.review.highlightOrder}</p>
       <div className="sequence-timeline" aria-label="Highlight sequence durations">
         {kept.map((clip, i) => {
           const len = Math.max(0, clip.end - clip.start);
@@ -120,12 +157,17 @@ export default function Review() {
         })}
       </div>
       {clips.map((clip, i) => (
-        <article className="clip-card" key={i}>
+        <article className={`clip-card ${clip.kept === false ? "removed" : ""}`} key={i}>
           <header>
             <strong>
               {formatTime(clip.start)}–{formatTime(clip.end)} · {(clip.end - clip.start).toFixed(1)}s
             </strong>
-            <span className="score">{Math.round((clip.score || 0) * 100)}%</span>
+            <span className="tag-row">
+              {clip.kept === false && <span className="tag">{messages.review.removed}</span>}
+              <span className="score" title="Highlight score">
+                {Math.round((clip.score || 0) * 100)}%
+              </span>
+            </span>
           </header>
           <p className="source-badge">
             {messages.review.source}: {sourceLabel(clip)}
@@ -137,10 +179,10 @@ export default function Review() {
               {clip.duration_reason}
             </p>
           )}
-          {clip.transcript && <p style={{ color: "var(--muted)" }}>{clip.transcript}</p>}
+          {clip.transcript && <p className="clip-transcript">{clip.transcript}</p>}
           <div className="grid-2">
             <label>
-              Start
+              {messages.review.start}
               <input
                 type="number"
                 step="0.1"
@@ -149,7 +191,7 @@ export default function Review() {
               />
             </label>
             <label>
-              End
+              {messages.review.end}
               <input
                 type="number"
                 step="0.1"
@@ -159,41 +201,50 @@ export default function Review() {
             </label>
           </div>
           <div className="btn-row" style={{ marginTop: 8 }}>
-            <button className="btn" onClick={() => patch(i, { kept: clip.kept === false })}>
+            <button className="btn sm" onClick={() => patch(i, { kept: clip.kept === false })}>
               {clip.kept === false ? messages.review.keep : messages.review.remove}
             </button>
-            <button className="btn" onClick={() => patch(i, { start: Math.max(0, clip.start - 0.5) })}>
+            <button className="btn sm" onClick={() => patch(i, { start: Math.max(0, clip.start - 0.5) })}>
               {messages.review.extend}
             </button>
-            <button className="btn" onClick={() => patch(i, { end: Math.max(clip.start + 0.4, clip.end - 0.4) })}>
+            <button className="btn sm" onClick={() => patch(i, { end: Math.max(clip.start + 0.4, clip.end - 0.4) })}>
               {messages.review.trim}
             </button>
-            <button className="btn" disabled={i === 0} onClick={() => move(i, -1)}>
+            <button className="btn sm ghost" disabled={i === 0} onClick={() => move(i, -1)}>
               {messages.review.moveUp}
             </button>
-            <button className="btn" disabled={i === clips.length - 1} onClick={() => move(i, 1)}>
+            <button className="btn sm ghost" disabled={i === clips.length - 1} onClick={() => move(i, 1)}>
               {messages.review.moveDown}
             </button>
           </div>
         </article>
       ))}
-      <div className="btn-row">
-        <button className="btn primary" onClick={generate}>
-          {messages.review.generate}
-        </button>
-        {REGEN.map(([key, label]) => (
+      {error && <Alert>{error}</Alert>}
+      <div className="action-bar">
+        <div className="btn-row">
           <button
-            key={key}
-            className="btn"
-            onClick={async () => {
-              const result = await api.regenerate(id, key);
-              if (result.job) setJob(result.job);
-              await refresh();
-            }}
+            className="btn primary"
+            disabled={pending !== "" || kept.length === 0}
+            aria-busy={pending === "render"}
+            onClick={generate}
           >
-            {label}
+            {pending === "render" && <Spinner />}
+            {messages.review.generate}
           </button>
-        ))}
+          {REGEN.map(([key, label]) => (
+            <button
+              key={key}
+              className="btn"
+              disabled={pending !== ""}
+              aria-busy={pending === key}
+              onClick={() => regenerate(key)}
+            >
+              {pending === key && <Spinner />}
+              {label}
+            </button>
+          ))}
+          {pending && pending !== "render" && <InlineStatus busy={false}>{messages.review.regenerating}</InlineStatus>}
+        </div>
       </div>
     </div>
   );

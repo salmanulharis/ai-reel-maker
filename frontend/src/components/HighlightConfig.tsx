@@ -33,13 +33,19 @@ export function HighlightConfigPanel({
           <button
             key={`${a}-${b}`}
             className={`chip ${form.min_duration === a && form.max_duration === b ? "active" : ""}`}
+            aria-pressed={form.min_duration === a && form.max_duration === b}
             onClick={() => update({ min_duration: a, max_duration: b })}
             type="button"
           >
             {a === b ? `${a}s` : `${a}–${b}s`}
           </button>
         ))}
-        <button className={`chip ${customRange ? "active" : ""}`} type="button" onClick={() => update({})}>
+        <button
+          className={`chip ${customRange ? "active" : ""}`}
+          aria-pressed={customRange}
+          type="button"
+          onClick={() => update({})}
+        >
           {messages.config.custom}
         </button>
       </div>
@@ -66,13 +72,14 @@ export function HighlightConfigPanel({
         </div>
       </div>
 
-      <h3 style={{ marginTop: 18 }}>{messages.config.style}</h3>
-      <div className="chips">
+      <h3 className="section-title">{messages.config.style}</h3>
+      <div className="chips" role="group" aria-label={messages.config.style}>
         {STYLES.map((style) => (
           <button
             key={style}
             type="button"
             className={`chip ${form.style === style ? "active" : ""}`}
+            aria-pressed={form.style === style}
             onClick={() => update({ style })}
           >
             {messages.styles[style]}
@@ -106,11 +113,12 @@ export function HighlightConfigPanel({
         </div>
       </div>
 
-      <h3 style={{ marginTop: 18 }}>{messages.config.sequenceMode}</h3>
+      <h3 className="section-title">{messages.config.sequenceMode}</h3>
       <div className="chips" role="group" aria-label={messages.config.sequenceMode}>
         <button
           type="button"
           className={`chip ${form.sequence_duration_mode === "auto" ? "active" : ""}`}
+          aria-pressed={form.sequence_duration_mode === "auto"}
           onClick={() => update({ sequence_duration_mode: "auto" })}
         >
           {messages.config.sequenceAuto}
@@ -118,6 +126,7 @@ export function HighlightConfigPanel({
         <button
           type="button"
           className={`chip ${form.sequence_duration_mode === "custom" ? "active" : ""}`}
+          aria-pressed={form.sequence_duration_mode === "custom"}
           onClick={() => update({ sequence_duration_mode: "custom", min_sequence_duration: form.min_sequence_duration ?? 1.5 })}
         >
           {messages.config.sequenceCustom}
@@ -172,13 +181,14 @@ export function HighlightConfigPanel({
         </div>
       )}
 
-      <h3 style={{ marginTop: 18 }}>{messages.config.priorities}</h3>
+      <h3 className="section-title">{messages.config.priorities}</h3>
       <div className="chips" role="group" aria-label={messages.config.priorities}>
         {PRIORITIES.map((key) => (
           <button
             key={key}
             type="button"
             className={`chip ${form.content_priorities.includes(key) ? "active" : ""}`}
+            aria-pressed={form.content_priorities.includes(key)}
             onClick={() => {
               if (key === "balanced") {
                 update({ content_priorities: ["balanced"] });

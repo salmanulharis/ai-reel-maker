@@ -7,6 +7,17 @@
     "dark": "Dark",
     "switchTo": "Switch to {mode} theme"
   },
+  "common": {
+    "loading": "Loading…",
+    "skipToContent": "Skip to content",
+    "preparing": "Preparing videos…",
+    "retry": "Retry",
+    "cancelling": "Cancelling…",
+    "working": "Working…",
+    "dismiss": "Dismiss",
+    "saved": "Saved",
+    "confirmDeleteCompleted": "Delete every completed job and its files? This cannot be undone."
+  },
   "nav": {
     "dashboard": "Dashboard",
     "history": "History",
@@ -88,7 +99,9 @@
     "remaining": "Estimated remaining",
     "current": "Current task",
     "cancel": "Cancel",
-    "logs": "Technical log"
+    "logs": "Technical log",
+    "complete": "complete",
+    "failed": "Analysis failed"
   },
   "review": {
     "title": "Review highlight plan",
@@ -104,7 +117,16 @@
     "source": "Source",
     "moveUp": "Move up",
     "moveDown": "Move down",
-    "sourceTimeline": "Moments from {name}"
+    "sourceTimeline": "Moments from {name}",
+    "target": "Target",
+    "estimated": "Estimated",
+    "clips": "Clips",
+    "sources": "Source videos",
+    "generating": "Starting render…",
+    "regenerating": "Updating plan…",
+    "removed": "Removed",
+    "start": "Start",
+    "end": "End"
   },
   "result": {
     "ready": "Highlight ready",
@@ -114,7 +136,11 @@
     "edit": "Edit clips",
     "analysis": "View analysis",
     "compare": "Before / After",
-    "sources": "Source videos"
+    "sources": "Source videos",
+    "original": "Original",
+    "highlight": "Highlight",
+    "hideAnalysis": "Hide analysis",
+    "notUsed": "not used"
   },
   "localAi": {
     "notice": "Local models are not ready. Highlights still run with basic scoring.",
@@ -185,5 +211,26 @@
     "helpGpu": "GPU: install the graphics driver, then install Ollama on the computer that has the GPU. Run Test local AI and check that it says GPU. In Docker, set the Ollama URL to the host. The app container does not need the GPU for models.",
     "helpAmd": "AMD: if the test stays on CPU, restart Ollama with OLLAMA_VULKAN=1.",
     "helpTrouble": "If FFmpeg is missing, install it and put it on PATH. If Docker cannot reach Ollama, use host.docker.internal or a LAN address. If a model is missing, install it here. If memory runs out, choose the next smaller model. If a GPU is listed and the test still says CPU, check the driver or use a smaller model."
+  },
+  "history": {
+    "title": "History",
+    "subtitle": "Previous highlight jobs",
+    "empty": "No highlight jobs yet",
+    "emptyHint": "Upload a video on the dashboard to create your first highlight.",
+    "start": "Create a highlight",
+    "file": "File",
+    "original": "Original",
+    "highlight": "Highlight",
+    "style": "Style",
+    "status": "Status",
+    "actions": "Actions",
+    "open": "Open",
+    "download": "Download",
+    "delete": "Delete",
+    "deleting": "Deleting…"
+  },
+  "job": {
+    "title": "Job",
+    "subtitle": "Analysis, review, and export"
   }
 }
