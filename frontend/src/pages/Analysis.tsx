@@ -2,23 +2,12 @@ import { useEffect, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { io } from "socket.io-client";
 import { api, formatTime } from "../services/api";
-import { messages } from "../i18n";
+import { fill, messages } from "../i18n";
 import { Alert, CheckIcon, PageLoader, Spinner } from "../components/Feedback";
 import type { Job, JobSource } from "../types";
 
-const LABELS: Record<string, string> = {
-  metadata: "Video metadata",
-  scenes: "Scene detection",
-  audio: "Audio extraction",
-  transcript: "Transcription",
-  silence: "Silence detection",
-  frames: "Keyframe extraction",
-  visual: "Visual AI analysis",
-  content: "Finding important moments",
-  repetition: "Removing repetition",
-  planning: "Planning highlight",
-  rendering: "Rendering",
-};
+const copy = messages.progress;
+const LABELS: Record<string, string> = copy.stages;
 
 function StageMark({ status }: { status: string }) {
   if (status === "done") {
@@ -52,16 +41,16 @@ function SourcePreview({ jobId, sources }: { jobId: string; sources: JobSource[]
   const [current, setCurrent] = useState(sources[0]?.id || "v0");
   return (
     <div>
-      <label className="field">
-        {messages.review.source}
-        <select value={current} onChange={(e) => setCurrent(e.target.value)}>
+      <div className="field">
+        <label htmlFor="source-preview">{messages.review.source}</label>
+        <select id="source-preview" value={current} onChange={(e) => setCurrent(e.target.value)}>
           {sources.map((source, i) => (
             <option key={source.id} value={source.id}>
-              Video {i + 1}: {source.filename}
+              {fill(messages.upload.video, { n: i + 1 })}: {source.filename}
             </option>
           ))}
         </select>
-      </label>
+      </div>
       <video className="preview" src={`/api/media/${jobId}/source/${current}`} controls />
     </div>
   );
@@ -72,8 +61,9 @@ export default function Analysis() {
   const navigate = useNavigate();
   const [job, setJob] = useState<Job | null>(null);
   const [logs, setLogs] = useState<Array<{ level: string; message: string }>>([]);
-  const [openLog, setOpenLog] = useState(true);
+  const [openLog, setOpenLog] = useState(false);
   const [action, setAction] = useState<"" | "cancel" | "retry">("");
+  const [actionError, setActionError] = useState("");
   const queued = useRef(false);
   const logRef = useRef<HTMLDivElement>(null);
   const stickToBottom = useRef(true);
@@ -84,10 +74,13 @@ export default function Analysis() {
     if (box && stickToBottom.current) box.scrollTop = box.scrollHeight;
   }, [logs, openLog]);
 
-  async function run(kind: "cancel" | "retry", call: () => Promise<unknown>) {
+  async function run(kind: "cancel" | "retry", call: () => Promise<Job>) {
     setAction(kind);
+    setActionError("");
     try {
-      await call();
+      setJob(await call());
+    } catch (err) {
+      setActionError((err as Error).message);
     } finally {
       setAction("");
     }
@@ -96,21 +89,24 @@ export default function Analysis() {
   useEffect(() => {
     if (!id) return;
     const load = () =>
-      api.job(id).then((j) => {
-        setJob(j);
-        if (j.status === "uploaded" && !queued.current) {
-          queued.current = true;
-          api.retry(id).then((next) => setJob(next)).catch(() => {
-            queued.current = false;
-          });
-        }
-        if (j.status === "planning" && j.analysis_status === "completed") {
-          navigate(`/jobs/${id}/review`);
-        }
-        if (j.status === "completed") navigate(`/jobs/${id}/result`);
-      });
+      api
+        .job(id)
+        .then((j) => {
+          setJob(j);
+          if (j.status === "uploaded" && !queued.current) {
+            queued.current = true;
+            api.retry(id).then((next) => setJob(next)).catch(() => {
+              queued.current = false;
+            });
+          }
+          if (j.status === "planning" && j.analysis_status === "completed") {
+            navigate(`/jobs/${id}/review`);
+          }
+          if (j.status === "completed") navigate(`/jobs/${id}/result`);
+        })
+        .catch((err) => setActionError((err as Error).message));
     load();
-    api.logs(id).then((r) => setLogs(r.logs || []));
+    api.logs(id).then((r) => setLogs(r.logs || [])).catch(() => undefined);
     const socket = io("/", { transports: ["websocket", "polling"] });
     socket.on("job_progress", (payload: { job_id: string }) => {
       if (payload.job_id === id) load();
@@ -131,41 +127,58 @@ export default function Analysis() {
     };
   }, [id, navigate]);
 
-  if (!job || !id) return <PageLoader />;
+  if (!job || !id) return actionError ? <Alert>{actionError}</Alert> : <PageLoader />;
   const sources = job.sources || [];
   const previewSrc =
     sources.length > 1 ? `/api/media/${id}/source/${sources[0].id}` : `/api/media/${id}/source`;
   const percent = Math.max(0, Math.min(100, Math.round(job.progress || 0)));
-  const current = job.last_stage ? LABELS[job.last_stage] || job.last_stage : job.status;
+  const failed = job.status === "failed";
+  const cancelled = job.status === "cancelled";
+  const stopped = failed || cancelled;
+  const rendering = job.status === "rendering" || job.render_status === "running";
+  const waiting = job.status === "queued" && !job.last_stage;
+  const current = waiting ? copy.waiting : job.last_stage ? LABELS[job.last_stage] || job.last_stage : "";
 
   return (
     <div>
-      {sources.length > 1 ? (
-        <SourcePreview jobId={id} sources={sources} />
-      ) : (
-        <video className="preview" src={previewSrc} controls />
-      )}
       <div className="panel">
-        <h3>{messages.progress.title}</h3>
-        <p className="progress-summary">
-          <strong>{percent}%</strong>
-          <span>
-            {messages.progress.elapsed}: {formatTime(job.processing_seconds)}
-          </span>
-          <span>
-            {messages.progress.current}: {current}
-          </span>
-        </p>
-        <div
-          className="progress-line lg"
-          role="progressbar"
-          aria-label={messages.progress.overall}
-          aria-valuemin={0}
-          aria-valuemax={100}
-          aria-valuenow={percent}
-        >
-          <span style={{ width: `${percent}%` }} />
-        </div>
+        <h3>{rendering ? copy.rendering : copy.title}</h3>
+        {!stopped && (
+          <>
+            <p className="progress-summary" aria-live="polite">
+              <strong>{percent}%</strong>
+              <span>
+                {copy.elapsed}: {formatTime(job.processing_seconds)}
+              </span>
+              {current && (
+                <span>
+                  {copy.current}: {current}
+                </span>
+              )}
+            </p>
+            <div
+              className="progress-line lg"
+              role="progressbar"
+              aria-label={copy.overall}
+              aria-valuemin={0}
+              aria-valuemax={100}
+              aria-valuenow={percent}
+            >
+              <span style={{ width: `${percent}%` }} />
+            </div>
+          </>
+        )}
+        {failed && (
+          <Alert>
+            <strong>{copy.failed}.</strong> {copy.failedHint}
+            {job.error && <span className="alert-detail">{job.error}</span>}
+          </Alert>
+        )}
+        {cancelled && !failed && (
+          <Alert kind="info">
+            <strong>{copy.cancelled}.</strong> {copy.cancelledHint}
+          </Alert>
+        )}
         <ul className="stage-list">
           {(job.stages || []).map((stage) => (
             <li key={stage.name} className={stage.status || "pending"}>
@@ -178,19 +191,10 @@ export default function Analysis() {
             </li>
           ))}
         </ul>
-        <div className="btn-row" style={{ marginTop: 16 }}>
-          <button
-            className="btn danger"
-            disabled={action !== ""}
-            aria-busy={action === "cancel"}
-            onClick={() => run("cancel", () => api.cancel(id))}
-          >
-            {action === "cancel" && <Spinner />}
-            {action === "cancel" ? messages.common.cancelling : messages.progress.cancel}
-          </button>
-          {job.status === "failed" && (
+        <div className="btn-row panel-actions">
+          {stopped ? (
             <button
-              className="btn"
+              className="btn primary"
               disabled={action !== ""}
               aria-busy={action === "retry"}
               onClick={() => run("retry", () => api.retry(id))}
@@ -198,21 +202,42 @@ export default function Analysis() {
               {action === "retry" && <Spinner />}
               {messages.common.retry}
             </button>
+          ) : (
+            <button
+              className="btn danger"
+              disabled={action !== ""}
+              aria-busy={action === "cancel"}
+              onClick={() => {
+                if (!window.confirm(copy.confirmCancel)) return;
+                void run("cancel", () => api.cancel(id));
+              }}
+            >
+              {action === "cancel" && <Spinner />}
+              {action === "cancel" ? messages.common.cancelling : copy.cancel}
+            </button>
           )}
         </div>
-        {job.error && <Alert>{job.error}</Alert>}
+        {actionError && <Alert>{actionError}</Alert>}
       </div>
+
+      {sources.length > 1 ? (
+        <SourcePreview jobId={id} sources={sources} />
+      ) : (
+        <video className="preview" src={previewSrc} controls />
+      )}
+
       <details
         className="log-details"
         open={openLog}
         onToggle={(e) => setOpenLog((e.target as HTMLDetailsElement).open)}
       >
-        <summary>{messages.progress.logs}</summary>
+        <summary>{copy.logs}</summary>
+        <p className="field-hint">{copy.logsHint}</p>
         <div
           className="log"
           ref={logRef}
           tabIndex={0}
-          aria-label={messages.progress.logs}
+          aria-label={copy.logs}
           onScroll={(e) => {
             const box = e.currentTarget;
             stickToBottom.current = box.scrollHeight - box.scrollTop - box.clientHeight < 24;

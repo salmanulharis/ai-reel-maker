@@ -6,13 +6,30 @@ import { Alert, HistoryIcon, PageLoader, Spinner } from "../components/Feedback"
 import type { Job } from "../types";
 
 const copy = messages.history;
+const ACTIVE = ["queued", "analyzing", "rendering"];
 
 function statusTone(status: string) {
   if (status === "completed") return "ok";
   if (status === "failed") return "err";
   if (status === "cancelled") return "warn";
-  if (["queued", "analyzing", "rendering", "planning"].includes(status)) return "run";
+  if (status === "planning") return "accent";
+  if (ACTIVE.includes(status)) return "run";
   return "";
+}
+
+function statusLabel(status: string) {
+  return copy.statuses[status as keyof typeof copy.statuses] || status;
+}
+
+function styleLabel(style: string) {
+  return messages.styles[style as keyof typeof messages.styles] || style || "—";
+}
+
+function formatDate(value?: string) {
+  if (!value) return "—";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "—";
+  return date.toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
 }
 
 export default function JobHistory() {
@@ -34,12 +51,14 @@ export default function JobHistory() {
 
   function href(job: Job) {
     if (job.status === "completed") return `/jobs/${job.id}/result`;
-    if (job.analysis_status === "completed") return `/jobs/${job.id}/review`;
-    if (["queued", "analyzing", "rendering", "planning"].includes(job.status)) return `/jobs/${job.id}/analysis`;
+    if (job.analysis_status === "completed" && !ACTIVE.includes(job.status)) return `/jobs/${job.id}/review`;
+    // Failed and stopped jobs open the progress page, where they can be started again.
+    if ([...ACTIVE, "planning", "failed", "cancelled"].includes(job.status)) return `/jobs/${job.id}/analysis`;
     return "/";
   }
 
   async function remove(job: Job) {
+    if (!window.confirm(copy.confirmDelete.replace("{name}", job.original_filename))) return;
     setDeleting(job.id);
     setError("");
     try {
@@ -72,14 +91,20 @@ export default function JobHistory() {
 
   return (
     <div>
+      {error && <Alert>{error}</Alert>}
       <div className="table-wrap">
         <table className="table">
           <thead>
             <tr>
               <th scope="col">{copy.file}</th>
+              <th scope="col" className="hide-sm">
+                {copy.created}
+              </th>
               <th scope="col">{copy.original}</th>
               <th scope="col">{copy.highlight}</th>
-              <th scope="col">{copy.style}</th>
+              <th scope="col" className="hide-sm">
+                {copy.style}
+              </th>
               <th scope="col">{copy.status}</th>
               <th scope="col">
                 <span className="sr-only">{copy.actions}</span>
@@ -90,21 +115,27 @@ export default function JobHistory() {
             {jobs.map((job) => (
               <tr key={job.id}>
                 <td className="file-cell" title={job.original_filename}>
-                  {job.original_filename}
+                  <Link to={href(job)}>{job.original_filename}</Link>
                 </td>
-                <td>{formatTime(job.metadata?.duration)}</td>
-                <td>{formatTime(job.outputs?.[0]?.duration)}</td>
-                <td>{job.style}</td>
+                <td className="hide-sm nowrap">{formatDate(job.created_at)}</td>
+                <td>{job.metadata?.duration ? formatTime(job.metadata.duration) : "—"}</td>
+                <td>{job.outputs?.[0]?.duration ? formatTime(job.outputs[0].duration) : "—"}</td>
+                <td className="hide-sm">{styleLabel(job.style)}</td>
                 <td>
-                  <span className={`status-pill ${statusTone(job.status)}`}>{job.status}</span>
+                  <span className={`status-pill ${statusTone(job.status)}`}>{statusLabel(job.status)}</span>
                 </td>
                 <td>
                   <div className="row-actions">
-                    <Link className="btn sm" to={href(job)}>
+                    <Link className="btn sm" to={href(job)} aria-label={`${copy.open} ${job.original_filename}`}>
                       {copy.open}
                     </Link>
                     {job.outputs?.length ? (
-                      <a className="btn sm" href={`/api/jobs/${job.id}/download`}>
+                      <a
+                        className="btn sm"
+                        href={`/api/jobs/${job.id}/download`}
+                        download
+                        aria-label={`${copy.download} ${job.original_filename}`}
+                      >
                         {copy.download}
                       </a>
                     ) : null}
@@ -116,7 +147,7 @@ export default function JobHistory() {
                       onClick={() => remove(job)}
                     >
                       {deleting === job.id && <Spinner />}
-                      {copy.delete}
+                      {deleting === job.id ? copy.deleting : copy.delete}
                     </button>
                   </div>
                 </td>
@@ -125,7 +156,6 @@ export default function JobHistory() {
           </tbody>
         </table>
       </div>
-      {error && <Alert>{error}</Alert>}
     </div>
   );
 }

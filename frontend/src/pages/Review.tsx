@@ -1,19 +1,12 @@
 import { useEffect, useState } from "react";
-import { useNavigate, useParams } from "react-router-dom";
+import { Link, useNavigate, useParams } from "react-router-dom";
 import { api, formatTime } from "../services/api";
-import { messages } from "../i18n";
-import { Alert, InlineStatus, PageLoader, Spinner } from "../components/Feedback";
+import { fill, messages } from "../i18n";
+import { Alert, FilmIcon, InlineStatus, PageLoader, Spinner } from "../components/Feedback";
 import type { Clip, Job, JobSource } from "../types";
 
-const REGEN = [
-  ["more_concise", "More concise"],
-  ["more_exciting", "More exciting"],
-  ["more_informative", "More informative"],
-  ["more_visual", "More visual"],
-  ["less_repetitive", "Less repetitive"],
-  ["focus_on_speech", "Focus on speech"],
-  ["focus_on_action", "Focus on action"],
-];
+const copy = messages.review;
+const REGEN = Object.entries(copy.regen);
 
 function sourceLabel(clip: Clip, fallback = "Video 1") {
   return clip.source_name || clip.source_id || fallback;
@@ -41,22 +34,29 @@ export default function Review() {
   }
 
   useEffect(() => {
-    refresh();
+    refresh().catch((err) => setError((err as Error).message));
   }, [id]);
 
+  /** Show the change at once and save it in the background; say so if saving fails. */
+  function save(copyOfClips: Clip[]) {
+    setClips(copyOfClips);
+    if (!id) return;
+    api
+      .clips(id, copyOfClips)
+      .then(() => setError((current) => (current === messages.errors.save ? "" : current)))
+      .catch(() => setError(messages.errors.save));
+  }
+
   function patch(index: number, next: Partial<Clip>) {
-    const copy = clips.map((c, i) => (i === index ? { ...c, ...next } : c));
-    setClips(copy);
-    if (id) api.clips(id, copy);
+    save(clips.map((c, i) => (i === index ? { ...c, ...next } : c)));
   }
 
   function move(index: number, direction: -1 | 1) {
     const next = index + direction;
     if (next < 0 || next >= clips.length) return;
-    const copy = [...clips];
-    [copy[index], copy[next]] = [copy[next], copy[index]];
-    setClips(copy);
-    if (id) api.clips(id, copy);
+    const copyOfClips = [...clips];
+    [copyOfClips[index], copyOfClips[next]] = [copyOfClips[next], copyOfClips[index]];
+    save(copyOfClips);
   }
 
   async function generate() {
@@ -87,47 +87,88 @@ export default function Review() {
     }
   }
 
-  if (!job || !id) return <PageLoader />;
-  const estimated = clips.filter((c) => c.kept !== false).reduce((s, c) => s + (c.end - c.start), 0);
+  if (!job || !id) return error ? <Alert>{error}</Alert> : <PageLoader />;
   const kept = clips.filter((c) => c.kept !== false);
+  const estimated = kept.reduce((s, c) => s + (c.end - c.start), 0);
+  const over = estimated > job.max_duration;
   const sources: JobSource[] =
     job.sources && job.sources.length
       ? job.sources
       : [{ id: "v0", filename: job.original_filename, duration }];
   const multi = sources.length > 1;
 
+  const adjust = (
+    <div className="panel">
+      <h3 className="sub-title">{copy.adjust}</h3>
+      <div className="chips" role="group" aria-label={copy.adjust}>
+        {REGEN.map(([key, label]) => (
+          <button
+            key={key}
+            type="button"
+            className="chip"
+            disabled={pending !== ""}
+            aria-busy={pending === key}
+            onClick={() => regenerate(key)}
+          >
+            {pending === key && <Spinner />}
+            {label}
+          </button>
+        ))}
+      </div>
+      <p className="field-hint">{copy.adjustHint}</p>
+      {pending && pending !== "render" && <InlineStatus busy>{copy.regenerating}</InlineStatus>}
+    </div>
+  );
+
+  if (!clips.length) {
+    return (
+      <div>
+        <div className="empty-state">
+          <FilmIcon size={28} />
+          <h3>{copy.empty}</h3>
+          <p>{copy.emptyHint}</p>
+          <Link className="btn" to="/">
+            {messages.result.another}
+          </Link>
+        </div>
+        {adjust}
+        {error && <Alert>{error}</Alert>}
+      </div>
+    );
+  }
+
   return (
     <div>
       <div className="summary-bar">
         <span>
-          {messages.review.target} <strong>{job.min_duration}–{job.max_duration}s</strong>
+          {copy.target} <strong>{job.min_duration === job.max_duration ? `${job.max_duration}s` : `${job.min_duration}–${job.max_duration}s`}</strong>
         </span>
-        <span className={estimated > job.max_duration ? "over" : ""}>
-          {messages.review.estimated} <strong>{estimated.toFixed(1)}s</strong>
+        <span className={over ? "over" : ""}>
+          {copy.estimated} <strong>{estimated.toFixed(1)}s</strong>
         </span>
         <span>
-          {messages.review.clips} <strong>{kept.length}/{clips.length}</strong>
+          {copy.clips} <strong>{kept.length}/{clips.length}</strong>
         </span>
         {multi && (
           <span>
-            {messages.review.sources} <strong>{sources.length}</strong>
+            {copy.sources} <strong>{sources.length}</strong>
           </span>
         )}
       </div>
+      {over && <p className="field-hint warn">{copy.overTarget}</p>}
+
       {sources.map((source) => {
         const sourceClips = clips.filter((clip) => (clip.source_id || sources[0].id) === source.id);
         const sourceDuration = source.duration || duration;
         return (
           <div key={source.id}>
-            <p className="section-label">
-              {messages.review.sourceTimeline.replace("{name}", source.filename || source.id)}
-            </p>
-            <div className="timeline" aria-label={`${source.filename} timeline`}>
+            <p className="section-label">{copy.sourceTimeline.replace("{name}", source.filename || source.id)}</p>
+            <div className="timeline" aria-hidden="true">
               {sourceClips.map((clip, i) => (
                 <div
                   key={`${source.id}-${i}`}
                   className="clip-block"
-                  title={`${sourceLabel(clip)} ${formatTime(clip.start)}–${formatTime(clip.end)} (${(clip.end - clip.start).toFixed(1)}s)`}
+                  title={`${formatTime(clip.start)}–${formatTime(clip.end)} (${(clip.end - clip.start).toFixed(1)}s)`}
                   style={{
                     left: `${sourceDuration ? (clip.start / sourceDuration) * 100 : 0}%`,
                     width: `${sourceDuration ? ((clip.end - clip.start) / sourceDuration) * 100 : 0}%`,
@@ -139,8 +180,8 @@ export default function Review() {
           </div>
         );
       })}
-      <p className="section-label">{messages.review.highlightOrder}</p>
-      <div className="sequence-timeline" aria-label="Highlight sequence durations">
+      <p className="section-label">{copy.highlightOrder}</p>
+      <div className="sequence-timeline" aria-hidden="true">
         {kept.map((clip, i) => {
           const len = Math.max(0, clip.end - clip.start);
           return (
@@ -156,94 +197,117 @@ export default function Review() {
           );
         })}
       </div>
-      {clips.map((clip, i) => (
-        <article className={`clip-card ${clip.kept === false ? "removed" : ""}`} key={i}>
-          <header>
-            <strong>
-              {formatTime(clip.start)}–{formatTime(clip.end)} · {(clip.end - clip.start).toFixed(1)}s
-            </strong>
-            <span className="tag-row">
-              {clip.kept === false && <span className="tag">{messages.review.removed}</span>}
-              <span className="score" title="Highlight score">
-                {Math.round((clip.score || 0) * 100)}%
+
+      {clips.map((clip, i) => {
+        const removed = clip.kept === false;
+        const label = fill(copy.clipNumber, { n: i + 1 });
+        return (
+          <article className={`clip-card ${removed ? "removed" : ""}`} key={i} aria-label={label}>
+            <header>
+              <strong>
+                {label} · {formatTime(clip.start)}–{formatTime(clip.end)} · {(clip.end - clip.start).toFixed(1)}s
+              </strong>
+              <span className="tag-row">
+                {removed && <span className="tag">{copy.removed}</span>}
+                <span className="score" title={copy.scoreHint}>
+                  {fill(copy.score, { n: Math.round((clip.score || 0) * 100) })}
+                </span>
               </span>
-            </span>
-          </header>
-          <p className="source-badge">
-            {messages.review.source}: {sourceLabel(clip)}
-          </p>
-          <p>{clip.reason}</p>
-          {clip.duration_reason && (
-            <p className="duration-reason">
-              <span>{messages.review.whyLength}</span>
-              {clip.duration_reason}
-            </p>
-          )}
-          {clip.transcript && <p className="clip-transcript">{clip.transcript}</p>}
-          <div className="grid-2">
-            <label>
-              {messages.review.start}
-              <input
-                type="number"
-                step="0.1"
-                value={clip.start}
-                onChange={(e) => patch(i, { start: Number(e.target.value) })}
-              />
-            </label>
-            <label>
-              {messages.review.end}
-              <input
-                type="number"
-                step="0.1"
-                value={clip.end}
-                onChange={(e) => patch(i, { end: Number(e.target.value) })}
-              />
-            </label>
-          </div>
-          <div className="btn-row" style={{ marginTop: 8 }}>
-            <button className="btn sm" onClick={() => patch(i, { kept: clip.kept === false })}>
-              {clip.kept === false ? messages.review.keep : messages.review.remove}
-            </button>
-            <button className="btn sm" onClick={() => patch(i, { start: Math.max(0, clip.start - 0.5) })}>
-              {messages.review.extend}
-            </button>
-            <button className="btn sm" onClick={() => patch(i, { end: Math.max(clip.start + 0.4, clip.end - 0.4) })}>
-              {messages.review.trim}
-            </button>
-            <button className="btn sm ghost" disabled={i === 0} onClick={() => move(i, -1)}>
-              {messages.review.moveUp}
-            </button>
-            <button className="btn sm ghost" disabled={i === clips.length - 1} onClick={() => move(i, 1)}>
-              {messages.review.moveDown}
-            </button>
-          </div>
-        </article>
-      ))}
+            </header>
+            {multi && (
+              <p className="source-badge">
+                {copy.source}: {sourceLabel(clip)}
+              </p>
+            )}
+            {clip.reason && <p>{clip.reason}</p>}
+            {clip.duration_reason && (
+              <p className="duration-reason">
+                <span>{copy.whyLength}</span>
+                {clip.duration_reason}
+              </p>
+            )}
+            {clip.transcript && <p className="clip-transcript">“{clip.transcript}”</p>}
+            <div className="grid-2 clip-times">
+              <div className="field">
+                <label htmlFor={`clip-${i}-start`}>{copy.start}</label>
+                <input
+                  id={`clip-${i}-start`}
+                  type="number"
+                  step="0.1"
+                  min={0}
+                  value={clip.start}
+                  onChange={(e) => patch(i, { start: Number(e.target.value) })}
+                />
+              </div>
+              <div className="field">
+                <label htmlFor={`clip-${i}-end`}>{copy.end}</label>
+                <input
+                  id={`clip-${i}-end`}
+                  type="number"
+                  step="0.1"
+                  min={0}
+                  value={clip.end}
+                  onChange={(e) => patch(i, { end: Number(e.target.value) })}
+                />
+              </div>
+            </div>
+            <div className="btn-row clip-actions">
+              <button
+                className={`btn sm ${removed ? "primary" : ""}`}
+                aria-label={`${removed ? copy.keep : copy.remove} ${label}`}
+                onClick={() => patch(i, { kept: removed })}
+              >
+                {removed ? copy.keep : copy.remove}
+              </button>
+              <button className="btn sm" disabled={removed} onClick={() => patch(i, { start: Math.max(0, clip.start - 0.5) })}>
+                {copy.extend}
+              </button>
+              <button
+                className="btn sm"
+                disabled={removed}
+                onClick={() => patch(i, { end: Math.max(clip.start + 0.4, clip.end - 0.4) })}
+              >
+                {copy.trim}
+              </button>
+              <span className="btn-row push-right">
+                <button
+                  className="btn sm ghost"
+                  disabled={i === 0}
+                  aria-label={`${copy.moveUp}: ${label}`}
+                  onClick={() => move(i, -1)}
+                >
+                  ↑ {copy.moveUp}
+                </button>
+                <button
+                  className="btn sm ghost"
+                  disabled={i === clips.length - 1}
+                  aria-label={`${copy.moveDown}: ${label}`}
+                  onClick={() => move(i, 1)}
+                >
+                  ↓ {copy.moveDown}
+                </button>
+              </span>
+            </div>
+          </article>
+        );
+      })}
+
+      {adjust}
       {error && <Alert>{error}</Alert>}
       <div className="action-bar">
         <div className="btn-row">
           <button
-            className="btn primary"
+            className="btn primary lg"
             disabled={pending !== "" || kept.length === 0}
             aria-busy={pending === "render"}
             onClick={generate}
           >
             {pending === "render" && <Spinner />}
-            {messages.review.generate}
+            {pending === "render" ? copy.generating : copy.generate}
           </button>
-          {REGEN.map(([key, label]) => (
-            <button
-              key={key}
-              className="btn"
-              disabled={pending !== ""}
-              aria-busy={pending === key}
-              onClick={() => regenerate(key)}
-            >
-              {pending === key && <Spinner />}
-              {label}
-            </button>
-          ))}
-          {pending && pending !== "render" && <InlineStatus busy={false}>{messages.review.regenerating}</InlineStatus>}
+          <span className="muted">
+            {kept.length}/{clips.length} · {estimated.toFixed(1)}s
+          </span>
         </div>
       </div>
     </div>

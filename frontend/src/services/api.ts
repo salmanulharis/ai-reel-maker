@@ -1,10 +1,35 @@
+import { messages } from "../i18n";
 import type { HighlightForm, Job, OllamaStatus } from "../types";
 
+// Short server messages that are worth rewording for people.
+const SERVER_MESSAGES: Record<string, string> = {
+  "file is required": "Choose a video file first.",
+  "no output": "This highlight has no finished video yet.",
+  "invalid model name": "That model name is not valid.",
+};
+
+/** A message people can act on, instead of an HTTP status or a raw server error. */
+export function friendlyError(status: number, message?: string): string {
+  if (status === 404) return messages.errors.notFound;
+  if (status === 413) return messages.errors.tooLarge;
+  const text = (message || "").trim();
+  if (!text) return messages.errors.server;
+  const known = SERVER_MESSAGES[text.toLowerCase()];
+  if (known) return known;
+  return text.charAt(0).toUpperCase() + text.slice(1);
+}
+
 async function http<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(path, init);
+  let response: Response;
+  try {
+    response = await fetch(path, init);
+  } catch {
+    // fetch only rejects when the server cannot be reached at all.
+    throw new Error(messages.errors.offline);
+  }
   const data = await response.json().catch(() => ({}));
   if (!response.ok) {
-    throw new Error((data as { error?: string }).error || response.statusText);
+    throw new Error(friendlyError(response.status, (data as { error?: string }).error));
   }
   return data as T;
 }
@@ -48,10 +73,16 @@ export function formatBytes(bytes?: number): string {
   return `${(value / 1024 ** 3).toFixed(2)} GB`;
 }
 
+function finiteOr(value: number, fallback: number) {
+  return Number.isFinite(value) && value > 0 ? value : fallback;
+}
+
 export function configPayload(form: HighlightForm) {
+  // A length field can be empty while it is being edited; never send that to the server.
+  const max = finiteOr(form.max_duration, finiteOr(form.min_duration, 30));
   return {
-    min_duration: form.min_duration,
-    max_duration: form.max_duration,
+    min_duration: finiteOr(form.min_duration, Math.min(20, max)),
+    max_duration: max,
     style: form.style,
     custom_focus: form.custom_focus,
     preserve_context: form.preserve_context,
@@ -118,6 +149,7 @@ export const api = {
   analysis: (id: string) => http<Record<string, unknown>>(`/api/jobs/${id}/analysis`),
   timeline: (id: string) => http<Record<string, unknown>>(`/api/jobs/${id}/timeline`),
   deleteJob: (id: string) => http(`/api/jobs/${id}`, { method: "DELETE" }),
+  openFolder: (id: string) => http(`/api/jobs/${id}/open-folder`, { method: "POST" }),
   ollama: () => http<OllamaStatus>("/api/system/ollama/status"),
   info: (opts?: { refresh?: boolean; encoders?: boolean }) => {
     const params = new URLSearchParams();

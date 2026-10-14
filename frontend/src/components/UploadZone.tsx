@@ -1,5 +1,5 @@
 import { useRef, useState } from "react";
-import { messages } from "../i18n";
+import { fill, messages } from "../i18n";
 import { formatBytes } from "../services/api";
 import { UploadIcon } from "./Feedback";
 
@@ -89,7 +89,7 @@ export function UploadZone({
             {files.map((file, index) => (
               <li key={`${file.name}-${file.size}-${index}`}>
                 <span className="file-name" title={file.name}>
-                  Video {index + 1}: {file.name}
+                  {fill(messages.upload.video, { n: index + 1 })}: {file.name}
                   <span className="file-size">{formatBytes(file.size)}</span>
                 </span>
                 <button

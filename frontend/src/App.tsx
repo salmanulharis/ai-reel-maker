@@ -3,7 +3,7 @@ import { Navigate, NavLink, Route, Routes, useLocation } from "react-router-dom"
 import { messages } from "./i18n";
 import { OllamaStatus } from "./components/OllamaStatus";
 import { ThemeToggle } from "./components/ThemeToggle";
-import { FilmIcon, HistoryIcon, HomeIcon, SettingsIcon } from "./components/Feedback";
+import { FilmIcon, HistoryIcon, PlusIcon, SettingsIcon } from "./components/Feedback";
 import Dashboard from "./pages/Dashboard";
 import Analysis from "./pages/Analysis";
 import Review from "./pages/Review";
@@ -11,23 +11,25 @@ import Result from "./pages/Result";
 import Settings from "./pages/Settings";
 import History from "./pages/JobHistory";
 
-const titles: Record<string, [string, string]> = {
-  "/": [messages.appName, messages.subtitle],
-  "/history": [messages.history.title, messages.history.subtitle],
-  "/settings": ["Settings", "Local processing, models, and storage"],
-};
+const pages = messages.pages;
+
+/** Page title and a one-line "what to do here" for each route. */
+function pageHeading(pathname: string): [string, string] {
+  if (pathname === "/history") return [pages.historyTitle, pages.historySubtitle];
+  if (pathname === "/settings") return [pages.settingsTitle, pages.settingsSubtitle];
+  if (pathname.endsWith("/analysis")) return [pages.analysisTitle, pages.analysisSubtitle];
+  if (pathname.endsWith("/review")) return [pages.reviewTitle, pages.reviewSubtitle];
+  if (pathname.endsWith("/result")) return [pages.resultTitle, pages.resultSubtitle];
+  return [pages.createTitle, pages.createSubtitle];
+}
 
 export default function App() {
   const location = useLocation();
   const mainRef = useRef<HTMLElement>(null);
-  const key = location.pathname.startsWith("/jobs") ? "/jobs" : location.pathname;
-  const [title, subtitle] =
-    key === "/jobs"
-      ? [messages.job.title, messages.job.subtitle]
-      : titles[location.pathname] || [messages.appName, messages.subtitle];
+  const [title, subtitle] = pageHeading(location.pathname);
 
   useEffect(() => {
-    document.title = title === messages.appName ? messages.appName : `${title} · ${messages.appName}`;
+    document.title = `${title} · ${messages.appName}`;
   }, [title]);
 
   // A new page starts at the top, like a full page load would.
@@ -59,7 +61,7 @@ export default function App() {
         </div>
         <nav className="nav" aria-label="Main">
           <NavLink to="/" end>
-            <HomeIcon />
+            <PlusIcon />
             {messages.nav.dashboard}
           </NavLink>
           <NavLink to="/history">
@@ -80,14 +82,8 @@ export default function App() {
             <p className="sub">{subtitle}</p>
           </div>
           <div className="header-actions">
-            <ThemeToggle />
             <OllamaStatus />
-            <NavLink className="btn header-link" to="/history">
-              {messages.nav.queue}
-            </NavLink>
-            <NavLink className="btn header-link" to="/settings">
-              {messages.nav.settings}
-            </NavLink>
+            <ThemeToggle />
           </div>
         </header>
         <main className="content" id="main-content" ref={mainRef} tabIndex={-1}>

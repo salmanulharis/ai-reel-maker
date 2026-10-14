@@ -176,7 +176,7 @@ export function VideoCropPreview({
           </button>
           <input
             type="range"
-            aria-label="Seek"
+            aria-label="Video position"
             min={0}
             max={duration || 0}
             step={0.1}

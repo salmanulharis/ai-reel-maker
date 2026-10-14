@@ -89,9 +89,10 @@ export const UploadIcon = (props: IconProps) => (
     <path d="M4 16v3a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-3" />
   </Svg>
 );
-export const HomeIcon = (props: IconProps) => (
+export const PlusIcon = (props: IconProps) => (
   <Svg {...props}>
-    <path d="M3 10.5 12 3l9 7.5V20a1 1 0 0 1-1 1h-5v-6h-6v6H4a1 1 0 0 1-1-1z" />
+    <circle cx="12" cy="12" r="9" />
+    <path d="M12 8v8M8 12h8" />
   </Svg>
 );
 export const HistoryIcon = (props: IconProps) => (

@@ -18,3 +18,8 @@ export function setLocale(next: string) {
 }
 
 export const messages = en;
+
+/** Fill {placeholders} in a message, e.g. fill("Video {n}", { n: 2 }). */
+export function fill(text: string, values: Record<string, string | number>): string {
+  return text.replace(/\{(\w+)\}/g, (match, key: string) => (key in values ? String(values[key]) : match));
+}
