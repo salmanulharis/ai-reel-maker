@@ -3,6 +3,8 @@ import { useSearchParams } from "react-router-dom";
 import { api, formatBytes } from "../services/api";
 import { fill, messages } from "../i18n";
 import { Alert, InlineStatus, PageLoader, Spinner } from "../components/Feedback";
+import { DocLink } from "./Docs";
+import type { DocArticleId } from "../docs/content";
 import type { AiTestResult, ModelSpec, OllamaStatus, OptimizationItem, OptimizationPlan, PullStatus, RuntimeStatus } from "../types";
 
 type Info = {
@@ -37,6 +39,15 @@ const SECTION_FIELDS: Partial<Record<SectionId, string[]>> = {
 };
 const FORM_KEYS = Object.values(SECTION_FIELDS).flat();
 const DEFAULT_SECTION: SectionId = "optimize";
+// The help article behind each section, linked under its introduction.
+const SECTION_HELP: Partial<Record<SectionId, DocArticleId>> = {
+  optimize: "cpu-speed",
+  ai: "choose-models",
+  speech: "setup-whisper",
+  system: "hardware-detection",
+  performance: "threads-memory",
+  connection: "remote-gpu",
+};
 const opt = copy.optimize;
 // Model choices are saved only when changed, so an untouched form never switches to custom mode.
 const INFERENCE_KEYS = new Set([
@@ -833,7 +844,15 @@ export default function Settings() {
           <h3 id="settings-section-title" className="sub-title settings-title">
             {copy.sections[section]}
           </h3>
-          <p className="panel-intro">{copy.sectionIntros[section]}</p>
+          <p className="panel-intro">
+            {copy.sectionIntros[section]}
+            {SECTION_HELP[section] && (
+              <>
+                {" "}
+                <DocLink article={SECTION_HELP[section] as DocArticleId} />
+              </>
+            )}
+          </p>
           {views[section]}
         </section>
 

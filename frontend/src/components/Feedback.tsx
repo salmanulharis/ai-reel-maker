@@ -109,6 +109,12 @@ export const SettingsIcon = (props: IconProps) => (
     <circle cx="18" cy="18" r="2" />
   </Svg>
 );
+export const BookIcon = (props: IconProps) => (
+  <Svg {...props}>
+    <path d="M4 5a2 2 0 0 1 2-2h13v16H6a2 2 0 0 0-2 2z" />
+    <path d="M4 19V5M8 7h7M8 11h7" />
+  </Svg>
+);
 export const PlayIcon = (props: IconProps) => (
   <Svg {...props}>
     <path d="M7 4.5v15l12-7.5z" />

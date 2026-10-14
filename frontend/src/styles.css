@@ -1019,6 +1019,54 @@ details.help p { color: var(--muted); font-size: 13px; }
   white-space: nowrap;
 }
 .save-bar .btn-row { justify-content: flex-start; }
+
+/* Help */
+.docs-search { margin-bottom: 12px; }
+.docs-search input { max-width: none; }
+.doc-article p { margin: 0 0 12px; max-width: 80ch; }
+.doc-article code {
+  font-family: var(--mono);
+  font-size: 0.92em;
+  padding: 1px 5px;
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+}
+.doc-subheading { margin: 20px 0 8px; font-size: 14px; }
+.doc-steps, .doc-list { margin: 0 0 14px; padding-left: 22px; display: grid; gap: 8px; max-width: 85ch; }
+.doc-steps li::marker { color: var(--accent); font-weight: 600; }
+.doc-callout {
+  margin: 0 0 14px;
+  padding: 10px 12px;
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+  font-size: 13px;
+  max-width: 85ch;
+}
+.doc-callout.tip { border-color: color-mix(in srgb, var(--ok) 40%, transparent); background: var(--ok-soft); }
+.doc-callout.warning { border-color: color-mix(in srgb, var(--warn) 45%, transparent); background: var(--warn-soft); }
+.doc-callout.note { border-color: color-mix(in srgb, var(--accent) 35%, transparent); background: var(--accent-soft); }
+.doc-code { margin: 0 0 14px; max-width: 85ch; }
+.doc-code figcaption { color: var(--muted); font-size: 12px; margin-bottom: 4px; }
+.doc-code pre {
+  margin: 0;
+  padding: 10px 12px;
+  overflow-x: auto;
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  background: var(--bg);
+  font-family: var(--mono);
+  font-size: 12.5px;
+  line-height: 1.55;
+}
+.doc-code pre code { padding: 0; border: 0; background: none; }
+.doc-table { margin: 0 0 14px; box-shadow: none; }
+.doc-table td { vertical-align: top; font-size: 13px; }
+.doc-action { margin: 4px 0 10px; }
+.doc-link { white-space: nowrap; }
+.doc-results { list-style: none; padding: 0; margin: 0; display: grid; gap: 12px; }
+.doc-results .hint { margin: 2px 0 0; }
 .review-box {
   margin-top: 14px;
   padding: 14px 16px;
