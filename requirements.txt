@@ -15,6 +15,11 @@ scenedetect>=0.6.4
 faster-whisper>=1.1.0
 # faster-whisper 1.2.1 passes metadata_errors to av.open(), which PyAV 19 removed.
 av>=11,<19
+# Fast picture matching (SigLIP). Already installed with faster-whisper; listed because the
+# app imports them directly. A GPU build (onnxruntime-gpu / onnxruntime-directml) also works.
+onnxruntime>=1.17
+tokenizers>=0.15
+huggingface-hub>=0.20
 psutil>=5.9.8
 pillow>=10.2.0
 werkzeug>=3.0.1

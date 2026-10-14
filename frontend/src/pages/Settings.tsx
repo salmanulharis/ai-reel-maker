@@ -87,15 +87,16 @@ export default function Settings() {
   const pullBusy = Object.values(ollama?.pull || {}).some((item) => item?.state === "running");
   const testBusy = ollama?.test?.state === "running" || busy === "test";
   const whisperBusy = ollama?.whisper_download?.state === "running";
+  const imageBusy = ollama?.image_model?.state === "running";
   const whisperState = ollama?.whisper_download?.state;
 
   useEffect(() => {
-    if (!pullBusy && !testBusy && !whisperBusy) return;
+    if (!pullBusy && !testBusy && !whisperBusy && !imageBusy) return;
     const id = setInterval(() => {
       api.ollama().then(setOllama).catch(() => undefined);
     }, 1000);
     return () => clearInterval(id);
-  }, [pullBusy, testBusy, whisperBusy]);
+  }, [pullBusy, testBusy, whisperBusy, imageBusy]);
 
   useEffect(() => {
     if (whisperState !== "done") return;
@@ -257,6 +258,8 @@ export default function Settings() {
   const embedModel = String(settings.ollama_embed_model || "");
   const embedInstalled = Boolean(embedModel) && modelPresent(embedModel, ollama);
   const embedPull = embedModel ? ollama?.pull?.[embedModel] : undefined;
+  const imageModel = ollama?.image_model;
+  const imageDownloading = imageModel?.state === "running";
   const gb = (value: unknown) => (value ? `${value} GB` : "—");
 
   if (!info && !error) return <PageLoader />;
@@ -512,6 +515,52 @@ export default function Settings() {
           {embedPull?.state === "error" && embedPull.error && <p className="error-text">{embedPull.error}</p>}
         </div>
 
+        <div className="embed-row">
+          <div>
+            <label className="check">
+              <input
+                type="checkbox"
+                checked={settings.image_matching !== false}
+                disabled={busy === "image"}
+                aria-describedby="image-matching-hint"
+                onChange={(e) => void setInstant("image_matching", e.target.checked, "image")}
+              />
+              <strong>{copy.imageMatching}</strong>
+            </label>
+            <p className="field-hint" id="image-matching-hint">
+              {copy.imageMatchingHint}
+            </p>
+          </div>
+          <div className="btn-row">
+            {saved === "image" && <InlineStatus ok>{copy.saved}</InlineStatus>}
+            <span className={`tag ${imageModel?.installed ? "ok" : ""}`}>
+              {imageModel?.installed
+                ? copy.imageModelReady
+                : imageDownloading
+                  ? fill(copy.imageModelDownloading, { done: imageModel?.files_done ?? 0, total: imageModel?.files_total ?? 3 })
+                  : fill(copy.imageModelMissing, { size: imageModel?.size_mb ?? 780 })}
+            </span>
+            {!imageModel?.installed && (
+              <button
+                className="btn sm"
+                disabled={imageDownloading || imageModel?.runtime === false}
+                aria-busy={imageDownloading}
+                onClick={() =>
+                  act("image-download", async () => {
+                    await api.downloadImageModel();
+                    setOllama(await api.ollama());
+                  })
+                }
+              >
+                {imageDownloading && <Spinner />}
+                {imageDownloading ? copy.downloading : copy.download}
+              </button>
+            )}
+          </div>
+          {imageModel?.runtime === false && <p className="hint">{copy.imageModelNoRuntime}</p>}
+          {imageModel?.state === "error" && imageModel.error && <p className="error-text">{imageModel.error}</p>}
+        </div>
+
         <ModelGroup
           title={copy.vision}
           hint={copy.visionHint}
@@ -539,6 +588,24 @@ export default function Settings() {
 
     speech: (
       <>
+        <div className="switch-row speech-switch">
+          <label className="check">
+            <input
+              type="checkbox"
+              checked={settings.enable_whisper !== false}
+              disabled={busy === "speech"}
+              aria-describedby="use-speech-hint"
+              onChange={(e) => void setInstant("enable_whisper", e.target.checked, "speech")}
+            />
+            <span>
+              <strong>{copy.useSpeech}</strong>
+              <span className="field-hint block" id="use-speech-hint">
+                {copy.useSpeechHint}
+              </span>
+            </span>
+          </label>
+          {saved === "speech" && <InlineStatus ok>{copy.saved}</InlineStatus>}
+        </div>
         <ManagedNote enabled={mode === "auto"} onOpen={() => go("optimize")} />
         <div className="form-grid">
           <Field label={copy.whisperDevice} hint={copy.whisperDeviceHint}>

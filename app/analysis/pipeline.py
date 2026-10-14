@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import os
 import time
+
+import numpy as np
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -26,8 +28,15 @@ from app.analysis.repetition import RepetitionAnalyzer
 from app.analysis.scenes import detect_scenes
 from app.analysis.scorer import HighlightScorer
 from app.analysis.semantic import Embedder, apply_focus, repetition_embedding_fn
-from app.analysis.signals import audio_energy, scene_quality
-from app.analysis.visual import analyze_scenes_visual, fitting_vision_batch, sample_timestamps, shortlist_scenes
+from app.analysis.signals import ENERGY_HOP, audio_energy, scene_quality
+from app.analysis.image_match import get_matcher, score_scenes
+from app.analysis.visual import (
+    analyze_scenes_visual,
+    fitting_vision_batch,
+    motion_score,
+    sample_timestamps,
+    shortlist_scenes,
+)
 from app.config import Settings
 from app.models.schemas import CandidateScore, HighlightConfig, Scene, Transcript
 from app.video.ffmpeg_runner import CancelledError, FFmpegRunner
@@ -155,7 +164,10 @@ class VideoAnalyzer:
         cache["scenes"] = scenes
 
         wav = job_dir / "source" / "audio.wav"
-        if self.settings.enable_whisper and not wav.exists():
+        # Speech can be turned off for the whole app or for one highlight. Audio is still
+        # extracted when the video has sound: loudness and pauses come from it.
+        want_speech = bool(self.settings.enable_whisper) and bool(getattr(config, "use_speech", True))
+        if not wav.exists() and meta.get("has_audio", True):
             progress.stage("audio", "running")
             try:
                 extract_audio(self.runner, source, wav)
@@ -163,11 +175,18 @@ class VideoAnalyzer:
             except Exception as exc:  # noqa: BLE001
                 progress.log(f"Audio extraction failed: {exc}", "WARNING")
             progress.stage("audio", "done")
+        elif not wav.exists():
+            progress.stage("audio", "skipped", "No sound in this video")
         else:
             progress.stage("audio", "done", "cached")
 
         transcript_data = cache.get("transcript")
-        if transcript_data is None:
+        if not want_speech:
+            # Kept out of the cache, so turning speech back on transcribes (or reuses) as usual.
+            transcript_data = Transcript().model_dump()
+            progress.stage("transcript", "skipped", "Speech is turned off")
+            progress.log("Speech is turned off: moments are chosen from pictures and sound")
+        elif transcript_data is None:
             progress.stage("transcript", "running")
             transcribed = True
             if wav.exists() and self.settings.enable_whisper:
@@ -178,7 +197,8 @@ class VideoAnalyzer:
             if transcribed:
                 _write(job_dir / "transcript.json", transcript_data)
             progress.stage("transcript", "done", "" if transcribed else "Transcription failed")
-        cache["transcript"] = transcript_data
+        if want_speech:
+            cache["transcript"] = transcript_data
         transcript = Transcript.model_validate(transcript_data)
 
         silences = cache.get("silences")
@@ -212,16 +232,24 @@ class VideoAnalyzer:
         quality = self._scene_quality(job_dir, scenes, frame_map, cache)
         energy = self._audio_energy(job_dir, wav, cache)
 
-        progress.stage("content", "running")
-        usage_before = self._usage()
-        segment_scores, scores_changed = self._score_transcript(
-            transcript, config, progress, cache.get("segment_scores")
-        )
-        self._log_usage(progress, "Transcript AI", usage_before)
-        if scores_changed:
-            _write(job_dir / "segment_scores.json", segment_scores)
-        cache["segment_scores"] = segment_scores
-        progress.stage("content", "done")
+        match = self._image_match(job_dir, scenes, frame_map, config, cache, progress)
+        signals = _visual_signals(scenes, frame_map, quality, energy, match)
+
+        if want_speech:
+            progress.stage("content", "running")
+            usage_before = self._usage()
+            segment_scores, scores_changed = self._score_transcript(
+                transcript, config, progress, cache.get("segment_scores")
+            )
+            self._log_usage(progress, "Transcript AI", usage_before)
+            if scores_changed:
+                _write(job_dir / "segment_scores.json", segment_scores)
+            cache["segment_scores"] = segment_scores
+            progress.stage("content", "done")
+        else:
+            # Saved speech scores stay on disk for when speech is turned back on.
+            segment_scores = []
+            progress.stage("content", "skipped", "Speech is turned off")
 
         visual = dict(cache.get("visual") or {})
         ollama_ok = bool(self.ollama)
@@ -245,7 +273,12 @@ class VideoAnalyzer:
             shortlist = None
             if vision_ready and str(getattr(self.settings, "vision_scope", "shortlist")) != "all":
                 shortlist = shortlist_scenes(
-                    scenes, segment_scores, _highlight_seconds(config, source_duration), quality
+                    scenes,
+                    segment_scores,
+                    _highlight_seconds(config, source_duration),
+                    quality,
+                    visual_signal=signals,
+                    match=match,
                 )
             ai_scene_count = sum(
                 1
@@ -313,7 +346,7 @@ class VideoAnalyzer:
             progress.log("Visual analysis completed")
         cache["visual"] = visual
 
-        visual_by_scene = {int(k): v for k, v in visual.items()}
+        visual_by_scene = _with_image_match({int(k): v for k, v in visual.items()}, match)
         candidates = generate_candidates(
             transcript,
             scenes,
@@ -328,6 +361,10 @@ class VideoAnalyzer:
             energy=energy,
         )
         progress.log(f"{len(candidates)} candidates generated")
+        if config.custom_focus.strip() and match:
+            matched = _apply_visual_focus(candidates, scenes, match)
+            if matched:
+                progress.log(f"Focus: {matched} moment(s) look like \"{config.custom_focus.strip()[:60]}\"")
         if config.custom_focus.strip():
             boosted = apply_focus(candidates, config.custom_focus, self.embedder)
             if boosted:
@@ -510,6 +547,48 @@ class VideoAnalyzer:
             _write(job_dir / "scene_quality.json", {str(k): v for k, v in quality.items()})
             cache["scene_quality"] = {str(k): v for k, v in quality.items()}
         return quality
+
+    def _image_match(
+        self,
+        job_dir: Path,
+        scenes: list[dict],
+        frame_map: dict,
+        config: HighlightConfig,
+        cache: dict,
+        progress: PipelineProgress,
+    ) -> dict[int, dict]:
+        """SigLIP interest, focus match, and lookalikes per scene; cached with the focus text."""
+        if not getattr(self.settings, "image_matching", True):
+            return {}
+        focus = config.custom_focus.strip()
+        cached = cache.get("image_match")
+        if isinstance(cached, dict) and cached.get("focus") == focus and cached.get("scenes"):
+            return {int(k): v for k, v in cached["scenes"].items()}
+        frames = {}
+        for scene in scenes:
+            entries = frame_map.get(str(scene["scene_id"])) or []
+            if entries:
+                frames[int(scene["scene_id"])] = entries[len(entries) // 2]["image_path"]
+        if not frames:
+            return {}
+        matcher = get_matcher(int(getattr(self.settings, "ollama_num_thread", 0) or 0))
+        if matcher is None:
+            return {}
+        started = time.perf_counter()
+        try:
+            result = score_scenes(matcher, frames, focus)
+        except Exception as exc:  # noqa: BLE001 - a ranking aid, never a requirement
+            progress.log(f"Image matching skipped ({exc})", "WARNING")
+            return {}
+        duplicates = sum(1 for item in result.values() if item.get("duplicate_of") is not None)
+        progress.log(
+            f"Image matching ({matcher.device}): {len(result)} scenes in {time.perf_counter() - started:.1f}s"
+            + (f", {duplicates} look like an earlier scene" if duplicates else "")
+        )
+        payload = {"focus": focus, "scenes": {str(k): v for k, v in result.items()}}
+        _write(job_dir / "image_match.json", payload)
+        cache["image_match"] = payload
+        return result
 
     def _audio_energy(self, job_dir: Path, wav: Path, cache: dict) -> list[float]:
         """Loudness curve of the extracted audio; cached with the analysis."""
@@ -910,6 +989,81 @@ def plan_text_batches(
     if current:
         batches.append(current)
     return batches
+
+
+def _visual_signals(
+    scenes: list[dict],
+    frame_map: dict,
+    quality: dict[int, dict],
+    energy: list[float],
+    match: dict[int, dict],
+) -> dict[int, float]:
+    """A quick 0-1 "worth a look" score per scene from picture matching, motion, sound, and
+    picture quality, used to rank scenes when there is no speech to go by."""
+    if not scenes:
+        return {}
+    levels = np.asarray(energy, dtype=np.float32) if energy else None
+    mean = float(levels.mean()) if levels is not None and levels.size else 0.0
+    std = float(levels.std()) if levels is not None and levels.size else 0.0
+    signals: dict[int, float] = {}
+    for scene in scenes:
+        scene_id = int(scene["scene_id"])
+        paths = [Path(entry["image_path"]) for entry in frame_map.get(str(scene_id), [])]
+        parts: list[tuple[float, float]] = [(motion_score(paths) if len(paths) > 1 else 0.3, 0.3)]
+        if levels is not None and levels.size and std > 0:
+            first = max(0, int(float(scene["start"]) / ENERGY_HOP))
+            last = max(first + 1, int(float(scene["end"]) / ENERGY_HOP))
+            window = levels[first:last]
+            if window.size:
+                parts.append((float(np.clip(0.5 + (float(window.mean()) - mean) / (3 * std), 0.0, 1.0)), 0.2))
+        picture = (quality.get(scene_id) or {}).get("quality")
+        if picture is not None:
+            parts.append((float(picture), 0.15))
+        interest = (match.get(scene_id) or {}).get("interest")
+        if interest is not None:
+            parts.append((float(interest), 0.45))
+        weight = sum(w for _, w in parts)
+        signals[scene_id] = round(sum(v * w for v, w in parts) / weight, 3)
+    return signals
+
+
+def _with_image_match(visual_by_scene: dict[int, dict], match: dict[int, dict]) -> dict[int, dict]:
+    """Better quick visual scores for scenes the vision model did not analyze. Scores from the
+    vision model are kept as they are: picture matching cannot judge a scene."""
+    if not match:
+        return visual_by_scene
+    blended = {}
+    for scene_id, entry in visual_by_scene.items():
+        interest = (match.get(scene_id) or {}).get("interest")
+        if interest is None or entry.get("score_source") == score_source.AI:
+            blended[scene_id] = entry
+            continue
+        quick = float(entry.get("visual_importance", 0.4))
+        blended[scene_id] = {**entry, "visual_importance": round(0.5 * quick + 0.5 * (0.25 + 0.65 * float(interest)), 3)}
+    return blended
+
+
+# Most a strong visual focus match adds to a moment's score, and where matching starts to count.
+_VISUAL_FOCUS_BOOST = 0.1
+_VISUAL_FOCUS_FROM = 0.5
+
+
+def _apply_visual_focus(candidates: list[dict], scenes: list[dict], match: dict[int, dict]) -> int:
+    """Raise moments whose picture matches the focus text. Returns how many were raised."""
+    raised = 0
+    for candidate in candidates:
+        start = float(candidate["start"])
+        scene = next((s for s in scenes if float(s["start"]) <= start < float(s["end"])), None)
+        focus = (match.get(int(scene["scene_id"])) or {}).get("focus") if scene else None
+        if focus is None or focus <= _VISUAL_FOCUS_FROM:
+            continue
+        strength = (float(focus) - _VISUAL_FOCUS_FROM) / (1 - _VISUAL_FOCUS_FROM)
+        candidate["score"] = round(min(1.0, float(candidate.get("score", 0)) + _VISUAL_FOCUS_BOOST * strength), 4)
+        candidate["visual_focus_match"] = round(float(focus), 3)
+        raised += 1
+    if raised:
+        candidates.sort(key=lambda c: c.get("score", 0), reverse=True)
+    return raised
 
 
 def _plan_embedder(settings: Settings) -> Embedder | None:

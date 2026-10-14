@@ -11,6 +11,7 @@ from flask import Blueprint, jsonify, request
 from app.ai.ollama import OllamaError, OllamaPullError
 from app.ai.registry_pull import models_root
 from app.config import get_settings
+from app.analysis import image_match
 from app.services import auto_tune
 from app.services.ai_profile import apply_recommendation, resolve_runtime, sync_hardware_profile
 from app.services.ai_test import (
@@ -124,6 +125,18 @@ def read_test():
     return jsonify(test_status())
 
 
+@system_bp.post("/system/image-model/download")
+def download_image_model():
+    if not image_match.runtime_available():
+        return jsonify({"error": "Image matching needs onnxruntime and tokenizers. Install the app requirements."}), 400
+    return jsonify(image_match.start_download())
+
+
+@system_bp.get("/system/image-model")
+def image_model_status():
+    return jsonify(image_match.download_status())
+
+
 @system_bp.post("/system/whisper/download")
 def download_whisper():
     data = request.get_json(silent=True) or {}
@@ -148,6 +161,7 @@ def ollama_status():
     health["pull"] = {key: dict(value) for key, value in _pull_status.items()}
     health["test"] = test_status()
     health["whisper_download"] = whisper_download_status()
+    health["image_model"] = image_match.download_status()
     return jsonify(health)
 
 

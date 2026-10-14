@@ -371,6 +371,7 @@ _CACHE_FILES = (
     "segment_scores.json",
     "scene_quality.json",
     "audio_energy.json",
+    "image_match.json",
     "candidates.json",
     "clip_plan.json",
 )
@@ -491,6 +492,7 @@ def load_cache(job_dir: Path) -> dict:
         "segment_scores": "segment_scores.json",
         "scene_quality": "scene_quality.json",
         "audio_energy": "audio_energy.json",
+        "image_match": "image_match.json",
         "candidates": "candidates.json",
         "clip_plan": "clip_plan.json",
     }

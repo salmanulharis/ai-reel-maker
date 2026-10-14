@@ -593,6 +593,7 @@ fieldset { border: 0; margin: 0; padding: 0; min-width: 0; }
 .config-section > .reveal,
 .config-section > .form-grid { margin-top: 12px; }
 .config .check { margin-top: 12px; }
+.config .check.visuals-only { margin: 0 0 12px; }
 .step-title { font-size: 15px; margin: 28px 0 10px; }
 section:first-of-type > .step-title,
 .notice + section > .step-title { margin-top: 0; }
@@ -958,6 +959,8 @@ details.help p { color: var(--muted); font-size: 13px; }
   align-items: center;
 }
 .embed-row .field-hint { margin-top: 2px; }
+.embed-row .check { margin: 0; font-size: 14px; }
+.switch-row.speech-switch { margin: 0 0 14px; }
 .embed-row > :nth-child(n + 3) { grid-column: 1 / -1; }
 .storage-actions { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(320px, 100%), 1fr)); gap: 12px 16px; margin-top: 4px; }
 .storage-action { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; }

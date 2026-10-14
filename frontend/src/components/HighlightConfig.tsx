@@ -188,6 +188,26 @@ export function HighlightConfigPanel({
 
       <fieldset className="config-section">
         <legend>{copy.priorities}</legend>
+        <label className="check visuals-only">
+          <input
+            type="checkbox"
+            checked={!form.use_speech}
+            aria-describedby="visuals-only-hint"
+            onChange={(e) =>
+              update(
+                e.target.checked
+                  ? { use_speech: false, content_priorities: ["action", "visual"], subtitles: "none" }
+                  : { use_speech: true }
+              )
+            }
+          />
+          <span>
+            <strong>{copy.visualsOnly}</strong>
+            <span className="field-hint block" id="visuals-only-hint">
+              {copy.visualsOnlyHint}
+            </span>
+          </span>
+        </label>
         <div className="chips" role="group" aria-label={copy.priorities}>
           {PRIORITIES.map((key) => (
             <button
@@ -281,11 +301,22 @@ export function HighlightConfigPanel({
           </div>
           <div className="field">
             <label htmlFor="subtitles">{copy.subtitles}</label>
-            <select id="subtitles" value={form.subtitles === "auto" ? "srt" : form.subtitles} onChange={(e) => update({ subtitles: e.target.value })}>
+            <select
+              id="subtitles"
+              value={!form.use_speech ? "none" : form.subtitles === "auto" ? "srt" : form.subtitles}
+              disabled={!form.use_speech}
+              aria-describedby={!form.use_speech ? "subtitles-hint" : undefined}
+              onChange={(e) => update({ subtitles: e.target.value })}
+            >
               <option value="none">{copy.subtitlesNone}</option>
               <option value="srt">{copy.subtitlesFile}</option>
               <option value="burned">{copy.subtitlesBurned}</option>
             </select>
+            {!form.use_speech && (
+              <p className="field-hint" id="subtitles-hint">
+                {copy.subtitlesNeedSpeech}
+              </p>
+            )}
           </div>
           <div className="field">
             <label htmlFor="transition">{copy.transition}</label>
@@ -504,6 +535,7 @@ export const defaultForm = (): HighlightForm => ({
   min_duration: 20,
   max_duration: 30,
   length_mode: "range",
+  use_speech: true,
   style: "auto",
   custom_focus: "",
   preserve_context: "balanced",

@@ -38,6 +38,7 @@ EDITABLE = {
     "enable_repetition_analysis",
     "vision_scope",
     "ollama_embed_model",
+    "image_matching",
 }
 
 CUSTOM_ON_EDIT = {
