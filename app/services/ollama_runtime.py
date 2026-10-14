@@ -56,7 +56,7 @@ def _models_to_warm(settings: Settings, health: dict, *, warm_both: bool) -> lis
     installed is loaded.
     """
     installed = set(health.get("models") or [])
-    order = [(settings.ollama_text_model, "text")]
+    order = [(settings.ollama_text_model, "text")] if settings.enable_whisper else []
     if settings.enable_visual_analysis and health.get("vision_ready", True):
         order.append((settings.ollama_vision_model, "vision"))
     warmed: list[tuple[str, str]] = []

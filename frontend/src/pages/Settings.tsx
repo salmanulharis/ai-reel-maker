@@ -204,15 +204,15 @@ export default function Settings() {
   }
 
   /** Switches apply at once: there is no separate save step to forget. */
-  async function toggleVisual(enabled: boolean) {
-    set("enable_visual_analysis", enabled);
-    await act("visual", async () => {
+  async function toggleSwitch(key: string, enabled: boolean, flash: string) {
+    set(key, enabled);
+    await act(flash, async () => {
       try {
-        await api.saveSettings({ enable_visual_analysis: enabled });
-        setLoaded((cur) => ({ ...cur, enable_visual_analysis: enabled }));
-        flashSaved("visual");
+        await api.saveSettings({ [key]: enabled });
+        setLoaded((cur) => ({ ...cur, [key]: enabled }));
+        flashSaved(flash);
       } catch (err) {
-        set("enable_visual_analysis", !enabled);
+        set(key, !enabled);
         throw err;
       }
     });
@@ -446,10 +446,29 @@ export default function Settings() {
           <label className="check">
             <input
               type="checkbox"
+              checked={Boolean(settings.enable_whisper)}
+              disabled={busy === "speech"}
+              aria-describedby="speech-hint"
+              onChange={(e) => void toggleSwitch("enable_whisper", e.target.checked, "speech")}
+            />
+            <span>
+              <strong>{copy.speechSwitch}</strong>
+              <span className="field-hint block" id="speech-hint">
+                {copy.speechSwitchHint}
+              </span>
+            </span>
+          </label>
+          {saved === "speech" && <InlineStatus ok>{copy.saved}</InlineStatus>}
+        </div>
+
+        <div className="switch-row">
+          <label className="check">
+            <input
+              type="checkbox"
               checked={Boolean(settings.enable_visual_analysis)}
               disabled={busy === "visual"}
               aria-describedby="visual-hint"
-              onChange={(e) => void toggleVisual(e.target.checked)}
+              onChange={(e) => void toggleSwitch("enable_visual_analysis", e.target.checked, "visual")}
             />
             <span>
               <strong>{copy.visual}</strong>

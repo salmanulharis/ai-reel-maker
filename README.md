@@ -94,10 +94,10 @@ Ollama remains the runtime for vision and text (CPU, NVIDIA CUDA, AMD ROCm, Vulk
 
 | Machine | Vision | Text | Whisper |
 |---------|--------|------|---------|
-| CPU, under 16 GB RAM | `qwen3-vl:2b-instruct` | `qwen3:4b` | `tiny` or `base` |
-| CPU, 16 GB RAM or more | `qwen3-vl:4b-instruct` | `qwen3:4b` | `base` |
-| GPU under 6 GB free | `qwen3-vl:2b-instruct` or `:4b-instruct` | `qwen3:4b` | `base` on CPU |
-| GPU about 6–10 GB | `qwen3-vl:4b-instruct` | `qwen3:4b` | `small` (CUDA only if about 2 GB stays free) |
+| CPU, under 16 GB RAM | `qwen3-vl:2b-instruct` | `qwen3:4b-instruct-2507-q4_K_M` | `tiny` or `base` |
+| CPU, 16 GB RAM or more | `qwen3-vl:4b-instruct` | `qwen3:4b-instruct-2507-q4_K_M` | `base` |
+| GPU under 6 GB free | `qwen3-vl:2b-instruct` or `:4b-instruct` | `qwen3:4b-instruct-2507-q4_K_M` | `base` on CPU |
+| GPU about 6–10 GB | `qwen3-vl:4b-instruct` | `qwen3:4b-instruct-2507-q4_K_M` | `small` (CUDA only if about 2 GB stays free) |
 | GPU about 10–16 GB | `qwen3-vl:8b-instruct` | `qwen3:8b` | `small`, one model loaded at a time |
 | GPU 16 GB and above | `qwen3-vl:8b-instruct` | `qwen3:8b` | `large-v3-turbo` on CUDA |
 | GPU 24 GB and above, with room free | `qwen3-vl:30b-a3b-instruct` | `qwen3:8b` | `large-v3-turbo` (`large-v3` stays optional) |
@@ -106,10 +106,12 @@ Ollama remains the runtime for vision and text (CPU, NVIDIA CUDA, AMD ROCm, Vulk
 
 **Use the `-instruct` vision tags.** The bare `qwen3-vl:2b`, `:4b`, `:8b`, `:30b`, and `:latest` tags are the *thinking* versions. They ignore the request to skip reasoning, spend the whole reply budget thinking, and return no frame scores, so every scene falls back to motion scoring after a long wait. Settings warns when the selected vision model is a thinking model. The instruct tags are the same size.
 
+The same applies to the 4B text model: the bare `qwen3:4b` tag now points to the thinking-only Qwen3-4B-2507 build, so the app uses the pinned non-thinking `qwen3:4b-instruct-2507-q4_K_M` (same size and speed).
+
 ```bash
 # CPU or 6–8 GB VRAM
 ollama pull qwen3-vl:4b-instruct
-ollama pull qwen3:4b
+ollama pull qwen3:4b-instruct-2507-q4_K_M
 
 # About 10 GB VRAM or more
 ollama pull qwen3-vl:8b-instruct
@@ -146,7 +148,7 @@ Requires **Ollama 0.12.7+** for Qwen3-VL. Settings shows a warning, and analysis
 | `qwen3-vl:30b-a3b-instruct` / `:32b-instruct` | ~20–21 GB | Higher quality if you have the VRAM |
 | `qwen3-vl:235b` | ~143 GB | Do not pull unless you know the hardware |
 
-Text model: `qwen3:8b` when the vision model is 8B and the GPU can hold it; `qwen3:4b` otherwise. `qwen3:30b` is an advanced option on a 20 GB GPU, and it should not stay loaded next to a 30B vision model.
+Text model: `qwen3:8b` when the vision model is 8B and the GPU can hold it; `qwen3:4b-instruct-2507-q4_K_M` otherwise. `qwen3:30b` is an advanced option on a 20 GB GPU, and it should not stay loaded next to a 30B vision model.
 
 Settings installs a model only when you ask, shows download progress, and refuses a download that will not fit on disk.
 

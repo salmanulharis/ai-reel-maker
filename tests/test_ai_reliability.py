@@ -239,6 +239,14 @@ def test_warm_up_loads_the_model_the_job_uses_first():
     assert _models_to_warm(settings, both, warm_both=False) == [("qwen3:4b", "text")]
 
 
+def test_warm_up_skips_the_text_model_when_speech_is_off():
+    settings = Settings(ollama_vision_model="qwen3-vl:4b", ollama_text_model="qwen3:4b", enable_whisper=False)
+    both = {"models": ["qwen3-vl:4b", "qwen3:4b"], "vision_ready": True}
+    assert _models_to_warm(settings, both, warm_both=False) == [("qwen3-vl:4b", "vision")]
+    settings.enable_visual_analysis = False
+    assert _models_to_warm(settings, both, warm_both=False) == []
+
+
 # Model readiness
 
 
@@ -512,8 +520,8 @@ def _transcript() -> Transcript:
     )
 
 
-def _analyze(tmp_path, job_dir, cache, ollama=None, logs=None):
-    settings = Settings(data_dir=tmp_path / "data", ollama_vision_batch_size=4)
+def _analyze(tmp_path, job_dir, cache, ollama=None, logs=None, **overrides):
+    settings = Settings(data_dir=tmp_path / "data", ollama_vision_batch_size=4, **overrides)
     progress = PipelineProgress(lambda kind, payload: logs.append(payload) if logs is not None and kind == "log" else None)
     analyzer = VideoAnalyzer(settings, FakeRunner(), ollama, vision_enabled=bool(ollama), text_enabled=bool(ollama))
     return analyzer.analyze(job_dir, job_dir / "source.mp4", HighlightConfig(), progress, cache, plan=False)
@@ -536,6 +544,42 @@ def test_failed_transcription_is_not_cached_and_runs_again(tmp_path, monkeypatch
     result = _analyze(tmp_path, job_dir, load_cache(job_dir))
     assert (job_dir / "transcript.json").exists()
     assert len(result["segment_scores"]) == 2
+
+
+def test_speech_off_still_extracts_audio_for_loudness(tmp_path, monkeypatch):
+    job_dir, cache = _job(tmp_path)
+    wav = job_dir / "source" / "audio.wav"
+    wav.unlink()
+    extracted = []
+    monkeypatch.setattr(
+        "app.analysis.pipeline.extract_audio", lambda runner, source, out: extracted.append(out) or Path(out).write_bytes(b"RIFF")
+    )
+    monkeypatch.setattr("app.analysis.pipeline.transcribe_detailed", lambda *a, **k: pytest.fail("transcribed with speech off"))
+    result = _analyze(tmp_path, job_dir, cache, enable_whisper=False)
+    assert extracted == [wav]
+    assert result["transcript"]["segments"] == []
+    assert result["segment_scores"] == []
+
+
+def test_speech_off_ignores_cached_speech_and_keeps_it_for_later(tmp_path, monkeypatch):
+    from app.workers.worker import load_cache
+
+    job_dir, cache = _job(tmp_path)
+    monkeypatch.setattr("app.analysis.pipeline.transcribe_detailed", lambda *a, **k: (_transcript(), {"ok": True}))
+    _analyze(tmp_path, job_dir, cache)
+    saved_transcript = (job_dir / "transcript.json").read_text(encoding="utf-8")
+    saved_scores = (job_dir / "segment_scores.json").read_text(encoding="utf-8")
+
+    monkeypatch.setattr("app.analysis.pipeline.transcribe_detailed", lambda *a, **k: pytest.fail("transcribed again"))
+    off = _analyze(tmp_path, job_dir, load_cache(job_dir), enable_whisper=False)
+    assert off["transcript"]["segments"] == []
+    assert off["segment_scores"] == []
+    assert (job_dir / "transcript.json").read_text(encoding="utf-8") == saved_transcript
+    assert (job_dir / "segment_scores.json").read_text(encoding="utf-8") == saved_scores
+
+    on = _analyze(tmp_path, job_dir, load_cache(job_dir))
+    assert len(on["transcript"]["segments"]) == 2
+    assert len(on["segment_scores"]) == 2
 
 
 def test_fallback_scores_are_redone_once_ollama_is_available(tmp_path, monkeypatch):

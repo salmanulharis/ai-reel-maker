@@ -16,6 +16,7 @@ from typing import Any
 from app.config import Settings, get_settings
 from app.services.ai_profile import apply_recommendation, sync_hardware_profile
 from app.services.model_catalog import catalog_entry
+from app.services.ollama_runtime import get_ollama_client
 from app.services.settings_store import apply_values, read_setting, write_setting
 
 # The settings automatic optimization manages, and where each comes from in a recommendation.
@@ -82,6 +83,10 @@ def build_plan(settings: Settings | None = None, *, refresh: bool = False) -> di
             }
         )
     snapshot = read_snapshot()
+    notes = list(recommendation.get("notes") or [])
+    graphics = builtin_graphics_note(hardware, runtime, settings)
+    if graphics:
+        notes.append(graphics)
     return {
         "enabled": mode == "auto",
         "hardware": hardware_summary(hardware),
@@ -89,7 +94,7 @@ def build_plan(settings: Settings | None = None, *, refresh: bool = False) -> di
         "changes": [item for item in items if item["changed"]],
         "tradeoffs": tradeoffs(recommendation, hardware),
         "warnings": warnings(recommendation, hardware, runtime, settings),
-        "notes": list(recommendation.get("notes") or []),
+        "notes": notes,
         "can_undo": bool(snapshot and snapshot.get("values")),
         "undo_saved_at": (snapshot or {}).get("saved_at"),
         "history": read_history(),
@@ -224,12 +229,30 @@ def warnings(rec: dict[str, Any], hw: dict[str, Any], runtime: dict[str, Any], s
     if disk is not None and float(disk) < _LOW_DISK_GB:
         found.append(f"Only {disk} GB of disk space is free. Videos, models, and analysis files need room; free up space if you can.")
     placement = (runtime.get("placement") or {}).get("mode")
-    if hw.get("inference_mode") != "gpu" and placement == "gpu":
+    if hw.get("inference_mode") != "gpu" and placement == "gpu" and not _uses_builtin_graphics(hw, runtime, settings):
         found.append(
             "The AI is running on a graphics card that isn't in this computer (another computer or a tunnel). "
             "Recommendations are based on this computer. To use larger models there, turn automatic optimization off and choose them yourself."
         )
     return found
+
+
+def _uses_builtin_graphics(hw: dict[str, Any], runtime: dict[str, Any], settings: Settings) -> bool:
+    """Ollama on this computer reports GPU use although no dedicated graphics memory was detected:
+    it is running on the built-in graphics, which share system memory."""
+    placement = (runtime.get("placement") or {}).get("mode")
+    if hw.get("inference_mode") == "gpu" or placement != "gpu" or not hw.get("gpu"):
+        return False
+    return get_ollama_client(settings).is_local()
+
+
+def builtin_graphics_note(hw: dict[str, Any], runtime: dict[str, Any], settings: Settings) -> str | None:
+    if not _uses_builtin_graphics(hw, runtime, settings):
+        return None
+    return (
+        f"Ollama runs the models on the built-in graphics ({hw['gpu']}), which share system memory. "
+        "That speeds them up; model sizes stay chosen for this computer's memory."
+    )
 
 
 def _model_memory_gb(rec: dict[str, Any]) -> float:

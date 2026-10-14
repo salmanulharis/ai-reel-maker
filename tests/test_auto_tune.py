@@ -85,7 +85,7 @@ def test_cpu_only_plenty_of_memory_does_not_pick_large_models(env):
     state["hw"] = hardware(ram=64.0, cores=16)
     values = _values(auto_tune.build_plan(settings, refresh=True))
     assert values["ollama_vision_model"] == "qwen3-vl:4b-instruct"
-    assert values["ollama_text_model"] == "qwen3:4b"
+    assert values["ollama_text_model"] == "qwen3:4b-instruct-2507-q4_K_M"
     assert values["ollama_num_thread"] == 8  # capped
 
 
@@ -133,6 +133,24 @@ def test_warns_when_a_gpu_elsewhere_runs_the_models():
     runtime = {"placement": {"mode": "gpu"}}
     found = auto_tune.warnings(hw["recommendation"], hw, runtime, Settings(_env_file=None))
     assert any("isn't in this computer" in item for item in found)
+
+
+def test_builtin_graphics_on_this_computer_is_not_called_remote():
+    hw = hardware(ram=14.8, gpu="AMD Radeon (TM) Graphics")
+    runtime = {"placement": {"mode": "gpu"}}
+    settings = Settings(_env_file=None, ollama_base_url="http://127.0.0.1:11434")
+    found = auto_tune.warnings(hw["recommendation"], hw, runtime, settings)
+    assert not any("isn't in this computer" in item for item in found)
+    assert "built-in graphics (AMD Radeon (TM) Graphics)" in auto_tune.builtin_graphics_note(hw, runtime, settings)
+
+
+def test_remote_ollama_gpu_is_still_called_remote_with_builtin_graphics_here():
+    hw = hardware(ram=14.8, gpu="AMD Radeon (TM) Graphics")
+    runtime = {"placement": {"mode": "gpu"}}
+    settings = Settings(_env_file=None, ollama_base_url="http://192.168.1.50:11434")
+    found = auto_tune.warnings(hw["recommendation"], hw, runtime, settings)
+    assert any("isn't in this computer" in item for item in found)
+    assert auto_tune.builtin_graphics_note(hw, runtime, settings) is None
 
 
 # Turning it on and off, and undo

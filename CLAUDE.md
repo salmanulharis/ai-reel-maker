@@ -53,7 +53,8 @@ The user runs the app natively on Windows (CPU-only, ~16 GB RAM, Ollama installe
 ## Gotchas
 
 - **Use `qwen3-vl:*-instruct` tags.** The bare `qwen3-vl:2b/4b/8b/30b/latest` tags are thinking models. They ignore `think: false`, spend the whole reply budget on reasoning, and return empty content, so every scene silently falls back to motion scoring. `health()` warns about this.
-- `qwen3:4b` pretty-prints JSON (about 42–46 reply tokens per transcript segment), so `_TEXT_TOKENS_PER_SEGMENT` is 48. On CPU, reply tokens dominate model time (about 95% for transcript scoring). A compact-key / 0–10 format was tested and was **not** adopted: it was about 20% faster but slightly worse against a `qwen3:14b` reference.
+- **Use `qwen3:4b-instruct-2507-q4_K_M` for 4B text.** The bare `qwen3:4b` tag now points to the thinking-only 2507 build; with `think: false` and no schema it writes its reasoning into the reply.
+- `qwen3:4b` pretty-prints JSON (about 42–46 reply tokens per transcript segment), so `_TEXT_TOKENS_PER_SEGMENT` is 48. Not re-measured on the instruct tag; a reply that hits the limit is split and retried. On CPU, reply tokens dominate model time (about 95% for transcript scoring). A compact-key / 0–10 format was tested and was **not** adopted: it was about 20% faster but slightly worse against a `qwen3:14b` reference.
 - Tests stub `requests.Session.request` and use fake clients whose `chat()` takes the long-key reply format (`importance`, `visual_importance`, …). Keep reply parsing compatible with them. An autouse fixture in the Ollama tests stubs out the global `time.sleep`.
 - Line endings: `core.autocrlf=true`. HEAD stores LF and working copies may be CRLF; don't mix both in one file.
 

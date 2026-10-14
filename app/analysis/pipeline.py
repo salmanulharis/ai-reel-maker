@@ -154,8 +154,10 @@ class VideoAnalyzer:
             progress.stage("scenes", "done")
         cache["scenes"] = scenes
 
+        # The audio track also feeds loudness and silence, so it is extracted even with speech off.
+        speech_on = bool(self.settings.enable_whisper)
         wav = job_dir / "source" / "audio.wav"
-        if self.settings.enable_whisper and not wav.exists():
+        if not wav.exists():
             progress.stage("audio", "running")
             try:
                 extract_audio(self.runner, source, wav)
@@ -167,10 +169,14 @@ class VideoAnalyzer:
             progress.stage("audio", "done", "cached")
 
         transcript_data = cache.get("transcript")
-        if transcript_data is None:
+        if not speech_on:
+            # Not cached, so turning speech back on transcribes; a cached transcript stays on disk.
+            transcript_data = Transcript().model_dump()
+            progress.stage("transcript", "done", "Turned off")
+        elif transcript_data is None:
             progress.stage("transcript", "running")
             transcribed = True
-            if wav.exists() and self.settings.enable_whisper:
+            if wav.exists():
                 transcript_data, transcribed = self._transcribe(wav, progress)
             else:
                 transcript_data = Transcript().model_dump()
@@ -212,16 +218,20 @@ class VideoAnalyzer:
         quality = self._scene_quality(job_dir, scenes, frame_map, cache)
         energy = self._audio_energy(job_dir, wav, cache)
 
-        progress.stage("content", "running")
-        usage_before = self._usage()
-        segment_scores, scores_changed = self._score_transcript(
-            transcript, config, progress, cache.get("segment_scores")
-        )
-        self._log_usage(progress, "Transcript AI", usage_before)
-        if scores_changed:
-            _write(job_dir / "segment_scores.json", segment_scores)
+        if speech_on:
+            progress.stage("content", "running")
+            usage_before = self._usage()
+            segment_scores, scores_changed = self._score_transcript(
+                transcript, config, progress, cache.get("segment_scores")
+            )
+            self._log_usage(progress, "Transcript AI", usage_before)
+            if scores_changed:
+                _write(job_dir / "segment_scores.json", segment_scores)
+            progress.stage("content", "done")
+        else:
+            segment_scores = []
+            progress.stage("content", "done", "Turned off")
         cache["segment_scores"] = segment_scores
-        progress.stage("content", "done")
 
         visual = dict(cache.get("visual") or {})
         ollama_ok = bool(self.ollama)

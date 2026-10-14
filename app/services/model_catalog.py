@@ -10,6 +10,9 @@ def recommended_threads(count: int | None) -> int:
     return max(1, min(8, int(count) - reserve))
 
 
+# Pinned tag: the bare qwen3:4b alias now points to the thinking-only 2507 build.
+TEXT_4B = "qwen3:4b-instruct-2507-q4_K_M"
+
 VISION_FIT_GB = {
     "qwen3-vl:30b-a3b-instruct": 18.0,
     "qwen3-vl:8b-instruct": 7.0,
@@ -58,7 +61,7 @@ VISION_MODELS: list[dict[str, Any]] = [
 
 TEXT_MODELS: list[dict[str, Any]] = [
     {
-        "name": "qwen3:4b",
+        "name": TEXT_4B,
         "kind": "text",
         "disk_gb": 2.5,
         "min_vram_gb": 4,
@@ -214,7 +217,7 @@ def _cpu_setup(ram: float, threads: int) -> dict[str, Any]:
     return _pack(
         inference_mode="cpu",
         vision=vision,
-        text="qwen3:4b",
+        text=TEXT_4B,
         whisper=whisper,
         whisper_device="cpu",
         batch=batch,
@@ -248,13 +251,13 @@ def _gpu_setup(total: float, budget: float, threads: int) -> dict[str, Any]:
             alternatives["text"] = ["qwen3:30b"]
     elif budget >= VISION_FIT_GB["qwen3-vl:4b-instruct"] or total >= 4:
         vision = "qwen3-vl:4b-instruct" if budget >= VISION_FIT_GB["qwen3-vl:4b-instruct"] else "qwen3-vl:2b-instruct"
-        text = "qwen3:4b"
+        text = TEXT_4B
         if budget >= VISION_FIT_GB["qwen3-vl:8b-instruct"]:
             alternatives["vision"] = ["qwen3-vl:8b-instruct"]
             notes.append("qwen3-vl:8b-instruct can fit, and 4B stays the default so vision remains reliable.")
     else:
         vision = "qwen3-vl:2b-instruct"
-        text = "qwen3:4b"
+        text = TEXT_4B
         notes.append("Very little free VRAM. The smallest vision model is selected.")
 
     whisper, whisper_device, whisper_alts = _whisper_choice(vision, total, budget)

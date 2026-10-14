@@ -12,7 +12,7 @@ def test_cpu_ram_does_not_select_large_models():
     setup = recommend_setup(None, 64, None, 8)
     assert setup["inference_mode"] == "cpu"
     assert setup["vision_model"] == "qwen3-vl:4b-instruct"
-    assert setup["text_model"] == "qwen3:4b"
+    assert setup["text_model"] == "qwen3:4b-instruct-2507-q4_K_M"
     assert setup["whisper_device"] == "cpu"
     assert setup["warm_both"] is False
     assert "qwen3-vl:8b-instruct" in setup["alternatives"]["vision"]
@@ -28,7 +28,7 @@ def test_low_ram_cpu_uses_smallest_vision_model():
 def test_small_gpu_prefers_4b_and_offers_8b():
     setup = recommend_setup(8, 32, 7.5, 8)
     assert setup["vision_model"] == "qwen3-vl:4b-instruct"
-    assert setup["text_model"] == "qwen3:4b"
+    assert setup["text_model"] == "qwen3:4b-instruct-2507-q4_K_M"
     assert "qwen3-vl:8b-instruct" in setup["alternatives"]["vision"]
 
 

@@ -29,7 +29,7 @@ def test_model_present_accepts_tagged_alias():
 def test_recommend_models_for_cpu_under_16gb():
     vision, text = recommend_models(None, 14.8)
     assert vision == "qwen3-vl:2b-instruct"
-    assert text == "qwen3:4b"
+    assert text == "qwen3:4b-instruct-2507-q4_K_M"
 
 
 def test_native_default_ollama_url_is_localhost(monkeypatch):

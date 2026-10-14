@@ -18,7 +18,8 @@ _lock = threading.Lock()
 CACHE_TTL_SECONDS = 3 * 60 * 60
 # Part of the fingerprint, so automatic mode applies a changed recommendation once even when the
 # hardware is the same. v2: Qwen3-VL instruct tags (the bare tags are thinking models).
-RECOMMENDATION_VERSION = "v2"
+# v3: Qwen3 4B instruct text tag, for the same reason.
+RECOMMENDATION_VERSION = "v3"
 
 APPLIED_FIELDS = (
     "ollama_vision_model",
