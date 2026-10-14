@@ -101,6 +101,18 @@
     "customFocusPlaceholder": "For example: focus on the product demo, skip the introduction.",
     "priorities": "What matters most",
     "prioritiesHint": "Pick one or more. When you pick several, use the sliders to say how much each one matters.",
+    "connectionPriorityHint": "Favors meaningful affectionate interactions, lets strong moments breathe, and keeps the original scene audio intact.",
+    "quickPresets": "Quick presets",
+    "quickPresetHint": "Choose a starting point, then adjust any setting below.",
+    "connectionHighlightPreset": "Connection highlight · 30–60s",
+    "connectionMomentsPreset": "Short moments · 10–20s",
+    "audioFocus": "Audio focus",
+    "audioFocusBalanced": "Original balance",
+    "audioFocusNatural": "Natural sounds",
+    "audioFocusDialogue": "Dialogue",
+    "audioFocusHint": "Changes moment rankings using loudness and transcript estimates; it does not classify sound events or alter the original mix.",
+    "audioFocusNaturalHint": "Favors audible stretches with less dialogue.",
+    "audioFocusDialogueHint": "Favors stretches with more detected speech.",
     "weightLess": "less",
     "weightMore": "more",
     "clipLength": "Clip length",
@@ -190,7 +202,8 @@
     "speech": "What is said",
     "magic": "Surprising moments",
     "visual": "Visuals",
-    "information": "Information"
+    "information": "Information",
+    "connection": "Connection"
   },
   "progress": {
     "title": "Analyzing",

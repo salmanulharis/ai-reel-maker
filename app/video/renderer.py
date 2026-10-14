@@ -79,7 +79,12 @@ class Renderer:
                 dur = max(0.05, clip.end - clip.start)
                 fade = min(0.12, dur / 6)
                 filters.append(f"fade=t=in:st=0:d={fade},fade=t=out:st={dur - fade}:d={fade}")
-            extra = ["-vf", ",".join(filters), "-af", "asetpts=PTS-STARTPTS,aresample=48000:async=1"]
+            audio_filters = ["asetpts=PTS-STARTPTS", "aresample=48000:async=1"]
+            if settings.transition == "fade":
+                audio_filters.extend(
+                    [f"afade=t=in:st=0:d={fade}", f"afade=t=out:st={dur - fade}:d={fade}"]
+                )
+            extra = ["-vf", ",".join(filters), "-af", ",".join(audio_filters)]
             cmd = VideoProcessor.cut_clip_command(
                 clip_source,
                 clip_path,

@@ -208,7 +208,9 @@ class ClipOptimizer:
                 novelty = 1.0
                 if selected:
                     novelty = 1.0 - max(similarity_fn(cand, s) for s in selected)
-                value = float(cand.get("score", 0)) + 0.55 * novelty
+                # Candidate score already reflects the user's content priorities. Keep
+                # diversity secondary so it cannot routinely override that ranking.
+                value = float(cand.get("score", 0)) + 0.08 * novelty
                 if novelty < 0.35 and not need_more:
                     continue
                 if value > best_value:

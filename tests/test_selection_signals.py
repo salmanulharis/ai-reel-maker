@@ -10,7 +10,7 @@ import numpy as np
 import pytest
 
 from app.analysis import score_source
-from app.analysis.candidates import _sentence_spans, generate_candidates
+from app.analysis.candidates import _Loudness, _sentence_spans, generate_candidates
 from app.analysis.pipeline import _candidate_limit
 from app.analysis.repetition import RepetitionAnalyzer
 from app.analysis.scorer import HighlightScorer
@@ -77,6 +77,10 @@ def test_audio_energy_follows_loudness_and_tolerates_bad_files(tmp_path):
     bad = tmp_path / "bad.wav"
     bad.write_bytes(b"RIFF")
     assert audio_energy(bad) == []
+
+
+def test_audio_focus_has_no_audibility_signal_for_flat_energy():
+    assert _Loudness([0.5] * 12).audibility(0, 3) is None
 
 
 def test_quiet_point_moves_a_cut_into_a_pause():

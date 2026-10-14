@@ -121,6 +121,18 @@ action is meaningful, whether the scene looks repetitive, introductory, or an en
 Score every numeric field from 0.0 to 1.0."""
 
 
+def visual_analysis_focus(custom_focus: str, priorities: list[str] | None = None) -> str:
+    focus = custom_focus.strip()
+    if "connection" in (priorities or []):
+        connection = (
+            "Prioritize clearly visible affectionate or romantic interactions, meaningful gestures, "
+            "embraces, kisses, and non-explicit intimate moments. Judge the action and interaction, "
+            "not merely the presence of people, and do not infer details that are not visible."
+        )
+        focus = f"{focus}. {connection}" if focus else connection
+    return focus
+
+
 def visual_batch_prompt(scenes: list[dict], custom_focus: str = "") -> str:
     extra = f" Focus: {custom_focus}." if custom_focus else ""
     lines = "\n".join(

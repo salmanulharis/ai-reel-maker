@@ -19,10 +19,10 @@ REGEN_PRESETS = {
     "more_concise": {"preserve_context": "low"},
     "more_exciting": {"style": "exciting"},
     "more_informative": {"style": "informative"},
-    "more_visual": {"style": "exciting"},
+    "more_visual": {"content_priorities": ["visual"]},
     "less_repetitive": {"repetition_mode": "strict", "remove_repetition": True, "allow_repeated_content": False},
-    "focus_on_speech": {"style": "informative"},
-    "focus_on_action": {"style": "exciting"},
+    "focus_on_speech": {"content_priorities": ["speech"]},
+    "focus_on_action": {"content_priorities": ["action"]},
 }
 
 

@@ -17,10 +17,11 @@ from app.ai.ollama import (
 from app.ai.prompts import (
     TRANSCRIPT_BATCH_SCHEMA_FAST,
     transcript_batch_prompt_fast,
+    visual_analysis_focus,
 )
 from app.analysis import score_source
 from app.analysis.audio import detect_silence, extract_audio, transcribe_detailed
-from app.analysis.candidates import generate_candidates
+from app.analysis.candidates import generate_candidates, populate_candidate_audio_metrics
 from app.analysis.optimizer import ClipOptimizer
 from app.analysis.repetition import RepetitionAnalyzer
 from app.analysis.scenes import detect_scenes
@@ -217,6 +218,10 @@ class VideoAnalyzer:
         cache["frames"] = frame_map
         quality = self._scene_quality(job_dir, scenes, frame_map, cache)
         energy = self._audio_energy(job_dir, wav, cache)
+        if config.audio_focus == "natural" and not energy:
+            progress.log("Natural-sound focus has no loudness data; ranking will use the other available signals.", "WARNING")
+        elif config.audio_focus == "dialogue" and not (transcript.words or transcript.segments):
+            progress.log("Dialogue focus has no transcript data; ranking will use the other available signals.", "WARNING")
 
         if speech_on:
             progress.stage("content", "running")
@@ -233,6 +238,9 @@ class VideoAnalyzer:
             progress.stage("content", "done", "Turned off")
         cache["segment_scores"] = segment_scores
 
+        connection_focus = "connection" in config.content_priorities
+        if bool(cache.get("visual_connection_focus", False)) != connection_focus:
+            cache["visual"] = {}
         visual = dict(cache.get("visual") or {})
         ollama_ok = bool(self.ollama)
         vision_ok = ollama_ok and self.vision_enabled
@@ -303,7 +311,7 @@ class VideoAnalyzer:
                 pending_scenes,
                 frame_map,
                 source_duration,
-                config.custom_focus,
+                visual_analysis_focus(config.custom_focus, config.content_priorities),
                 enabled=self.settings.enable_visual_analysis and vision_ok,
                 settings=self.settings,
                 on_batch_start=_visual_batch_progress,
@@ -322,6 +330,8 @@ class VideoAnalyzer:
             _write(job_dir / "visual_analysis.json", visual)
             progress.log("Visual analysis completed")
         cache["visual"] = visual
+        cache["visual_connection_focus"] = connection_focus
+        _write(job_dir / "visual_connection_focus.json", connection_focus)
 
         visual_by_scene = {int(k): v for k, v in visual.items()}
         candidates = generate_candidates(
@@ -765,6 +775,11 @@ class VideoAnalyzer:
 
 def plan_from_cache(cache: dict, config: HighlightConfig, settings: Settings) -> dict:
     candidates = list(cache.get("candidates") or [])
+    populate_candidate_audio_metrics(
+        candidates,
+        Transcript.model_validate(cache.get("transcript") or {}),
+        cache.get("audio_energy"),
+    )
     scorer = HighlightScorer()
     for cand in candidates:
         metrics = CandidateScore.model_validate(cand.get("metrics") or {})
@@ -773,6 +788,7 @@ def plan_from_cache(cache: dict, config: HighlightConfig, settings: Settings) ->
             style=config.style,
             priorities=config.content_priorities,
             priority_weights=config.priority_weights,
+            audio_focus=config.audio_focus,
         )
         cand["reason"] = scorer.reason_for(metrics, cand.get("reason") or "Meaningful moment")
     embedding_fn = repetition_embedding_fn(_plan_embedder(settings))

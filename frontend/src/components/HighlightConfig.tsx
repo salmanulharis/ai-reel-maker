@@ -14,7 +14,46 @@ const PRESETS = [
 ];
 
 const STYLES = ["auto", "informative", "exciting", "social", "educational", "custom"] as const;
-const PRIORITIES = ["balanced", "action", "speech", "magic", "visual", "information"] as const;
+const PRIORITIES = ["balanced", "action", "speech", "magic", "visual", "information", "connection"] as const;
+const AUDIO_FOCUSES = ["balanced", "natural", "dialogue"] as const;
+const CONNECTION_PRESETS: Record<"highlight" | "moments", Partial<HighlightForm>> = {
+  highlight: {
+    min_duration: 30,
+    max_duration: 60,
+    length_mode: "range",
+    content_priorities: ["connection"],
+    priority_weights: { connection: 5 },
+    audio_focus: "natural",
+    sequence_duration_mode: "auto",
+    min_sequence_duration: 2.5,
+    max_sequence_duration: 12,
+    preserve_context: "high",
+    transition: "fade",
+    social_short: false,
+    remove_repetition: true,
+    allow_repeated_content: false,
+    repetition_mode: "balanced",
+    order_mode: "chronological",
+  },
+  moments: {
+    min_duration: 10,
+    max_duration: 20,
+    length_mode: "range",
+    content_priorities: ["connection"],
+    priority_weights: { connection: 5 },
+    audio_focus: "natural",
+    sequence_duration_mode: "auto",
+    min_sequence_duration: 1.5,
+    max_sequence_duration: 8,
+    preserve_context: "balanced",
+    transition: "fade",
+    social_short: false,
+    remove_repetition: true,
+    allow_repeated_content: false,
+    repetition_mode: "balanced",
+    order_mode: "chronological",
+  },
+};
 
 const copy = messages.config;
 
@@ -188,6 +227,15 @@ export function HighlightConfigPanel({
 
       <fieldset className="config-section">
         <legend>{copy.priorities}</legend>
+        <p className="field-hint">{copy.quickPresetHint}</p>
+        <div className="chips" role="group" aria-label={copy.quickPresets}>
+          <button type="button" className="chip" onClick={() => update(CONNECTION_PRESETS.highlight)}>
+            {copy.connectionHighlightPreset}
+          </button>
+          <button type="button" className="chip" onClick={() => update(CONNECTION_PRESETS.moments)}>
+            {copy.connectionMomentsPreset}
+          </button>
+        </div>
         <div className="chips" role="group" aria-label={copy.priorities}>
           {PRIORITIES.map((key) => (
             <button
@@ -212,6 +260,33 @@ export function HighlightConfigPanel({
           ))}
         </div>
         <p className="field-hint">{copy.prioritiesHint}</p>
+        {form.content_priorities.includes("connection") && (
+          <p className="field-hint">{copy.connectionPriorityHint}</p>
+        )}
+        <div className="field">
+          <label htmlFor="audioFocus">{copy.audioFocus}</label>
+          <select
+            id="audioFocus"
+            aria-describedby="audio-focus-hint"
+            value={form.audio_focus}
+            onChange={(e) => {
+              const focus = AUDIO_FOCUSES.find((option) => option === e.target.value);
+              if (focus) update({ audio_focus: focus });
+            }}
+          >
+            <option value="balanced">{copy.audioFocusBalanced}</option>
+            <option value="natural">{copy.audioFocusNatural}</option>
+            <option value="dialogue">{copy.audioFocusDialogue}</option>
+          </select>
+          <p className="field-hint" id="audio-focus-hint">
+            {copy.audioFocusHint}{" "}
+            {form.audio_focus === "natural"
+              ? copy.audioFocusNaturalHint
+              : form.audio_focus === "dialogue"
+                ? copy.audioFocusDialogueHint
+                : ""}
+          </p>
+        </div>
         {form.content_priorities[0] !== "balanced" && form.content_priorities.length > 1 && (
           <div className="priority-weights reveal">
             {form.content_priorities.map((key) => {
@@ -513,7 +588,7 @@ export const defaultForm = (): HighlightForm => ({
   min_sequence_duration: null,
   sequence_duration_mode: "auto",
   content_priorities: ["balanced"],
-  priority_weights: { action: 3, speech: 3, magic: 3, visual: 3, information: 3 },
+  priority_weights: { action: 3, speech: 3, magic: 3, visual: 3, information: 3, connection: 3 },
   max_repeated_duration: 15,
   repetition_mode: "balanced",
   order_mode: "chronological",
@@ -521,6 +596,7 @@ export const defaultForm = (): HighlightForm => ({
   aspect_ratio: "original",
   subtitles: "none",
   transition: "cut",
+  audio_focus: "balanced",
   frame_rate: "source",
   smooth_motion: false,
   codec: "auto",

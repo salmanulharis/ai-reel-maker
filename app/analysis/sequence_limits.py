@@ -157,6 +157,9 @@ def desired_auto_length(
         if action >= 0.5 or visual >= 0.5:
             needed = max(needed, min(natural, needed * 1.15, 12.0 if natural >= 12 else natural))
             reasons.append("action/visual priority")
+    if "connection" in focus and (action >= 0.45 or visual >= 0.45):
+        needed = max(needed, min(natural, 6.0))
+        reasons.append("connection priority")
     if "magic" in focus and (hook >= 0.6 or float(metrics.get("novelty") or 0) >= 0.6 or action >= 0.7):
         needed = max(needed, min(natural, 6.0))
         reasons.append("magic-moment priority")

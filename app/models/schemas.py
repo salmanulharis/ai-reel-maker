@@ -27,6 +27,8 @@ class CandidateScore(BaseModel):
     filler_score: float = 0.0
     context_dependency: float = 0.0
     emotional_intensity: float = 0.0
+    natural_audio: float = 0.0
+    speech_presence: float = 0.0
     production_quality: float = 0.5
     silence_penalty: float = 0.0
     incomplete_sentence: bool = False
@@ -41,6 +43,8 @@ class CandidateScore(BaseModel):
         "filler_score",
         "context_dependency",
         "emotional_intensity",
+        "natural_audio",
+        "speech_presence",
         "production_quality",
         "silence_penalty",
         mode="before",
@@ -209,6 +213,7 @@ class HighlightConfig(BaseModel):
     aspect_ratio: Literal["original", "16:9", "9:16", "1:1", "4:5"] = "original"
     subtitles: Literal["none", "auto", "burned", "srt"] = "none"
     transition: Literal["cut", "fade"] = "cut"
+    audio_focus: Literal["balanced", "natural", "dialogue"] = "balanced"
     # "source" keeps the original frame rate; a number converts the output to that rate.
     frame_rate: Literal["source", "24", "25", "30", "50", "60"] = "source"
     # Create in-between frames when converting would otherwise judder. Much slower.
@@ -252,7 +257,7 @@ class HighlightConfig(BaseModel):
         if self.sequence_duration_mode not in {"auto", "custom"}:
             self.sequence_duration_mode = "auto"
         self.max_repeated_duration = max(0.0, float(self.max_repeated_duration))
-        allowed = {"balanced", "action", "speech", "magic", "visual", "information"}
+        allowed = {"balanced", "action", "speech", "magic", "visual", "information", "connection"}
         selected = []
         for item in self.content_priorities or []:
             key = str(item).strip().lower()

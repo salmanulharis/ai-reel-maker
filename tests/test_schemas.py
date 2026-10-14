@@ -1,7 +1,7 @@
 import pytest
 from pydantic import ValidationError
 
-from app.models.schemas import CandidateScore, VisualAnalysis, ClipPlan, ClipPlanItem
+from app.models.schemas import CandidateScore, HighlightConfig, VisualAnalysis, ClipPlan, ClipPlanItem
 
 
 def test_candidate_score_clamps_values_to_unit_interval():
@@ -44,3 +44,10 @@ def test_clip_plan_validates_clip_order_and_duration():
     )
     assert len(plan.clips) == 2
     assert plan.clips[0].duration == pytest.approx(7.7, abs=0.01)
+
+
+def test_highlight_config_audio_focus_defaults_and_validates():
+    assert HighlightConfig().audio_focus == "balanced"
+    assert HighlightConfig(audio_focus="natural").audio_focus == "natural"
+    with pytest.raises(ValidationError):
+        HighlightConfig(audio_focus="music")

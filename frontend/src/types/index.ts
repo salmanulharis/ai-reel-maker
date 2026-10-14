@@ -130,6 +130,7 @@ export interface HighlightForm {
   aspect_ratio: string;
   subtitles: string;
   transition: string;
+  audio_focus: "balanced" | "natural" | "dialogue";
   frame_rate: string;
   smooth_motion: boolean;
   codec: string;

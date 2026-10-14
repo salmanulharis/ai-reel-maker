@@ -71,10 +71,13 @@ def generate_candidates(
         score_model.visual_importance = max(score_model.visual_importance, visual.get("visual_importance", 0))
         score_model.silence_penalty = _silence_ratio(start, end, silences)
         score_model.incomplete_sentence = incomplete
+        score_model.speech_presence = _speech_presence(transcript, start, end, text)
         quality = quality_of(start, end)
         if quality is not None:
             score_model.production_quality = quality
         loud = loudness.emphasis(start, end)
+        audible = loudness.audibility(start, end)
+        score_model.natural_audio = (audible or 0.0) * (1.0 - score_model.speech_presence)
         if loud is not None:
             score_model.emotional_intensity = max(score_model.emotional_intensity, loud)
         final = scorer.finalize(
@@ -83,6 +86,7 @@ def generate_candidates(
             incomplete_sentence=incomplete,
             priorities=config.content_priorities,
             priority_weights=config.priority_weights,
+            audio_focus=config.audio_focus,
         )
         if start < 10 and (visual.get("appears_intro") or score_model.filler_score >= 0.5):
             final *= 0.68
@@ -156,6 +160,9 @@ def generate_candidates(
                 continue
             quality = quality_of(start, end)
             loud = loudness.emphasis(start, end)
+            audible = loudness.audibility(start, end)
+            text = overlapping_text(transcript, start, end)
+            speech_presence = _speech_presence(transcript, start, end, text)
             metrics = CandidateScore(
                 importance=max(0.45, visual.get("information_density", 0.4), visual.get("visual_importance", 0.4)),
                 visual_importance=max(0.4, visual.get("visual_importance", 0.4)),
@@ -163,17 +170,19 @@ def generate_candidates(
                 novelty=0.5,
                 hook_strength=0.35 if start < 12 else 0.2,
                 emotional_intensity=max(visual.get("action_strength", 0.3), loud or 0.0),
+                natural_audio=(audible or 0.0) * (1.0 - speech_presence),
+                speech_presence=speech_presence,
                 repetition_score=visual.get("repetition_likelihood", 0.1),
                 production_quality=0.7 if quality is None else quality,
                 silence_penalty=_silence_ratio(start, end, silences),
             )
-            text = overlapping_text(transcript, start, end)
             final = scorer.finalize(
                 metrics,
                 style=config.style,
                 incomplete_sentence=incomplete,
                 priorities=config.content_priorities,
                 priority_weights=config.priority_weights,
+                audio_focus=config.audio_focus,
             )
             poor = quality is not None and quality < POOR_QUALITY
             candidates.append(
@@ -282,10 +291,13 @@ class _Loudness:
     def __init__(self, energy: list[float] | None):
         self.energy = list(energy or [])
         self.available = len(self.energy) >= 8
+        self.variation = 0.0
         if self.available:
             values = np.asarray(self.energy, dtype=np.float32)
             self.mean = float(values.mean())
-            self.std = float(values.std()) or 1.0
+            self.variation = float(values.std())
+            self.std = self.variation
+            self.std = self.std or 1.0
 
     def emphasis(self, start: float, end: float) -> float | None:
         """0-1: how far above this video's usual loudness the span is; None without data."""
@@ -298,6 +310,50 @@ class _Loudness:
             return None
         z = (float(np.mean(window)) - self.mean) / self.std
         return float(np.clip((z - 1.0) / 1.5, 0.0, 1.0))
+
+    def audibility(self, start: float, end: float) -> float | None:
+        """Upper-quartile normalized energy, to prefer audible non-dialogue moments."""
+        if not self.available or self.variation < 0.01 or end <= start:
+            return None
+        first = max(0, int(start / ENERGY_HOP))
+        last = min(len(self.energy), max(first + 1, int(np.ceil(end / ENERGY_HOP))))
+        window = self.energy[first:last]
+        return float(np.percentile(window, 75)) if window else None
+
+
+def _speech_presence(transcript: Transcript, start: float, end: float, text: str | None = None) -> float:
+    """Estimate how much of a candidate contains speech, using word timestamps when available."""
+    duration = max(0.0, end - start)
+    if duration <= 0:
+        return 0.0
+    if transcript.words:
+        spoken = sum(
+            max(0.0, min(float(word.end), end) - max(float(word.start), start))
+            for word in transcript.words
+        )
+        return float(np.clip(spoken / (duration * 0.55), 0.0, 1.0))
+    words = len((text if text is not None else overlapping_text(transcript, start, end)).split())
+    return float(np.clip(words / (duration * 2.5), 0.0, 1.0))
+
+
+def populate_candidate_audio_metrics(candidates: list[dict], transcript: Transcript, energy: list[float] | None) -> None:
+    """Backfill audio signals for candidates cached before audio-focus scoring existed."""
+    loudness = _Loudness(energy)
+    for candidate in candidates:
+        metrics = candidate.get("metrics")
+        if not isinstance(metrics, dict):
+            metrics = {}
+        if "natural_audio" in metrics and "speech_presence" in metrics:
+            continue
+        start, end = float(candidate["start"]), float(candidate["end"])
+        text = str(candidate.get("text") or "")
+        speech_presence = _speech_presence(transcript, start, end, text)
+        audible = loudness.audibility(start, end)
+        candidate["metrics"] = {
+            **metrics,
+            "natural_audio": metrics.get("natural_audio", (audible or 0.0) * (1.0 - speech_presence)),
+            "speech_presence": metrics.get("speech_presence", speech_presence),
+        }
 
 
 def _visual_at(t: float, scenes: list[dict], visual_by_scene: dict[int, dict]) -> dict:

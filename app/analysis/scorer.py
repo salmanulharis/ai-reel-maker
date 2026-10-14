@@ -14,6 +14,8 @@ class ScoreWeights:
     novelty: float = 0.10
     hook_strength: float = 0.10
     emotional: float = 0.10
+    natural_audio: float = 0.0
+    speech_presence: float = 0.0
     context_quality: float = 0.05
     production_quality: float = 0.05
     repetition_penalty: float = 0.35
@@ -85,6 +87,14 @@ PRIORITY_EMPHASIS = {
         "hook_strength": 0.06,
         "emotional": 0.05,
     },
+    "connection": {
+        "emotional": 0.32,
+        "visual_importance": 0.28,
+        "novelty": 0.14,
+        "semantic_importance": 0.12,
+        "information_density": 0.08,
+        "hook_strength": 0.06,
+    },
 }
 
 READABLE_REASONS = [
@@ -107,12 +117,17 @@ class HighlightScorer:
         style: str,
         priorities: list[str] | None = None,
         priority_weights: dict[str, float] | None = None,
+        audio_focus: str = "balanced",
     ) -> ScoreWeights:
         weights = ScoreWeights(**self.weights.__dict__)
         for key, value in STYLE_EMPHASIS.get(style, {}).items():
             setattr(weights, key, value)
         selected = [item for item in (priorities or []) if item and item != "balanced"]
         if not selected:
+            if audio_focus == "natural":
+                weights.natural_audio = 0.25
+            elif audio_focus == "dialogue":
+                weights.speech_presence = 0.25
             return weights
         scale = priority_weights or {}
         blended: dict[str, float] = {}
@@ -125,6 +140,10 @@ class HighlightScorer:
         if total:
             for key, value in blended.items():
                 setattr(weights, key, value / total)
+        if audio_focus == "natural":
+            weights.natural_audio = 0.25
+        elif audio_focus == "dialogue":
+            weights.speech_presence = 0.25
         return weights
 
     def composite(
@@ -133,8 +152,9 @@ class HighlightScorer:
         style: str = "auto",
         priorities: list[str] | None = None,
         priority_weights: dict[str, float] | None = None,
+        audio_focus: str = "balanced",
     ) -> float:
-        w = self._weights_for(style, priorities, priority_weights)
+        w = self._weights_for(style, priorities, priority_weights, audio_focus)
         total = (
             w.semantic_importance * score.importance
             + w.information_density * score.information_density
@@ -142,6 +162,8 @@ class HighlightScorer:
             + w.novelty * score.novelty
             + w.hook_strength * score.hook_strength
             + w.emotional * score.emotional_intensity
+            + w.natural_audio * score.natural_audio
+            + w.speech_presence * score.speech_presence
             + w.context_quality * (1.0 - score.context_dependency)
             + w.production_quality * score.production_quality
         )
@@ -152,6 +174,8 @@ class HighlightScorer:
             + w.novelty
             + w.hook_strength
             + w.emotional
+            + w.natural_audio
+            + w.speech_presence
             + w.context_quality
             + w.production_quality
         )
@@ -164,8 +188,15 @@ class HighlightScorer:
         incomplete_sentence: bool | None = None,
         priorities: list[str] | None = None,
         priority_weights: dict[str, float] | None = None,
+        audio_focus: str = "balanced",
     ) -> float:
-        value = self.composite(score, style=style, priorities=priorities, priority_weights=priority_weights)
+        value = self.composite(
+            score,
+            style=style,
+            priorities=priorities,
+            priority_weights=priority_weights,
+            audio_focus=audio_focus,
+        )
         w = self.weights
         value -= w.repetition_penalty * score.repetition_score
         value -= w.filler_penalty * score.filler_score

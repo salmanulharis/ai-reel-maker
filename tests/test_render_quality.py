@@ -111,6 +111,37 @@ def test_source_quality_ignores_nvenc(tmp_path: Path):
     assert "libx264" in codecs
 
 
+def test_fade_transition_fades_audio_and_video(tmp_path: Path):
+    source = tmp_path / "in.mp4"
+    source.write_bytes(b"x" * 2000)
+    commands: list[list[str]] = []
+
+    class FakeRunner:
+        def run(self, cmd):
+            commands.append(cmd)
+            Path(cmd[-1]).write_bytes(b"x" * 2000)
+
+        def probe(self, path):
+            return VideoMetadata(duration=5, width=1280, height=720, fps=30, has_audio=True, size_bytes=2000)
+
+    Renderer(FakeRunner()).render(
+        source,
+        ClipPlan(
+            target_duration=5,
+            estimated_duration=5,
+            clips=[ClipPlanItem(start=0, end=5, reason="moment", score=0.9)],
+        ),
+        tmp_path / "out.mp4",
+        RenderSettings(transition="fade"),
+        tmp_path / "work",
+    )
+    clip_command = next(cmd for cmd in commands if "clip_000.mp4" in cmd[-1])
+    assert "fade=t=in" in clip_command[clip_command.index("-vf") + 1]
+    audio_filter = clip_command[clip_command.index("-af") + 1]
+    assert "afade=t=in" in audio_filter
+    assert "afade=t=out" in audio_filter
+
+
 def test_fps_filter_keeps_whole_rates_and_maps_ntsc_rates():
     from app.video.quality import fps_filter
 

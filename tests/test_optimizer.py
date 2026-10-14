@@ -89,3 +89,19 @@ def test_default_order_is_chronological():
         candidates, min_duration=15, max_duration=30, order_mode="chronological", max_sequence_duration=60
     )
     assert plan.clips[0].start < plan.clips[1].start
+
+
+def test_relevance_score_outweighs_secondary_novelty_bonus():
+    candidates = [
+        _c("seed", 0, 10, 0.99, topic="seed"),
+        _c("relevant", 20, 30, 0.80, topic="related"),
+        _c("novel", 40, 50, 0.70, topic="different"),
+    ]
+    plan = ClipOptimizer().select(
+        candidates,
+        min_duration=20,
+        max_duration=20,
+        max_sequence_duration=10,
+        similarity_fn=lambda a, b: 0.45 if a["id"] == "relevant" and b["id"] == "seed" else 0.0,
+    )
+    assert {clip.candidate_id for clip in plan.clips} == {"seed", "relevant"}
