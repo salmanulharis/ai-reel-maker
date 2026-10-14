@@ -16,6 +16,9 @@ from app.services.settings_store import apply_values, effective_settings, read_s
 _log = logging.getLogger(__name__)
 _lock = threading.Lock()
 CACHE_TTL_SECONDS = 3 * 60 * 60
+# Part of the fingerprint, so automatic mode applies a changed recommendation once even when the
+# hardware is the same. v2: Qwen3-VL instruct tags (the bare tags are thinking models).
+RECOMMENDATION_VERSION = "v2"
 
 APPLIED_FIELDS = (
     "ollama_vision_model",
@@ -37,6 +40,7 @@ def fingerprint(hardware: dict[str, Any], ollama_version: str | None) -> str:
     vram_text = f"{float(vram):.1f}" if vram is not None else ""
     return "|".join(
         [
+            RECOMMENDATION_VERSION,
             str(hardware.get("cpu") or ""),
             str(bucket),
             str(hardware.get("gpu") or ""),
@@ -271,6 +275,8 @@ def _read_cache() -> dict[str, Any] | None:
 
 def _cache_is_fresh(cached: dict[str, Any] | None) -> bool:
     if not cached:
+        return False
+    if not str(cached.get("fingerprint") or "").startswith(RECOMMENDATION_VERSION + "|"):
         return False
     saved = float(cached.get("saved_at") or 0)
     return (time.time() - saved) < CACHE_TTL_SECONDS

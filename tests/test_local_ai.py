@@ -11,37 +11,37 @@ from app.services.settings_store import apply_values
 def test_cpu_ram_does_not_select_large_models():
     setup = recommend_setup(None, 64, None, 8)
     assert setup["inference_mode"] == "cpu"
-    assert setup["vision_model"] == "qwen3-vl:4b"
+    assert setup["vision_model"] == "qwen3-vl:4b-instruct"
     assert setup["text_model"] == "qwen3:4b"
     assert setup["whisper_device"] == "cpu"
     assert setup["warm_both"] is False
-    assert "qwen3-vl:8b" in setup["alternatives"]["vision"]
+    assert "qwen3-vl:8b-instruct" in setup["alternatives"]["vision"]
 
 
 def test_low_ram_cpu_uses_smallest_vision_model():
     setup = recommend_setup(0, 8, 0, 4)
-    assert setup["vision_model"] == "qwen3-vl:2b"
+    assert setup["vision_model"] == "qwen3-vl:2b-instruct"
     assert setup["whisper_model"] == "base"
     assert setup["suggest_disable_vision"] is True
 
 
 def test_small_gpu_prefers_4b_and_offers_8b():
     setup = recommend_setup(8, 32, 7.5, 8)
-    assert setup["vision_model"] == "qwen3-vl:4b"
+    assert setup["vision_model"] == "qwen3-vl:4b-instruct"
     assert setup["text_model"] == "qwen3:4b"
-    assert "qwen3-vl:8b" in setup["alternatives"]["vision"]
+    assert "qwen3-vl:8b-instruct" in setup["alternatives"]["vision"]
 
 
 def test_mid_gpu_selects_8b_pair():
     setup = recommend_setup(12, 32, 11, 8)
-    assert setup["vision_model"] == "qwen3-vl:8b"
+    assert setup["vision_model"] == "qwen3-vl:8b-instruct"
     assert setup["text_model"] == "qwen3:8b"
     assert setup["whisper_model"] == "small"
 
 
 def test_large_gpu_can_select_30b_vision():
     setup = recommend_setup(24, 64, 20, 16)
-    assert setup["vision_model"] == "qwen3-vl:30b"
+    assert setup["vision_model"] == "qwen3-vl:30b-a3b-instruct"
     assert setup["text_model"] == "qwen3:8b"
     assert setup["whisper_model"] == "large-v3-turbo"
     assert setup["whisper_device"] == "cuda"
@@ -50,12 +50,12 @@ def test_large_gpu_can_select_30b_vision():
 
 def test_large_card_with_little_free_memory_steps_down():
     setup = recommend_setup(24, 64, 4, 16)
-    assert setup["vision_model"] == "qwen3-vl:4b"
+    assert setup["vision_model"] == "qwen3-vl:4b-instruct"
 
 
 def test_low_vram_stays_on_cpu_whisper():
     setup = recommend_setup(4, 16, 3.5, 4)
-    assert setup["vision_model"] == "qwen3-vl:2b"
+    assert setup["vision_model"] == "qwen3-vl:2b-instruct"
     assert setup["whisper_model"] == "base"
     assert setup["whisper_device"] == "cpu"
 
@@ -78,7 +78,7 @@ def test_fast_detect_skips_encoder_probe(monkeypatch):
     assert info["encode_acceleration"] == "Not checked"
     assert info["inference_mode"] == "cpu"
     assert info["inference_label"] == "CPU-only"
-    assert info["recommended_vision_model"] == "qwen3-vl:4b"
+    assert info["recommended_vision_model"] == "qwen3-vl:4b-instruct"
     assert info["acceleration"] == info["encode_acceleration"]
 
 
@@ -156,7 +156,7 @@ def test_auto_mode_applies_once_and_custom_mode_sticks(tmp_path, monkeypatch):
     monkeypatch.setattr("app.services.ai_profile.get_ollama_client", lambda settings=None: FakeClient())
     try:
         first = sync_hardware_profile(settings, refresh=True)
-        assert settings.ollama_vision_model == "qwen3-vl:4b"
+        assert settings.ollama_vision_model == "qwen3-vl:4b-instruct"
         assert settings.whisper_device == "cpu"
         assert first["profile"]["applied_now"] is True
         assert "CPU-only" in first["profile"]["auto_summary"]
@@ -182,7 +182,7 @@ def test_apply_recommendation_sets_auto_mode(tmp_path):
     try:
         summary = apply_recommendation(settings, recommend_setup(12, 32, 11, 8))
         assert settings.ai_config_mode == "auto"
-        assert settings.ollama_vision_model == "qwen3-vl:8b"
+        assert settings.ollama_vision_model == "qwen3-vl:8b-instruct"
         assert "GPU" in summary
     finally:
         set_settings(previous)

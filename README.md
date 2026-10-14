@@ -21,7 +21,7 @@ Everything runs locally. Your videos are not uploaded to third-party AI services
 - Local upload of MP4, MOV, MKV, AVI, WebM, and M4V
 - Background jobs (the HTTP request never blocks on transcoding)
 - Scene detection, transcription, silence analysis, and keyframe sampling
-- Optional local vision + language understanding through Ollama (`qwen3-vl:8b` recommended)
+- Optional local vision + language understanding through Ollama (`qwen3-vl:8b-instruct` recommended)
 - Light and dark theme (header switch, preference saved locally)
 - Semantic repetition removal (paraphrases, not just identical frames)
 - Diversity-aware clip selection against a duration range
@@ -44,7 +44,7 @@ Everything runs locally. Your videos are not uploaded to third-party AI services
 | FFmpeg / FFprobe | Required for probe, cuts, concat, silence detect |
 | Docker / Compose | Recommended deployment |
 | Ollama | Optional but recommended for meaning-aware highlights |
-| RAM | 8 GB minimum; 16–32 GB comfortable with Whisper `small` + `qwen3-vl:8b` |
+| RAM | 8 GB minimum; 16–32 GB comfortable with Whisper `small` + `qwen3-vl:8b-instruct` |
 | GPU | Optional. Helps Whisper, Ollama, and NVENC/QSV/AMF/VideoToolbox |
 | Disk | Several GB for models, plus space for source videos and cache |
 
@@ -94,23 +94,25 @@ Ollama remains the runtime for vision and text (CPU, NVIDIA CUDA, AMD ROCm, Vulk
 
 | Machine | Vision | Text | Whisper |
 |---------|--------|------|---------|
-| CPU, under 16 GB RAM | `qwen3-vl:2b` | `qwen3:4b` | `tiny` or `base` |
-| CPU, 16 GB RAM or more | `qwen3-vl:4b` | `qwen3:4b` | `base` |
-| GPU under 6 GB free | `qwen3-vl:2b` or `:4b` | `qwen3:4b` | `base` on CPU |
-| GPU about 6–10 GB | `qwen3-vl:4b` | `qwen3:4b` | `small` (CUDA only if about 2 GB stays free) |
-| GPU about 10–16 GB | `qwen3-vl:8b` | `qwen3:8b` | `small`, one model loaded at a time |
-| GPU 16 GB and above | `qwen3-vl:8b` | `qwen3:8b` | `large-v3-turbo` on CUDA |
-| GPU 24 GB and above, with room free | `qwen3-vl:30b` | `qwen3:8b` | `large-v3-turbo` (`large-v3` stays optional) |
+| CPU, under 16 GB RAM | `qwen3-vl:2b-instruct` | `qwen3:4b` | `tiny` or `base` |
+| CPU, 16 GB RAM or more | `qwen3-vl:4b-instruct` | `qwen3:4b` | `base` |
+| GPU under 6 GB free | `qwen3-vl:2b-instruct` or `:4b-instruct` | `qwen3:4b` | `base` on CPU |
+| GPU about 6–10 GB | `qwen3-vl:4b-instruct` | `qwen3:4b` | `small` (CUDA only if about 2 GB stays free) |
+| GPU about 10–16 GB | `qwen3-vl:8b-instruct` | `qwen3:8b` | `small`, one model loaded at a time |
+| GPU 16 GB and above | `qwen3-vl:8b-instruct` | `qwen3:8b` | `large-v3-turbo` on CUDA |
+| GPU 24 GB and above, with room free | `qwen3-vl:30b-a3b-instruct` | `qwen3:8b` | `large-v3-turbo` (`large-v3` stays optional) |
 
 `distil-large-v3` is faster still, but it transcribes **English only**. Choose it in Settings only for English videos.
 
+**Use the `-instruct` vision tags.** The bare `qwen3-vl:2b`, `:4b`, `:8b`, `:30b`, and `:latest` tags are the *thinking* versions. They ignore the request to skip reasoning, spend the whole reply budget thinking, and return no frame scores, so every scene falls back to motion scoring after a long wait. Settings warns when the selected vision model is a thinking model. The instruct tags are the same size.
+
 ```bash
 # CPU or 6–8 GB VRAM
-ollama pull qwen3-vl:4b
+ollama pull qwen3-vl:4b-instruct
 ollama pull qwen3:4b
 
 # About 10 GB VRAM or more
-ollama pull qwen3-vl:8b
+ollama pull qwen3-vl:8b-instruct
 ollama pull qwen3:8b
 ```
 
@@ -124,11 +126,11 @@ You can install these from Settings. The app does not download the 30B models un
 | Official Ollama `qwen3-vl:latest` | **8B** (~6.1 GB, 256K context, image + text) |
 | Lectures, slides, product UI, OCR | 8B over 4B |
 | Structured JSON scoring + language quality | 8B + `qwen3:8b` |
-| Speed on 6–8 GB VRAM | `qwen3-vl:4b` |
+| Speed on 6–8 GB VRAM | `qwen3-vl:4b-instruct` |
 
 Qwen3-VL is currently the strongest open vision-language line you can run in Ollama for this workload. It has native long-video / multi-image reasoning, spatial understanding, and OCR across many languages — which matches highlight extraction (keyframes + “is this a demo / slide / speaker / intro?”).
 
-The official Ollama library tags `qwen3-vl:latest` to **`qwen3-vl:8b`**. Independent local video-frame tests found `qwen3-vl:4b` can match 8B on simple frame tagging at about 2× the speed and half the VRAM (~3.3 GB). The **8B** still wins for this product because tutorials, presentations, and product demos often depend on reading on-screen text; 8B is clearly stronger on document/OCR-style tasks (for example DocVQA-class gaps versus 4B). Pair it with **`qwen3:8b`** for transcript scoring — do not send every frame to a giant model.
+The official Ollama library tags `qwen3-vl:latest` to **`qwen3-vl:8b`**, the thinking build; this app uses the same-size `qwen3-vl:8b-instruct`. Independent local video-frame tests found `qwen3-vl:4b` can match 8B on simple frame tagging at about 2× the speed and half the VRAM (~3.3 GB). The **8B** still wins for this product because tutorials, presentations, and product demos often depend on reading on-screen text; 8B is clearly stronger on document/OCR-style tasks (for example DocVQA-class gaps versus 4B). Pair it with **`qwen3:8b`** for transcript scoring — do not send every frame to a giant model.
 
 Gemma 3 is a weaker fit here: combining visual frames with speech context (exactly what this pipeline does) has been shown to *hurt* Gemma 3 while *helping* Qwen3-VL. Llama 3.2 Vision is behind Qwen3-VL on current local VLM comparisons. Newer Qwen 3.6 vision builds are not a reliable Ollama one-liner yet.
 
@@ -138,10 +140,10 @@ Requires **Ollama 0.12.7+** for Qwen3-VL. Settings shows a warning, and analysis
 
 | Model | Disk (approx.) | When to use |
 |-------|----------------|-------------|
-| `qwen3-vl:2b` | ~1.9 GB | CPU / very low VRAM only |
-| `qwen3-vl:4b` | ~3.3 GB | Fast path; 6–8 GB VRAM; many scenes |
-| **`qwen3-vl:8b`** | **~6.1 GB** | **Best default when the GPU has about 8 GB free** |
-| `qwen3-vl:30b` / `:32b` | ~20–21 GB | Higher quality if you have the VRAM |
+| `qwen3-vl:2b-instruct` | ~1.9 GB | CPU / very low VRAM only |
+| `qwen3-vl:4b-instruct` | ~3.3 GB | Fast path; 6–8 GB VRAM; many scenes |
+| **`qwen3-vl:8b-instruct`** | **~6.1 GB** | **Best default when the GPU has about 8 GB free** |
+| `qwen3-vl:30b-a3b-instruct` / `:32b-instruct` | ~20–21 GB | Higher quality if you have the VRAM |
 | `qwen3-vl:235b` | ~143 GB | Do not pull unless you know the hardware |
 
 Text model: `qwen3:8b` when the vision model is 8B and the GPU can hold it; `qwen3:4b` otherwise. `qwen3:30b` is an advanced option on a 20 GB GPU, and it should not stay loaded next to a 30B vision model.
@@ -174,7 +176,7 @@ FLASK_ENV=production
 # and a native install uses http://127.0.0.1:11434.
 # Set it for Ollama on another LAN box, or for the Compose "ollama" profile:
 # OLLAMA_BASE_URL=http://192.168.1.50:11434
-OLLAMA_VISION_MODEL=qwen3-vl:8b
+OLLAMA_VISION_MODEL=qwen3-vl:8b-instruct
 OLLAMA_TEXT_MODEL=qwen3:8b
 OLLAMA_TIMEOUT=900
 OLLAMA_MAX_RETRIES=2
@@ -269,9 +271,28 @@ Hardware encoding (NVENC) needs the NVIDIA Container Toolkit and an image with F
 
 ### CPU-only mode
 
-Leave Ollama unset or offline and the app still analyzes video with scene, audio, and transcript heuristics. Automatic mode selects `qwen3-vl:4b` or `qwen3-vl:2b` instead of a large model. Set `ENABLE_VISUAL_ANALYSIS=false` to skip vision calls entirely. Transcription uses `faster-whisper` on CPU (`int8`). Rendering uses libx264.
+Leave Ollama unset or offline and the app still analyzes video with scene, audio, and transcript heuristics. Automatic mode selects `qwen3-vl:4b-instruct` or `qwen3-vl:2b-instruct` instead of a large model. Set `ENABLE_VISUAL_ANALYSIS=false` to skip vision calls entirely. Transcription uses `faster-whisper` on CPU (`int8`). Rendering uses libx264.
 
 If a GPU is listed in Settings but **Test local AI** reports CPU, Ollama did not place the model in VRAM. Check the driver, run Ollama on the machine with the GPU, or pick a smaller model. On AMD, restart Ollama with `OLLAMA_VULKAN=1` when ROCm cannot load Qwen3-VL.
+
+On a CPU-only machine, model replies cost far more time than reading prompts, so these Ollama server settings help without lowering quality: `OLLAMA_FLASH_ATTENTION=1` and `OLLAMA_KV_CACHE_TYPE=q8_0` (less memory for the same context). Avoid `q4_0` for the KV cache; it lowers accuracy. Each analysis log ends with per-stage timings and the token counts of every model stage, so you can see where the time goes.
+
+### Optional GPU on another machine
+
+Vision and transcript scoring can run on Ollama on another computer with a GPU: a desktop on your network, or a rented cloud GPU. Whisper, FFmpeg, and rendering stay on this machine, so CPU-only operation keeps working without it.
+
+```env
+OLLAMA_BASE_URL=http://192.168.1.50:11434       # the GPU machine
+OLLAMA_FALLBACK_URL=http://127.0.0.1:11434      # optional: use this computer's Ollama while that one is offline
+# OLLAMA_API_KEY=...                             # optional: sent as a Bearer token, for a proxy that checks one
+```
+
+- On the GPU machine, start Ollama with `OLLAMA_HOST=0.0.0.0` and pull the models there.
+- The app sends the CPU thread setting only to an Ollama on this computer. A remote server uses its own default.
+- When the remote server stops answering and `OLLAMA_FALLBACK_URL` is set, the job continues on the fallback. The app returns to the remote server once it answers again (checked at most once a minute). Without a fallback, scoring falls back to heuristics as before.
+- Automatic setup picks models for **this** computer's hardware. To use bigger models on the remote GPU, choose them in Settings (custom mode).
+- Ollama has no login of its own. Do not expose port 11434 to the internet. Reach the server over a VPN (Tailscale, WireGuard), an SSH tunnel (`ssh -L 11434:localhost:11434 gpu-box`), or an HTTPS reverse proxy that checks `OLLAMA_API_KEY`.
+- Sampled frames and transcript text are sent to that server. Use only machines you trust.
 
 ---
 
@@ -340,15 +361,16 @@ Unit tests cover timestamps, scoring, repetition, duration optimization, FFmpeg 
 | Problem | What to check |
 |---------|----------------|
 | Ollama unavailable | `curl http://localhost:11434/api/tags`; URL in Settings; Docker extra_hosts |
-| Model missing | UI shows “not installed” + Install model, or `ollama pull qwen3-vl:8b` |
+| Model missing | UI shows “not installed” + Install model, or `ollama pull qwen3-vl:8b-instruct` |
 | FFmpeg missing | Install FFmpeg so `ffmpeg` and `ffprobe` are on `PATH` |
 | GPU unavailable | App continues on CPU; encoding falls back to libx264 |
 | Permission denied | Data directory must be writable (`DATA_DIR`) |
 | Out of disk space | Settings → Storage; clear tmp/cache; retention days |
 | Unsupported codec | Re-wrap/transcode the source locally; FFmpeg must decode it |
-| Very slow inference | Settings → Use recommended setup, or pick `qwen3-vl:4b` / Whisper `base` or `tiny` |
+| Very slow inference | Settings → Use recommended setup, or pick `qwen3-vl:4b-instruct` / Whisper `base` or `tiny` |
 | GPU listed, test says CPU | Driver, Ollama on the GPU machine, a smaller model, or `OLLAMA_VULKAN=1` on AMD |
 | Container cannot reach host Ollama | Linux `host-gateway`, `OLLAMA_HOST=0.0.0.0`, or a LAN URL |
+| Vision takes long and every scene says motion fallback | The vision model is a thinking tag (`qwen3-vl:4b`); install and choose `qwen3-vl:4b-instruct` |
 | Job failed mid-vision | Retry continues from cache; one failed scene uses fallback scoring |
 | Analysis ran while Ollama or Whisper was down | Start them and run the analysis again: scenes and transcript segments that used fallback scores are re-scored, and a failed transcription is retried |
 
@@ -357,7 +379,7 @@ Unit tests cover timestamps, scoring, repetition, duration optimization, FFmpeg 
 ## Privacy
 
 - No cloud AI APIs (no OpenAI, no Gemini, no SaaS video APIs)
-- The only network calls are to the Ollama URL you configure (typically localhost or LAN)
+- The only network calls are to the Ollama URLs you configure (typically localhost or LAN). A remote Ollama receives sampled frames and transcript text
 - Uploads are stored under `data/jobs/<id>/` as files, not in SQLite blobs
 
 ---

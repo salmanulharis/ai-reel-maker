@@ -22,18 +22,22 @@ class FFmpegError(RuntimeError):
 class FFmpegRunner:
     def __init__(self, cancel_event: threading.Event | None = None):
         self.cancel_event = cancel_event or threading.Event()
-        self._proc: subprocess.Popen | None = None
+        # Several commands can run at once (parallel frame extraction), so cancel stops them all.
+        self._procs: set[subprocess.Popen] = set()
+        self._procs_lock = threading.Lock()
         self.processor = VideoProcessor()
 
     def cancel(self) -> None:
         self.cancel_event.set()
-        proc = self._proc
-        if proc and proc.poll() is None:
-            proc.terminate()
-            try:
-                proc.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                proc.kill()
+        with self._procs_lock:
+            procs = list(self._procs)
+        for proc in procs:
+            if proc.poll() is None:
+                proc.terminate()
+                try:
+                    proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
 
     def run(
         self,
@@ -43,21 +47,24 @@ class FFmpegRunner:
     ) -> subprocess.CompletedProcess:
         if self.cancel_event.is_set():
             raise CancelledError("Job cancelled")
-        self._proc = subprocess.Popen(
+        proc = subprocess.Popen(
             command,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE if collect_stderr else subprocess.DEVNULL,
             text=True,
         )
+        with self._procs_lock:
+            self._procs.add(proc)
         try:
-            stdout, stderr = self._proc.communicate(timeout=timeout)
+            stdout, stderr = proc.communicate(timeout=timeout)
         except subprocess.TimeoutExpired:
-            self._proc.kill()
-            stdout, stderr = self._proc.communicate()
+            proc.kill()
+            stdout, stderr = proc.communicate()
             raise FFmpegError(f"Command timed out: {command[0]}")
         finally:
-            code = self._proc.returncode
-            self._proc = None
+            code = proc.returncode
+            with self._procs_lock:
+                self._procs.discard(proc)
         if self.cancel_event.is_set():
             raise CancelledError("Job cancelled")
         result = subprocess.CompletedProcess(command, code, stdout, stderr)

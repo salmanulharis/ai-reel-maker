@@ -24,6 +24,7 @@ def get_ollama_client(settings: Settings | None = None) -> OllamaClient:
             _client.settings = settings
             _client.timeout = settings.ollama_timeout
             _client.retries = settings.ollama_max_retries
+            _client.apply_auth()
         return _client
 
 

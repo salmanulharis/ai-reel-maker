@@ -4,6 +4,7 @@ import base64
 import copy
 import io
 import json
+import threading
 import time
 from typing import Any
 from urllib.parse import urljoin, urlsplit, urlunsplit
@@ -18,6 +19,7 @@ _COMPOSE_OLLAMA = "http://ollama:11434"
 _DOCKER_HOST = "host.docker.internal"
 _LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
 _FALLBACK_CONNECT_TIMEOUT = 3
+_RESTORE_CHECK_INTERVAL = 60.0
 _MEMORY_ERROR_TOKENS = (
     "out of memory",
     "insufficient memory",
@@ -82,6 +84,31 @@ def version_problem(version: str | None, model: str) -> str | None:
     return f"Ollama {version} is too old for {model}. Update Ollama to {needed} or newer."
 
 
+def instruct_variant(model: str) -> str | None:
+    """The non-thinking tag of a Qwen3-VL model. The bare qwen3-vl:2b/4b/8b/30b tags are the
+    thinking versions, which do not turn reasoning off when asked."""
+    family, _, tag = (model or "").partition(":")
+    if family.lower() != "qwen3-vl":
+        return None
+    size = tag.lower().removesuffix("-thinking") or "8b"
+    if size == "latest":
+        size = "8b"
+    if size in {"30b", "30b-a3b"}:
+        return "qwen3-vl:30b-a3b-instruct"
+    if size in {"2b", "4b", "8b", "32b"}:
+        return f"qwen3-vl:{size}-instruct"
+    return None
+
+
+def thinking_vision_warning(model: str) -> str:
+    suggestion = instruct_variant(model)
+    choice = f"Install and choose {suggestion}" if suggestion else "Choose an instruct (non-thinking) vision model"
+    return (
+        f"{model} is a thinking model. It spends its reply on hidden reasoning, so frames get no AI "
+        f"score and each scene takes much longer. {choice} for visual analysis."
+    )
+
+
 def predict_budget(configured: int, items: int, per_item: int, num_ctx: int) -> int:
     """num_predict for a batched JSON reply: room for every item, but never more than half the
     context window so the prompt still fits. Never below the configured value."""
@@ -92,6 +119,41 @@ def predict_budget(configured: int, items: int, per_item: int, num_ctx: int) -> 
 def is_memory_error(message: str) -> bool:
     text = (message or "").lower()
     return any(token in text for token in _MEMORY_ERROR_TOKENS)
+
+
+_USAGE_FIELDS = (
+    "calls",
+    "prompt_tokens",
+    "output_tokens",
+    "prompt_sec",
+    "output_sec",
+    "load_sec",
+    "cut_off",
+    "near_context_limit",
+)
+
+
+def usage_delta(before: dict[str, float], after: dict[str, float]) -> dict[str, float]:
+    return {key: after.get(key, 0) - before.get(key, 0) for key in _USAGE_FIELDS}
+
+
+def describe_usage(usage: dict[str, float]) -> str:
+    """One log line about the model calls of a stage, or "" when there were none."""
+    calls = int(usage.get("calls") or 0)
+    if not calls:
+        return ""
+    output_tokens = int(usage.get("output_tokens") or 0)
+    output_sec = float(usage.get("output_sec") or 0)
+    speed = f" ({output_tokens / output_sec:.1f} tok/s)" if output_sec > 0 else ""
+    text = (
+        f"{calls} call{'s' if calls != 1 else ''}, "
+        f"{int(usage.get('prompt_tokens') or 0):,} prompt tokens in {float(usage.get('prompt_sec') or 0):.1f}s, "
+        f"{output_tokens:,} reply tokens in {output_sec:.1f}s{speed}"
+    )
+    load = float(usage.get("load_sec") or 0)
+    if load >= 1:
+        text += f", model load {load:.1f}s"
+    return text
 
 
 def _extract_message_text(body: dict[str, Any]) -> str:
@@ -119,7 +181,18 @@ class OllamaClient:
         self.timeout = self.settings.ollama_timeout
         self.retries = self.settings.ollama_max_retries
         self._session = requests.Session()
+        self.apply_auth()
         self._capabilities: dict[tuple[str, str, str], list[str] | None] = {}
+        self._usage = threading.local()
+        self._restore_checked_at = 0.0
+
+    def apply_auth(self) -> None:
+        """Send the optional API key, for Ollama behind an authenticating proxy on another machine."""
+        key = str(getattr(self.settings, "ollama_api_key", "") or "").strip()
+        if key:
+            self._session.headers["Authorization"] = f"Bearer {key}"
+        else:
+            self._session.headers.pop("Authorization", None)
 
     @staticmethod
     def _join(root: str, path: str) -> str:
@@ -133,18 +206,60 @@ class OllamaClient:
         host = (urlsplit(self.root).hostname or "").lower()
         return host in _LOOPBACK_HOSTS and not running_in_docker()
 
+    def shares_cpu(self) -> bool:
+        """True when Ollama runs on this computer (directly, on the Docker host, or in the Compose
+        service), so the thread count chosen for this CPU applies to it. A remote server keeps
+        its own default, which matches its own CPU or GPU."""
+        host = (urlsplit(self.root).hostname or "").lower()
+        return host in _LOOPBACK_HOSTS or host in {_DOCKER_HOST, urlsplit(_COMPOSE_OLLAMA).hostname}
+
+    def _thread_option(self) -> dict[str, Any]:
+        return {"num_thread": self.settings.ollama_num_thread} if self.shares_cpu() else {}
+
     def _default_options(self) -> dict[str, Any]:
         return {
             "temperature": 0.1,
             "num_ctx": self.settings.ollama_num_ctx,
-            "num_thread": self.settings.ollama_num_thread,
+            **self._thread_option(),
         }
 
     def role_options(self, role: str) -> dict[str, Any]:
         """Runner options for one role. Warm-up, probes, and real calls share them because
         Ollama reloads a model whenever num_ctx or num_thread change."""
         num_ctx = self.settings.ollama_vision_num_ctx if role == "vision" else self.settings.ollama_text_num_ctx
-        return {"num_ctx": num_ctx, "num_thread": self.settings.ollama_num_thread}
+        return {"num_ctx": num_ctx, **self._thread_option()}
+
+    def usage_snapshot(self) -> dict[str, float]:
+        """Running totals of model work done by chat() on the calling thread."""
+        return dict(self._thread_usage())
+
+    def _thread_usage(self) -> dict[str, float]:
+        usage = getattr(self._usage, "totals", None)
+        if usage is None:
+            usage = {key: 0 for key in _USAGE_FIELDS}
+            self._usage.totals = usage
+        return usage
+
+    def _record_usage(self, body: dict[str, Any], num_ctx: int | None) -> None:
+        usage = self._thread_usage()
+        prompt_tokens = int(body.get("prompt_eval_count") or 0)
+        output_tokens = int(body.get("eval_count") or 0)
+        usage["calls"] += 1
+        usage["prompt_tokens"] += prompt_tokens
+        usage["output_tokens"] += output_tokens
+        usage["prompt_sec"] += int(body.get("prompt_eval_duration") or 0) / 1e9
+        usage["output_sec"] += int(body.get("eval_duration") or 0) / 1e9
+        usage["load_sec"] += int(body.get("load_duration") or 0) / 1e9
+        if body.get("done_reason") == "length":
+            usage["cut_off"] += 1
+        if num_ctx and prompt_tokens + output_tokens >= num_ctx * 0.95:
+            usage["near_context_limit"] += 1
+
+    def _extra_roots(self) -> list[str]:
+        extra = str(getattr(self.settings, "ollama_fallback_url", "") or "").strip().rstrip("/")
+        if extra.endswith("/api"):
+            extra = extra[: -len("/api")]
+        return [extra] if extra else []
 
     def _role_for(self, model: str) -> str:
         return "vision" if model == self.settings.ollama_vision_model else "text"
@@ -153,7 +268,8 @@ class OllamaClient:
         timeout = kwargs.get("timeout")
         read_timeout = timeout if isinstance(timeout, (int, float)) else self.timeout
         trial = {**kwargs, "timeout": (min(_FALLBACK_CONNECT_TIMEOUT, read_timeout), read_timeout)}
-        for candidate in [self._configured_root, *fallback_roots(self._configured_root)]:
+        candidates = [self._configured_root, *fallback_roots(self._configured_root), *self._extra_roots()]
+        for candidate in dict.fromkeys(candidates):
             if candidate == self.root:
                 continue
             try:
@@ -206,6 +322,7 @@ class OllamaClient:
             "base_url": self.root,
             "error": None,
         }
+        self._restore_configured_root()
         try:
             version_resp = self._request("GET", "/api/version")
             if version_resp.ok:
@@ -232,6 +349,25 @@ class OllamaClient:
             info["error"] = str(exc)
         return info
 
+    def _restore_configured_root(self) -> None:
+        """Go back to the configured server once it answers again after a fallback, for
+        example a remote GPU server that was briefly offline. Checked at most once a minute
+        so status polling stays fast while it is down."""
+        if self.root == self._configured_root:
+            return
+        now = time.monotonic()
+        if now - self._restore_checked_at < _RESTORE_CHECK_INTERVAL:
+            return
+        self._restore_checked_at = now
+        try:
+            response = self._session.get(
+                self._join(self._configured_root, "/api/version"), timeout=_FALLBACK_CONNECT_TIMEOUT
+            )
+        except requests.RequestException:
+            return
+        if response.ok:
+            self.root = self._configured_root
+
     def _check_readiness(self, info: dict[str, Any], details: list[dict[str, Any]]) -> None:
         vision = self.settings.ollama_vision_model
         warnings: list[str] = info["warnings"]
@@ -242,8 +378,10 @@ class OllamaClient:
                 if not info["vision_capable"]:
                     warnings.append(
                         f"{vision} cannot read images, so it cannot score video frames. "
-                        "Choose a vision model such as qwen3-vl:4b."
+                        "Choose a vision model such as qwen3-vl:4b-instruct."
                     )
+                elif "thinking" in capabilities:
+                    warnings.append(thinking_vision_warning(vision))
         vision_version = version_problem(info.get("version"), vision)
         for model in (vision, self.settings.ollama_text_model):
             problem = version_problem(info.get("version"), model)
@@ -391,6 +529,8 @@ class OllamaClient:
                         raise OllamaError(last_error)
                     continue
                 body = response.json()
+                if isinstance(body, dict):
+                    self._record_usage(body, payload["options"].get("num_ctx"))
                 content = _extract_message_text(body)
                 done_reason = body.get("done_reason") or "unknown"
                 if not content:

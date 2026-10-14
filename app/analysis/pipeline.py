@@ -1,10 +1,19 @@
 from __future__ import annotations
 
 import json
+import os
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-from app.ai.ollama import OllamaClient, OllamaConnectionError, OllamaTruncatedError, predict_budget
+from app.ai.ollama import (
+    OllamaClient,
+    OllamaConnectionError,
+    OllamaTruncatedError,
+    describe_usage,
+    predict_budget,
+    usage_delta,
+)
 from app.ai.prompts import (
     TRANSCRIPT_BATCH_SCHEMA_FAST,
     transcript_batch_prompt_fast,
@@ -16,7 +25,7 @@ from app.analysis.optimizer import ClipOptimizer
 from app.analysis.repetition import RepetitionAnalyzer
 from app.analysis.scenes import detect_scenes
 from app.analysis.scorer import HighlightScorer
-from app.analysis.visual import analyze_scenes_visual, sample_timestamps
+from app.analysis.visual import analyze_scenes_visual, fitting_vision_batch, sample_timestamps
 from app.config import Settings
 from app.models.schemas import CandidateScore, HighlightConfig, Scene, Transcript
 from app.video.ffmpeg_runner import CancelledError, FFmpegRunner
@@ -36,19 +45,38 @@ STAGES = [
     ("planning", "Planning highlight"),
 ]
 
-# Upper bound on reply tokens per segment in a batched transcript-scoring reply.
-_TEXT_TOKENS_PER_SEGMENT = 40
+# Upper bound on reply tokens per segment in a batched transcript-scoring reply. qwen3:4b
+# pretty-prints the JSON and was measured at 42-46 tokens per segment; a lower budget cuts
+# full batches off, and each cut-off reply is generated again as two halves.
+_TEXT_TOKENS_PER_SEGMENT = 48
 
 
 class PipelineProgress:
     def __init__(self, emit):
         self.emit = emit
         self.started = time.time()
+        # Seconds spent in each stage that actually ran (cached stages are not counted).
+        self.timings: dict[str, float] = {}
+        self._running: dict[str, float] = {}
 
     def log(self, message: str, level: str = "INFO") -> None:
         self.emit("log", {"level": level, "message": message, "ts": time.time()})
 
+    def _time_stage(self, name: str, status: str) -> None:
+        now = time.perf_counter()
+        if status == "running":
+            self._running.setdefault(name, now)
+        elif status == "done" and name in self._running:
+            spent = now - self._running.pop(name)
+            self.timings[name] = round(self.timings.get(name, 0.0) + spent, 2)
+
+    def timing_summary(self) -> str:
+        labels = dict(STAGES)
+        parts = [f"{labels.get(name, name)} {seconds:.1f}s" for name, seconds in self.timings.items() if seconds >= 0.05]
+        return ", ".join(parts)
+
     def stage(self, name: str, status: str, detail: str = "", index: int = 0, total: int = 1) -> None:
+        self._time_stage(name, status)
         elapsed = time.time() - self.started
         known = [s[0] for s in STAGES]
         pos = known.index(name) if name in known else 0
@@ -162,23 +190,9 @@ class VideoAnalyzer:
         )
         if not has_frame_files:
             progress.stage("frames", "running")
-            frame_map = {}
             use_lite_frames = self.settings.enable_visual_analysis and bool(self.ollama) and self.vision_enabled
             frame_density = "lite" if use_lite_frames else "auto"
-            for scene in scenes:
-                model = Scene.model_validate(scene)
-                paths = []
-                for stamp in sample_timestamps(model, source_duration=source_duration, density=frame_density):
-                    out = frames_dir / f"scene_{model.scene_id}_{int(stamp * 100)}.jpg"
-                    if not out.exists():
-                        try:
-                            self.runner.extract_frame(source, out, stamp, duration=source_duration)
-                        except Exception as ext:  # noqa: BLE001
-                            progress.log(f"Frame extract failed at {stamp:.2f}s: {ext}", "WARNING")
-                            continue
-                    if out.exists() and out.stat().st_size > 0:
-                        paths.append({"timestamp": stamp, "image_path": str(out)})
-                frame_map[str(model.scene_id)] = paths
+            frame_map = self._extract_frames(source, scenes, frames_dir, source_duration, frame_density, progress)
             _write(job_dir / "frames.json", frame_map)
             progress.log(f"Representative frames sampled ({sum(len(v) for v in frame_map.values())} frames)")
             progress.stage("frames", "done")
@@ -210,11 +224,14 @@ class VideoAnalyzer:
                 for scene in pending_scenes
                 if float(scene.get("duration") or 0) >= self.settings.ollama_vision_min_scene_duration
             )
-            batch_count = max(
-                1,
-                (ai_scene_count + self.settings.ollama_vision_batch_size - 1)
-                // self.settings.ollama_vision_batch_size,
-            )
+            vision_batch = self.settings.ollama_vision_batch_size
+            if self.ollama is not None:
+                vision_batch = fitting_vision_batch(
+                    vision_batch,
+                    self.ollama.role_options("vision")["num_ctx"],
+                    self.settings.ollama_vision_num_predict,
+                )
+            batch_count = max(1, (ai_scene_count + vision_batch - 1) // max(1, vision_batch))
             progress.log(
                 f"Visual AI: analyzing {ai_scene_count} scene(s) in up to {batch_count} batched call(s) "
                 f"({self.settings.ollama_vision_max_pixels}px frames, model {self.settings.ollama_vision_model})"
@@ -233,6 +250,7 @@ class VideoAnalyzer:
                     total,
                 )
 
+            usage_before = self._usage()
             results, errors, fallback_reasons = analyze_scenes_visual(
                 self.ollama,
                 self.settings.ollama_vision_model,
@@ -252,15 +270,18 @@ class VideoAnalyzer:
                     )
             for message in errors:
                 progress.log(message, "WARNING")
+            self._log_usage(progress, "Visual AI", usage_before)
             progress.stage("visual", "done", f"Analyzed {len(results)} scene(s)", batch_count, batch_count)
             _write(job_dir / "visual_analysis.json", visual)
             progress.log("Visual analysis completed")
         cache["visual"] = visual
 
         progress.stage("content", "running")
+        usage_before = self._usage()
         segment_scores, scores_changed = self._score_transcript(
             transcript, config, progress, cache.get("segment_scores")
         )
+        self._log_usage(progress, "Transcript AI", usage_before)
         if scores_changed:
             _write(job_dir / "segment_scores.json", segment_scores)
         cache["segment_scores"] = segment_scores
@@ -423,7 +444,67 @@ class VideoAnalyzer:
         cache["clip_plan"] = plan_data
         progress.log(f"Combined plan uses {len(plan.clips)} clips from {len(used) or 1} video(s)")
         progress.stage("planning", "done")
+        summary = progress.timing_summary()
+        if summary:
+            progress.log(f"Stage timings: {summary}")
+            _write(job_dir / "analysis_timings.json", progress.timings)
         return cache
+
+    def _extract_frames(
+        self,
+        source: Path,
+        scenes: list[dict],
+        frames_dir: Path,
+        source_duration: float,
+        density: str,
+        progress: PipelineProgress,
+    ) -> dict[str, list[dict]]:
+        """Sample frames for every scene. Each frame is a separate short FFmpeg call that is
+        mostly process start-up and seeking, so a few run at once. The result keeps scene and
+        timestamp order regardless of which call finishes first."""
+        planned: list[tuple[str, float, Path]] = []
+        for scene in scenes:
+            model = Scene.model_validate(scene)
+            for stamp in sample_timestamps(model, source_duration=source_duration, density=density):
+                out = frames_dir / f"scene_{model.scene_id}_{int(stamp * 100)}.jpg"
+                planned.append((str(model.scene_id), stamp, out))
+
+        def extract(stamp: float, out: Path) -> str | None:
+            if out.exists():
+                return None
+            try:
+                self.runner.extract_frame(source, out, stamp, duration=source_duration)
+            except CancelledError:
+                raise
+            except Exception as ext:  # noqa: BLE001
+                return f"Frame extract failed at {stamp:.2f}s: {ext}"
+            return None
+
+        # Close timestamps can round to the same file name; grab each file once.
+        unique: dict[Path, float] = {}
+        for _, stamp, out in planned:
+            unique.setdefault(out, stamp)
+        workers = frame_extract_workers(len(unique))
+        if workers > 1:
+            with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="frames") as pool:
+                outcomes = list(pool.map(lambda item: extract(item[1], item[0]), unique.items()))
+        else:
+            outcomes = [extract(stamp, out) for out, stamp in unique.items()]
+        self._check_cancel()
+        failures = dict(zip(unique, outcomes))
+
+        frame_map: dict[str, list[dict]] = {str(Scene.model_validate(scene).scene_id): [] for scene in scenes}
+        reported: set[Path] = set()
+        for scene_id, stamp, out in planned:
+            failure = failures.get(out)
+            if failure:
+                if out not in reported:
+                    reported.add(out)
+                    progress.log(failure, "WARNING")
+                continue
+            if out.exists() and out.stat().st_size > 0:
+                frame_map[scene_id].append({"timestamp": stamp, "image_path": str(out)})
+        return frame_map
 
     def _transcribe(self, wav: Path, progress: PipelineProgress) -> tuple[dict, bool]:
         """Transcript data, and whether it is worth caching. A failed run is not cached, so the
@@ -484,8 +565,15 @@ class VideoAnalyzer:
         if cached is not None:
             progress.log(f"Re-scoring {len(pending)} transcript segment(s) that used fallback scores")
 
-        batch_size = max(1, self.settings.ollama_text_batch_size)
-        batches = [pending[start : start + batch_size] for start in range(0, len(pending), batch_size)]
+        batches = plan_text_batches(
+            [segments[index].text for index in pending],
+            max_items=self.settings.ollama_text_batch_size,
+            fixed_tokens=estimate_tokens(transcript_batch_prompt_fast(config.style, config.custom_focus, [])),
+            configured_predict=self.settings.ollama_text_num_predict,
+            per_item_output=_TEXT_TOKENS_PER_SEGMENT,
+            num_ctx=self.ollama.role_options("text")["num_ctx"],
+        )
+        batches = [[pending[position] for position in batch] for batch in batches]
         unreachable = False
         for batch_no, indexes in enumerate(batches, start=1):
             self._check_cancel()
@@ -561,6 +649,28 @@ class VideoAnalyzer:
                 )
             )
         return scored
+
+    def _usage(self) -> dict | None:
+        snapshot = getattr(self.ollama, "usage_snapshot", None)
+        return snapshot() if callable(snapshot) else None
+
+    def _log_usage(self, progress: PipelineProgress, label: str, before: dict | None) -> None:
+        """Report the model work of one stage, so slow stages can be traced to prompt size,
+        reply length, or model loading."""
+        after = self._usage()
+        if before is None or after is None:
+            return
+        usage = usage_delta(before, after)
+        text = describe_usage(usage)
+        if not text:
+            return
+        progress.log(f"{label}: {text}")
+        if usage["near_context_limit"]:
+            progress.log(
+                f"{label}: {int(usage['near_context_limit'])} call(s) filled the model's context window. "
+                "A larger context size in Settings avoids cut-off prompts and replies.",
+                "WARNING",
+            )
 
     def _check_cancel(self) -> None:
         if self.runner.cancel_event.is_set():
@@ -675,6 +785,58 @@ def _heuristic_segment(seg, reason: str = score_source.AI_UNAVAILABLE) -> dict:
         },
         reason,
     )
+
+
+# Prompt tokens per transcript line besides its text: index, time range, and chat template share.
+_TEXT_LINE_OVERHEAD_TOKENS = 14
+# Token counts are estimated, so batches aim below the real context size.
+_CONTEXT_SAFETY = 0.85
+
+
+def estimate_tokens(text: str) -> int:
+    """Conservative token estimate without a tokenizer. Latin text averages about 4 characters
+    per token; other scripts are often one token per character, so they are counted that way."""
+    ascii_chars = sum(1 for char in text if ord(char) < 128)
+    return int(ascii_chars / 3.5) + (len(text) - ascii_chars) + 1
+
+
+def plan_text_batches(
+    texts: list[str],
+    *,
+    max_items: int,
+    fixed_tokens: int,
+    configured_predict: int,
+    per_item_output: int,
+    num_ctx: int,
+) -> list[list[int]]:
+    """Split segments into batches whose prompt and reply both fit the context window.
+
+    A fixed segment count overflows a small context when segments are long: Ollama then drops
+    part of the prompt or cuts the reply off. Returns positions into ``texts``, in order."""
+    limit = int(num_ctx * _CONTEXT_SAFETY)
+    reply_room = max(configured_predict, num_ctx // 2)
+    batches: list[list[int]] = []
+    current: list[int] = []
+    prompt_tokens = fixed_tokens
+    for position, text in enumerate(texts):
+        cost = estimate_tokens(text) + _TEXT_LINE_OVERHEAD_TOKENS
+        count = len(current) + 1
+        needed = prompt_tokens + cost + predict_budget(configured_predict, count, per_item_output, num_ctx)
+        too_big = count > max(1, max_items) or needed > limit or per_item_output * count + 64 > reply_room
+        if current and too_big:
+            batches.append(current)
+            current, prompt_tokens = [], fixed_tokens
+        current.append(position)
+        prompt_tokens += cost
+    if current:
+        batches.append(current)
+    return batches
+
+
+def frame_extract_workers(frame_count: int) -> int:
+    """Concurrent FFmpeg frame grabs: half the logical CPUs, at most 4, never more than needed."""
+    cpus = os.cpu_count() or 2
+    return max(1, min(4, cpus // 2, frame_count))
 
 
 def _write(path: Path, data) -> None:

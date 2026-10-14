@@ -405,7 +405,7 @@ class FakeVisionClient:
         self.calls: list[int] = []
 
     def role_options(self, role):
-        return {"num_ctx": 4096, "num_thread": 4}
+        return {"num_ctx": 16384, "num_thread": 4}  # room for a 4-image batch
 
     def encode_image(self, path):
         return "image"

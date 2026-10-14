@@ -186,5 +186,5 @@ def _mb(size: int) -> str:
 
 
 if __name__ == "__main__":
-    target = sys.argv[1] if len(sys.argv) > 1 else "qwen3-vl:4b"
+    target = sys.argv[1] if len(sys.argv) > 1 else "qwen3-vl:4b-instruct"
     pull_via_ipv4(target)

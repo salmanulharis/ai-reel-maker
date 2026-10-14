@@ -47,7 +47,11 @@ class Settings(BaseSettings):
     secret_key: str = "change-me-local-only"
 
     ollama_base_url: str = Field(default_factory=default_ollama_base_url)
-    ollama_vision_model: str = "qwen3-vl:8b"
+    # Optional bearer token for Ollama behind an authenticating proxy (remote GPU server).
+    ollama_api_key: str = ""
+    # Optional second Ollama (usually this computer's) used while the configured one is unreachable.
+    ollama_fallback_url: str = ""
+    ollama_vision_model: str = "qwen3-vl:8b-instruct"
     ollama_text_model: str = "qwen3:8b"
     ollama_timeout: int = 900
     ollama_max_retries: int = 2

@@ -125,6 +125,26 @@ def _expand_visual_score(raw: dict, fallback: VisualAnalysis, scene: Scene) -> V
 
 # Upper bound on reply tokens per scene in a batched visual reply.
 _VISION_TOKENS_PER_SCENE = 80
+# Prompt tokens per frame. Ollama scales Qwen3-VL images up to a minimum size, so a frame costs
+# about 1,050 tokens whatever its resolution (measured with 256-512 px frames).
+_VISION_PROMPT_TOKENS_PER_IMAGE = 1100
+# Instructions plus one "scene_id=... [start-end]" line per scene.
+_VISION_PROMPT_BASE_TOKENS = 200
+_VISION_PROMPT_TOKENS_PER_LINE = 16
+_VISION_CONTEXT_SAFETY = 0.9
+
+
+def fitting_vision_batch(configured: int, num_ctx: int, configured_predict: int) -> int:
+    """The largest batch, up to the configured size, whose images and reply fit the context.
+
+    A batch that overflows the context loses part of its prompt or gets its reply cut off.
+    Smaller batches cost almost nothing extra: each image is read once either way."""
+    limit = num_ctx * _VISION_CONTEXT_SAFETY
+    for size in range(max(1, configured), 0, -1):
+        prompt = _VISION_PROMPT_BASE_TOKENS + size * (_VISION_PROMPT_TOKENS_PER_IMAGE + _VISION_PROMPT_TOKENS_PER_LINE)
+        if prompt + predict_budget(configured_predict, size, _VISION_TOKENS_PER_SCENE, num_ctx) <= limit:
+            return size
+    return 1
 
 
 def analyze_scenes_visual(
@@ -178,7 +198,9 @@ def analyze_scenes_visual(
     if not ai_queue or client is None:
         return results, errors, reasons
 
-    batch_size = max(1, cfg.ollama_vision_batch_size)
+    batch_size = fitting_vision_batch(
+        cfg.ollama_vision_batch_size, client.role_options("vision")["num_ctx"], cfg.ollama_vision_num_predict
+    )
     batch_count = (len(ai_queue) + batch_size - 1) // batch_size
     unreachable = False
 

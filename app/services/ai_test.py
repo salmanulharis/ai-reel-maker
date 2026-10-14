@@ -128,7 +128,7 @@ def _execute(settings: Settings, profile: dict[str, Any]) -> dict[str, Any]:
         report["vision"] = {
             "ok": False,
             "model": settings.ollama_vision_model,
-            "error": f"{settings.ollama_vision_model} cannot read images. Choose a vision model such as qwen3-vl:4b.",
+            "error": f"{settings.ollama_vision_model} cannot read images. Choose a vision model such as qwen3-vl:4b-instruct.",
         }
     else:
         report["vision"] = _probe_model(

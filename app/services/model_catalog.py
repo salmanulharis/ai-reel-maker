@@ -11,15 +11,15 @@ def recommended_threads(count: int | None) -> int:
 
 
 VISION_FIT_GB = {
-    "qwen3-vl:30b": 18.0,
-    "qwen3-vl:8b": 7.0,
-    "qwen3-vl:4b": 4.0,
-    "qwen3-vl:2b": 2.5,
+    "qwen3-vl:30b-a3b-instruct": 18.0,
+    "qwen3-vl:8b-instruct": 7.0,
+    "qwen3-vl:4b-instruct": 4.0,
+    "qwen3-vl:2b-instruct": 2.5,
 }
 
 VISION_MODELS: list[dict[str, Any]] = [
     {
-        "name": "qwen3-vl:2b",
+        "name": "qwen3-vl:2b-instruct",
         "kind": "vision",
         "disk_gb": 1.9,
         "min_vram_gb": 3,
@@ -28,7 +28,7 @@ VISION_MODELS: list[dict[str, Any]] = [
         "speed": "Fastest option. Weakest on small on-screen text.",
     },
     {
-        "name": "qwen3-vl:4b",
+        "name": "qwen3-vl:4b-instruct",
         "kind": "vision",
         "disk_gb": 3.3,
         "min_vram_gb": 6,
@@ -37,7 +37,7 @@ VISION_MODELS: list[dict[str, Any]] = [
         "speed": "Comfortable on a 6 GB GPU. Slow on CPU.",
     },
     {
-        "name": "qwen3-vl:8b",
+        "name": "qwen3-vl:8b-instruct",
         "kind": "vision",
         "disk_gb": 6.1,
         "min_vram_gb": 8,
@@ -46,7 +46,7 @@ VISION_MODELS: list[dict[str, Any]] = [
         "speed": "Comfortable when about 8 GB of VRAM is free. Slow on CPU.",
     },
     {
-        "name": "qwen3-vl:30b",
+        "name": "qwen3-vl:30b-a3b-instruct",
         "kind": "vision",
         "disk_gb": 20.0,
         "min_vram_gb": 24,
@@ -186,27 +186,27 @@ def recommend_setup(
 
 def _cpu_setup(ram: float, threads: int) -> dict[str, Any]:
     if ram < 16:
-        vision = "qwen3-vl:2b"
+        vision = "qwen3-vl:2b-instruct"
         whisper = "tiny" if ram < 8 else "base"
         batch, vision_ctx, text_ctx = 1, 2048, 2048
         notes = [
             "CPU-only. Highlights still run. Vision is slower, and you can turn it off if you want a faster pass.",
         ]
         alternatives = {
-            "vision": ["qwen3-vl:4b"] if ram >= 12 else [],
+            "vision": ["qwen3-vl:4b-instruct"] if ram >= 12 else [],
             "text": [],
             "whisper": ["base"] if whisper == "tiny" else ["small"],
         }
         suggest_disable = True
     else:
-        vision = "qwen3-vl:4b"
+        vision = "qwen3-vl:4b-instruct"
         whisper = "base"
         batch, vision_ctx, text_ctx = 2, 2048, 4096
         notes = [
             "CPU-only. The 4B vision model is the default. Larger models stay available, and they are slow without a GPU.",
         ]
         alternatives = {
-            "vision": ["qwen3-vl:8b"],
+            "vision": ["qwen3-vl:8b-instruct"],
             "text": ["qwen3:8b"],
             "whisper": ["small"],
         }
@@ -231,29 +231,29 @@ def _cpu_setup(ram: float, threads: int) -> dict[str, Any]:
 def _gpu_setup(total: float, budget: float, threads: int) -> dict[str, Any]:
     notes: list[str] = []
     alternatives: dict[str, list[str]] = {"vision": [], "text": [], "whisper": []}
-    if total >= 24 and budget >= VISION_FIT_GB["qwen3-vl:30b"]:
-        vision = "qwen3-vl:30b"
+    if total >= 24 and budget >= VISION_FIT_GB["qwen3-vl:30b-a3b-instruct"]:
+        vision = "qwen3-vl:30b-a3b-instruct"
         text = "qwen3:8b"
-        alternatives["vision"] = ["qwen3-vl:8b"]
+        alternatives["vision"] = ["qwen3-vl:8b-instruct"]
         alternatives["text"] = ["qwen3:30b"]
         notes.append(
             "30B vision is selected because this GPU has room for it. Transcript scoring stays on the 8B text model so both large models are not loaded together."
         )
-    elif total >= 10 and budget >= VISION_FIT_GB["qwen3-vl:8b"]:
-        vision = "qwen3-vl:8b"
+    elif total >= 10 and budget >= VISION_FIT_GB["qwen3-vl:8b-instruct"]:
+        vision = "qwen3-vl:8b-instruct"
         text = "qwen3:8b"
         notes.append("The vision and text models run one at a time.")
         if total >= 20:
-            alternatives["vision"] = ["qwen3-vl:30b"]
+            alternatives["vision"] = ["qwen3-vl:30b-a3b-instruct"]
             alternatives["text"] = ["qwen3:30b"]
-    elif budget >= VISION_FIT_GB["qwen3-vl:4b"] or total >= 4:
-        vision = "qwen3-vl:4b" if budget >= VISION_FIT_GB["qwen3-vl:4b"] else "qwen3-vl:2b"
+    elif budget >= VISION_FIT_GB["qwen3-vl:4b-instruct"] or total >= 4:
+        vision = "qwen3-vl:4b-instruct" if budget >= VISION_FIT_GB["qwen3-vl:4b-instruct"] else "qwen3-vl:2b-instruct"
         text = "qwen3:4b"
-        if budget >= VISION_FIT_GB["qwen3-vl:8b"]:
-            alternatives["vision"] = ["qwen3-vl:8b"]
-            notes.append("qwen3-vl:8b can fit, and 4B stays the default so vision remains reliable.")
+        if budget >= VISION_FIT_GB["qwen3-vl:8b-instruct"]:
+            alternatives["vision"] = ["qwen3-vl:8b-instruct"]
+            notes.append("qwen3-vl:8b-instruct can fit, and 4B stays the default so vision remains reliable.")
     else:
-        vision = "qwen3-vl:2b"
+        vision = "qwen3-vl:2b-instruct"
         text = "qwen3:4b"
         notes.append("Very little free VRAM. The smallest vision model is selected.")
 

@@ -6,6 +6,10 @@ from app.config import Settings, get_settings
 from app.models.db_models import SettingRow, get_session
 
 
+# Credentials stay in the environment and are never returned to the browser.
+_NOT_SHOWN = {"ollama_api_key"}
+
+
 def json_safe(value):
     if isinstance(value, Path):
         return str(value)
@@ -65,7 +69,9 @@ def effective_settings(settings: Settings | None = None) -> dict:
             _assign(settings, row.key, data[row.key])
     finally:
         session.close()
-    return json_safe({key: value for key, value in data.items() if not str(key).startswith("_")})
+    return json_safe(
+        {key: value for key, value in data.items() if not str(key).startswith("_") and key not in _NOT_SHOWN}
+    )
 
 
 def _assign(settings: Settings, key: str, value) -> None:
