@@ -21,6 +21,7 @@ from app.video.crop import normalize_crop, to_crop_pixels
 from app.video.ffmpeg_runner import CancelledError, FFmpegRunner
 from app.video.processor import VideoProcessor
 from app.video.renderer import Renderer, build_srt
+from app.utils.timefmt import format_elapsed
 from app.video.sources import fallback_source, load_sources, save_sources
 
 _worker_started = False
@@ -59,6 +60,7 @@ def _recover_orphaned_jobs() -> None:
         if stuck:
             session.commit()
             _log.warning("Re-queued %s job(s) left mid-run after a restart", len(stuck))
+        get_job_manager().recover_interrupted()
     except Exception:
         session.rollback()
         _log.exception("Failed to recover orphaned jobs")
@@ -94,10 +96,15 @@ def _tick(app: Flask) -> None:
         session.close()
     if not job_id:
         return
-    if render_only:
-        _run_render(app, job_id)
-    else:
-        _run_analysis(app, job_id)
+    try:
+        if render_only:
+            _run_render(app, job_id)
+        else:
+            _run_analysis(app, job_id)
+    finally:
+        # Never leave a timer running: an attempt that ended without being closed (an error
+        # before the attempt's own handling) is closed here as failed.
+        get_job_manager().finish_attempt(job_id, "failed", only_if_running=True)
 
 
 def _emit(app: Flask, job_id: str, event: str, payload: dict) -> None:
@@ -114,10 +121,10 @@ def _run_analysis(app: Flask, job_id: str) -> None:
     if not job:
         return
     manager.update(job_id, status="analyzing", analysis_status="running", error=None)
+    manager.start_attempt(job_id, "analysis")
     cancel = manager.cancel_event(job_id)
     cancel.clear()
     runner = FFmpegRunner(cancel)
-    started = time.time()
     job_dir = manager.job_dir(job_id)
     original = Path(job.input_path)
     config = HighlightConfig.model_validate(json.loads(job.config_json or "{}"))
@@ -175,19 +182,30 @@ def _run_analysis(app: Flask, job_id: str) -> None:
             "status": "planning",
             "analysis_status": "completed",
             "progress": 90,
-            "processing_seconds": time.time() - started,
             "error": None,
         }
         if cache.get("metadata"):
             fields["metadata_json"] = json.dumps(cache["metadata"])
         manager.update(job_id, **fields)
+        took = manager.finish_attempt(job_id, "completed")
+        progress.log(f"Analysis finished in {format_elapsed(took)}")
+        try:
+            from app.services.auto_tune import record_run
+
+            record_run(progress, cache, settings)
+        except Exception:  # noqa: BLE001 - statistics must never fail a finished analysis
+            _log.debug("Could not record performance history", exc_info=True)
         _emit(app, job_id, "job_complete", {"phase": "analysis", "plan": plan})
     except CancelledError:
         manager.update(job_id, status="cancelled", cancelled=True)
+        took = manager.finish_attempt(job_id, "cancelled")
+        progress.log(f"Analysis stopped after {format_elapsed(took)}", "WARNING")
         _emit(app, job_id, "job_failed", {"error": "cancelled"})
     except Exception as exc:  # noqa: BLE001
         manager.update(job_id, status="failed", error=str(exc), analysis_status="failed")
+        took = manager.finish_attempt(job_id, "failed")
         progress.log(str(exc), "ERROR")
+        progress.log(f"Analysis failed after {format_elapsed(took)}", "WARNING")
         _emit(app, job_id, "job_failed", {"error": str(exc)})
 
 
@@ -198,6 +216,7 @@ def _run_render(app: Flask, job_id: str) -> None:
     if not job:
         return
     manager.update(job_id, status="rendering", render_status="running")
+    manager.start_attempt(job_id, "render")
     cancel = manager.cancel_event(job_id)
     runner = FFmpegRunner(cancel)
     job_dir = manager.job_dir(job_id)
@@ -208,6 +227,7 @@ def _run_render(app: Flask, job_id: str) -> None:
     plan_path = job_dir / "clip_plan.json"
     if not plan_path.exists():
         manager.update(job_id, status="failed", error="No clip plan to render", render_status="failed")
+        manager.finish_attempt(job_id, "failed")
         return
     plan = ClipPlan.model_validate(json.loads(plan_path.read_text(encoding="utf-8")))
     kept = [c for c in (manager.serialize(job).get("clips") or []) if c.get("kept", True)]
@@ -241,6 +261,8 @@ def _run_render(app: Flask, job_id: str) -> None:
         aspect_ratio=config.aspect_ratio,
         subtitles=config.subtitles,
         transition=config.transition,
+        frame_rate=config.frame_rate,
+        smooth_motion=config.smooth_motion,
         audio_bitrate=settings.output_audio_bitrate,
     )
     outputs = job_dir / "outputs"
@@ -288,6 +310,8 @@ def _run_render(app: Flask, job_id: str) -> None:
         out_meta = result["metadata"]
         canvas = result.get("canvas") or {}
         encoder_info = result.get("encoder") or {}
+        if result.get("frame_rate"):
+            emit_log(str(result["frame_rate"]))
         emit_log(
             "Target output "
             f"{canvas.get('width') or out_meta.get('width')}×{canvas.get('height') or out_meta.get('height')} "
@@ -298,7 +322,7 @@ def _run_render(app: Flask, job_id: str) -> None:
         emit_log(
             "Verified output "
             f"{out_meta.get('width')}×{out_meta.get('height')}, "
-            f"{float(out_meta.get('fps') or 0):.3f} fps, "
+            f"{float(out_meta.get('avg_fps') or out_meta.get('fps') or 0):.3f} fps, "
             f"{out_meta.get('video_codec') or 'h264'}, "
             f"{int(out_meta.get('bitrate') or 0) or out_meta.get('size_bytes')} bitrate/size"
         )
@@ -313,9 +337,10 @@ def _run_render(app: Flask, job_id: str) -> None:
             height=out_meta.get("height") or 0,
             version_label=config.style,
         )
-        manager.update(job_id, status="completed", render_status="completed", progress=100)
         manager.set_stage(job_id, "rendering", "done")
-        emit_log("Highlight ready")
+        took = manager.finish_attempt(job_id, "completed")
+        manager.update(job_id, status="completed", render_status="completed", progress=100)
+        emit_log(f"Highlight ready. Creating the video took {format_elapsed(took)}")
         _emit(app, job_id, "job_complete", {"phase": "render", "output": str(output)})
         if not settings.debug_analysis:
             tmp = job_dir / "tmp_render"
@@ -323,11 +348,15 @@ def _run_render(app: Flask, job_id: str) -> None:
                 shutil.rmtree(tmp, ignore_errors=True)
     except CancelledError:
         manager.update(job_id, status="cancelled", cancelled=True, render_status="cancelled")
+        took = manager.finish_attempt(job_id, "cancelled")
+        emit_log(f"Creating the video stopped after {format_elapsed(took)}", "WARNING")
         _emit(app, job_id, "job_failed", {"error": "cancelled"})
     except Exception as exc:  # noqa: BLE001
         manager.update(job_id, status="failed", error=str(exc), render_status="failed")
         manager.set_stage(job_id, "rendering", "error", str(exc))
+        took = manager.finish_attempt(job_id, "failed")
         emit_log(str(exc), "ERROR")
+        emit_log(f"Creating the video failed after {format_elapsed(took)}", "WARNING")
         _emit(app, job_id, "job_failed", {"error": str(exc)})
 
 
@@ -340,6 +369,8 @@ _CACHE_FILES = (
     "frames.json",
     "visual_analysis.json",
     "segment_scores.json",
+    "scene_quality.json",
+    "audio_energy.json",
     "candidates.json",
     "clip_plan.json",
 )
@@ -458,6 +489,8 @@ def load_cache(job_dir: Path) -> dict:
         "frames": "frames.json",
         "visual": "visual_analysis.json",
         "segment_scores": "segment_scores.json",
+        "scene_quality": "scene_quality.json",
+        "audio_energy": "audio_energy.json",
         "candidates": "candidates.json",
         "clip_plan": "clip_plan.json",
     }

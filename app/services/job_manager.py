@@ -19,13 +19,20 @@ from app.models.db_models import (
     SceneRow,
     SelectedClip,
     TranscriptSegmentRow,
+    as_utc,
     get_session,
     utcnow,
 )
 from app.models.schemas import HighlightConfig, VideoMetadata
 from app.utils.security import ALLOWED_EXTENSIONS, is_allowed_extension, sanitize_filename
 from app.video.ffmpeg_runner import FFmpegRunner
+from app.video.quality import source_frame_rate
 from app.video.sources import load_sources, save_sources, source_id_for
+
+# Stage states that end a run of the stage.
+_STAGE_FINISHED = {"done", "error", "skipped", "cancelled"}
+# How a stage left running ends when its attempt ends.
+_STAGE_ON_OUTCOME = {"completed": "done", "failed": "error", "cancelled": "cancelled", "interrupted": "pending"}
 
 ANALYSIS_STAGES = [
     "metadata",
@@ -34,8 +41,8 @@ ANALYSIS_STAGES = [
     "transcript",
     "silence",
     "frames",
-    "visual",
     "content",
+    "visual",
     "repetition",
     "planning",
 ]
@@ -103,6 +110,7 @@ class JobManager:
                     "duration": meta.duration,
                     "width": meta.width,
                     "height": meta.height,
+                    "fps": source_frame_rate(meta),
                     "size_bytes": meta.size_bytes,
                 }
             )
@@ -182,12 +190,16 @@ class JobManager:
             if stage is None:
                 stage = JobStage(job_id=job_id, name=name)
                 session.add(stage)
+            now = utcnow()
+            if status == "running" and stage.status != "running":
+                # A new run of this stage (first time, another video, or a retry).
+                stage.started_at = now
+                stage.finished_at = None
+            elif status in _STAGE_FINISHED:
+                _close_stage_run(stage, now)
+                stage.finished_at = now
             stage.status = status
             stage.detail = detail
-            if status == "running" and stage.started_at is None:
-                stage.started_at = utcnow()
-            if status in {"done", "error", "skipped"}:
-                stage.finished_at = utcnow()
             job = session.get(Job, job_id)
             if job:
                 job.last_stage = name
@@ -205,9 +217,75 @@ class JobManager:
                     "name": r.name,
                     "status": r.status,
                     "detail": r.detail,
+                    # Finished time in this stage; a running stage adds now - started_at.
+                    "seconds": round(float(r.seconds or 0), 3),
+                    "started_at": _iso(r.started_at) if r.status == "running" else None,
                 }
                 for r in rows
             ]
+        finally:
+            session.close()
+
+    def start_attempt(self, job_id: str, phase: str) -> None:
+        """Mark the real start of an analysis or render attempt."""
+        session = get_session()
+        try:
+            job = session.get(Job, job_id)
+            if job is None:
+                return
+            job.attempt_started_at = utcnow()
+            job.attempt_phase = phase
+            job.attempt_outcome = "running"
+            session.commit()
+        finally:
+            session.close()
+
+    def finish_attempt(self, job_id: str, outcome: str, *, only_if_running: bool = False) -> float:
+        """End the running attempt: add its real length to the totals, keep it as the last
+        attempt's length, and close any stage it left running. Returns the attempt's seconds.
+        With only_if_running, an attempt that was already finished is left alone."""
+        session = get_session()
+        try:
+            job = session.get(Job, job_id)
+            if job is None or (only_if_running and job.attempt_started_at is None):
+                return 0.0
+            now = utcnow()
+            started = as_utc(job.attempt_started_at)
+            seconds = max(0.0, (now - started).total_seconds()) if started else 0.0
+            if started:
+                job.attempt_seconds = round(seconds, 3)
+                job.processing_seconds = round(float(job.processing_seconds or 0) + seconds, 3)
+                if job.attempt_phase == "render":
+                    job.render_seconds = round(float(job.render_seconds or 0) + seconds, 3)
+                else:
+                    job.analysis_seconds = round(float(job.analysis_seconds or 0) + seconds, 3)
+            job.attempt_started_at = None
+            job.attempt_outcome = outcome
+            final_status = _STAGE_ON_OUTCOME.get(outcome, "error")
+            running = session.query(JobStage).filter(JobStage.job_id == job_id, JobStage.status == "running").all()
+            for stage in running:
+                _close_stage_run(stage, now)
+                stage.finished_at = now
+                stage.status = final_status
+            session.commit()
+            return seconds
+        finally:
+            session.close()
+
+    def recover_interrupted(self) -> int:
+        """After a restart, clear attempts that were cut off. Their length is unknown, so it is
+        not added to any total; their stages go back to pending so they run again."""
+        session = get_session()
+        try:
+            jobs = session.query(Job).filter(Job.attempt_started_at.isnot(None)).all()
+            for job in jobs:
+                job.attempt_started_at = None
+                job.attempt_outcome = "interrupted"
+                for stage in session.query(JobStage).filter(JobStage.job_id == job.id, JobStage.status == "running"):
+                    stage.status = "pending"
+                    stage.started_at = None
+            session.commit()
+            return len(jobs)
         finally:
             session.close()
 
@@ -268,6 +346,21 @@ class JobManager:
             analysis_status="pending",
         )
 
+    @staticmethod
+    def timing(job: Job) -> dict:
+        """Elapsed-time facts for the UI. Totals cover finished attempts only; while an attempt
+        runs, the UI adds (server_time - attempt_started_at) plus the time since it fetched."""
+        return {
+            "total_seconds": round(float(job.processing_seconds or 0), 3),
+            "analysis_seconds": round(float(getattr(job, "analysis_seconds", 0) or 0), 3),
+            "render_seconds": round(float(getattr(job, "render_seconds", 0) or 0), 3),
+            "attempt_seconds": round(float(getattr(job, "attempt_seconds", 0) or 0), 3),
+            "attempt_started_at": _iso(getattr(job, "attempt_started_at", None)),
+            "attempt_phase": getattr(job, "attempt_phase", "") or "",
+            "attempt_outcome": getattr(job, "attempt_outcome", "") or "",
+            "server_time": _iso(utcnow()),
+        }
+
     def job_dir(self, job_id: str) -> Path:
         return self.settings.jobs_dir / job_id
 
@@ -300,6 +393,7 @@ class JobManager:
             "progress": job.progress,
             "last_stage": job.last_stage,
             "processing_seconds": job.processing_seconds,
+            "timing": self.timing(job),
             "metadata": meta,
             "config": config,
             "sources": load_sources(self.job_dir(job.id)),
@@ -334,6 +428,13 @@ class JobManager:
                 for o in outputs
             ],
         }
+
+
+def _close_stage_run(stage: JobStage, now) -> None:
+    """Add the time since a running stage started to its total."""
+    started = as_utc(stage.started_at)
+    if stage.status == "running" and started is not None:
+        stage.seconds = round(float(stage.seconds or 0) + max(0.0, (now - started).total_seconds()), 3)
 
 
 def _iso(value) -> str | None:

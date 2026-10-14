@@ -157,6 +157,7 @@ def analyze_scenes_visual(
     enabled: bool = True,
     settings: Settings | None = None,
     on_batch_start: Callable[[int, int, int], None] | None = None,
+    shortlist: set[int] | None = None,
 ) -> tuple[dict[int, VisualAnalysis], list[str], dict[int, str]]:
     """Score scenes with the vision model, falling back to motion scoring per scene.
 
@@ -180,6 +181,9 @@ def analyze_scenes_visual(
         fallback = fallback_visual(paths, scene_model, source_duration)
         if not enabled or client is None:
             use_fallback(scene_model, fallback, score_source.AI_UNAVAILABLE)
+            continue
+        if shortlist is not None and scene_model.scene_id not in shortlist:
+            use_fallback(scene_model, fallback, score_source.NOT_SHORTLISTED)
             continue
         if scene_model.duration < cfg.ollama_vision_min_scene_duration:
             use_fallback(scene_model, fallback, score_source.SHORT_SCENE)
@@ -282,3 +286,60 @@ def _score_visual_batch(
         except (TypeError, ValueError):
             continue
     return by_id
+
+
+# Shortlist sizing: cover this many times the highlight length with the best-scored speech,
+# and never shortlist fewer scenes than this.
+_SHORTLIST_COVERAGE = 3.0
+_SHORTLIST_MIN_SCENES = 6
+# A scene with less speech than this share of its length counts as visual-only content.
+_VISUAL_ONLY_SPEECH = 0.3
+# When the shortlist would hold this share of scenes anyway, analyze them all.
+_SHORTLIST_ALL_SHARE = 0.8
+
+
+def shortlist_scenes(
+    scenes: list[dict],
+    segment_scores: list[dict],
+    highlight_seconds: float,
+    scene_quality: dict[int, dict] | None = None,
+) -> set[int] | None:
+    """Scenes worth the vision model's time, or None to analyze every scene.
+
+    Always kept: scenes with little speech, whose content is visual. Then scenes behind the
+    best-scored speech, until about three times the highlight length is covered. Black scenes
+    are left to the cheap scoring. Without a transcript, every scene is analyzed as before."""
+    if not segment_scores or len(scenes) <= _SHORTLIST_MIN_SCENES:
+        return None
+    quality = {int(k): v for k, v in (scene_quality or {}).items() if isinstance(v, dict)}
+    picked: set[int] = set()
+    ranked: list[tuple[float, int, float]] = []
+    for scene in scenes:
+        scene_id = int(scene["scene_id"])
+        start, end = float(scene["start"]), float(scene["end"])
+        duration = max(end - start, 0.01)
+        if quality.get(scene_id, {}).get("black"):
+            continue
+        spoken = 0.0
+        best = 0.0
+        for item in segment_scores:
+            overlap = min(end, float(item["end"])) - max(start, float(item["start"]))
+            if overlap <= 0:
+                continue
+            spoken += overlap
+            score = item.get("score") if isinstance(item.get("score"), dict) else {}
+            best = max(best, float(score.get("importance") or 0) * 0.6 + float(score.get("information_density") or 0) * 0.4)
+        if spoken / duration < _VISUAL_ONLY_SPEECH:
+            picked.add(scene_id)
+        else:
+            ranked.append((best, scene_id, duration))
+    budget = max(1.0, highlight_seconds) * _SHORTLIST_COVERAGE
+    covered = 0.0
+    for best, scene_id, duration in sorted(ranked, reverse=True):
+        if covered >= budget and len(picked) >= _SHORTLIST_MIN_SCENES:
+            break
+        picked.add(scene_id)
+        covered += duration
+    if len(picked) >= len(scenes) * _SHORTLIST_ALL_SHARE:
+        return None
+    return picked

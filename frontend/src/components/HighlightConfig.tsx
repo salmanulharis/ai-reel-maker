@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { messages } from "../i18n";
+import { fill, messages } from "../i18n";
 import type { HighlightForm } from "../types";
 
 const PRESETS = [
@@ -20,9 +20,38 @@ const copy = messages.config;
 
 /** A reason the form cannot be submitted yet, or "" when it is fine. */
 export function formProblem(form: HighlightForm): string {
-  const lengths = [form.min_duration, form.max_duration];
+  // With "No limit" the longest length is not used, so only the shortest has to be valid.
+  const lengths = form.length_mode === "auto" ? [form.min_duration] : [form.min_duration, form.max_duration];
   if (lengths.some((value) => !Number.isFinite(value) || value < 1)) return copy.lengthMissing;
   return "";
+}
+
+const FRAME_RATES = ["24", "25", "30", "50", "60"] as const;
+const FRAME_RATE_LABELS: Record<(typeof FRAME_RATES)[number], string> = {
+  "24": copy.frameRate24,
+  "25": copy.frameRate25,
+  "30": copy.frameRate30,
+  "50": copy.frameRate50,
+  "60": copy.frameRate60,
+};
+
+function showRate(fps: number) {
+  return Number.isInteger(Math.round(fps * 100) / 100) ? String(Math.round(fps)) : fps.toFixed(2);
+}
+
+/** What happens to the motion for this choice, mirroring the server's conversion plan. */
+export function frameRateHint(choice: string, sourceFps?: number): string {
+  const fps = sourceFps && sourceFps > 0 ? sourceFps : 0;
+  if (choice === "source" || !choice) {
+    return fps ? fill(copy.frameRateHintSourceKnown, { fps: showRate(fps) }) : copy.frameRateHintSource;
+  }
+  const target = Number(choice);
+  if (!fps) return fill(copy.frameRateHintUnknown, { target });
+  const values = { fps: showRate(fps), target };
+  if (Math.abs(fps - target) < 0.01) return fill(copy.frameRateHintSame, values);
+  if (target > fps) return fill(copy.frameRateHintUp, values);
+  const ratio = fps / target;
+  return fill(Math.abs(ratio - Math.round(ratio)) < 0.01 ? copy.frameRateHintEven : copy.frameRateHintUneven, values);
 }
 
 /** A number input value: empty stays empty while typing instead of jumping to 0. */
@@ -33,15 +62,21 @@ function numberValue(value: number) {
 export function HighlightConfigPanel({
   form,
   setForm,
+  sourceFps,
 }: {
   form: HighlightForm;
   setForm: (next: HighlightForm) => void;
+  /** Frame rate of the uploaded video, when known, to explain what a choice will do. */
+  sourceFps?: number;
 }) {
   const update = (patch: Partial<HighlightForm>) => setForm({ ...form, ...patch });
-  const isPreset = PRESETS.some(([a, b]) => a === form.min_duration && b === form.max_duration);
+  const autoLength = form.length_mode === "auto" && !form.social_short;
+  const isPreset = !autoLength && PRESETS.some(([a, b]) => a === form.min_duration && b === form.max_duration);
   const [customOpen, setCustomOpen] = useState(false);
   const showCustom = customOpen || !isPreset;
-  const swapped = form.min_duration > form.max_duration;
+  const swapped = !autoLength && form.min_duration > form.max_duration;
+  const autoClipLength = form.sequence_duration_mode === "auto";
+  const clipCap = autoLength ? fill(copy.capSeconds, { n: 30 }) : copy.capHighlight;
 
   return (
     <div className="panel config">
@@ -50,7 +85,7 @@ export function HighlightConfigPanel({
         <p className="field-hint top">{copy.targetHint}</p>
         <div className="chips" role="group" aria-label={copy.target}>
           {PRESETS.map(([a, b]) => {
-            const active = !customOpen && form.min_duration === a && form.max_duration === b;
+            const active = !customOpen && !autoLength && form.min_duration === a && form.max_duration === b;
             return (
               <button
                 key={`${a}-${b}`}
@@ -58,7 +93,7 @@ export function HighlightConfigPanel({
                 aria-pressed={active}
                 onClick={() => {
                   setCustomOpen(false);
-                  update({ min_duration: a, max_duration: b });
+                  update({ min_duration: a, max_duration: b, length_mode: "range" });
                 }}
                 type="button"
               >
@@ -78,7 +113,7 @@ export function HighlightConfigPanel({
           </button>
         </div>
         {showCustom && (
-          <div className="grid-2 reveal" id="custom-length">
+          <div className="form-grid reveal" id="custom-length">
             <div className="field">
               <label htmlFor="min">{copy.min}</label>
               <input
@@ -97,10 +132,24 @@ export function HighlightConfigPanel({
                 type="number"
                 min={1}
                 inputMode="numeric"
+                disabled={autoLength}
+                aria-describedby="no-limit-hint"
                 value={numberValue(form.max_duration)}
                 onChange={(e) => update({ max_duration: e.target.value === "" ? NaN : Number(e.target.value) })}
               />
+              <label className="check">
+                <input
+                  type="checkbox"
+                  checked={autoLength}
+                  disabled={form.social_short}
+                  onChange={(e) => update({ length_mode: e.target.checked ? "auto" : "range" })}
+                />
+                <span>{copy.noLimit}</span>
+              </label>
             </div>
+            <p className="field-hint span-2" id="no-limit-hint">
+              {form.social_short ? copy.noLimitSocial : autoLength ? copy.noLimitHint : ""}
+            </p>
             {swapped && <p className="field-hint warn span-2">{copy.rangeSwap}</p>}
           </div>
         )}
@@ -205,6 +254,7 @@ export function HighlightConfigPanel({
             onChange={(e) =>
               update({
                 social_short: e.target.checked,
+                length_mode: e.target.checked ? "range" : form.length_mode,
                 aspect_ratio: e.target.checked ? "9:16" : form.aspect_ratio,
                 min_duration: e.target.checked ? Math.min(form.min_duration, 15) : form.min_duration,
                 max_duration: e.target.checked ? Math.min(Math.max(form.max_duration, 15), 60) : form.max_duration,
@@ -218,7 +268,7 @@ export function HighlightConfigPanel({
             </span>
           </span>
         </label>
-        <div className="grid-3">
+        <div className="form-grid">
           <div className="field">
             <label htmlFor="aspect">{copy.aspect}</label>
             <select id="aspect" value={form.aspect_ratio} onChange={(e) => update({ aspect_ratio: e.target.value })}>
@@ -244,7 +294,42 @@ export function HighlightConfigPanel({
               <option value="fade">{copy.transitionFade}</option>
             </select>
           </div>
+          <div className="field">
+            <label htmlFor="frameRate">{copy.frameRate}</label>
+            <select
+              id="frameRate"
+              aria-describedby="frameRate-hint"
+              value={form.frame_rate}
+              onChange={(e) => update({ frame_rate: e.target.value })}
+            >
+              <option value="source">{copy.frameRateSource}</option>
+              {FRAME_RATES.map((rate) => (
+                <option key={rate} value={rate}>
+                  {FRAME_RATE_LABELS[rate]}
+                </option>
+              ))}
+            </select>
+            <p className="field-hint" id="frameRate-hint" aria-live="polite">
+              {frameRateHint(form.frame_rate, sourceFps)}
+            </p>
+          </div>
         </div>
+        {form.frame_rate !== "source" && (
+          <label className="check reveal">
+            <input
+              type="checkbox"
+              checked={form.smooth_motion}
+              aria-describedby="smooth-hint"
+              onChange={(e) => update({ smooth_motion: e.target.checked })}
+            />
+            <span>
+              {copy.smoothMotion}
+              <span className="field-hint block" id="smooth-hint">
+                {copy.smoothMotionHint}
+              </span>
+            </span>
+          </label>
+        )}
       </fieldset>
 
       <details className="advanced">
@@ -252,88 +337,61 @@ export function HighlightConfigPanel({
 
         <div className="config-section">
           <h4 className="sub-title">{copy.clipLength}</h4>
-          <div className="chips" role="group" aria-label={copy.clipLength}>
-            <button
-              type="button"
-              className={`chip ${form.sequence_duration_mode === "auto" ? "active" : ""}`}
-              aria-pressed={form.sequence_duration_mode === "auto"}
-              onClick={() => update({ sequence_duration_mode: "auto" })}
-            >
-              {copy.clipAuto}
-            </button>
-            <button
-              type="button"
-              className={`chip ${form.sequence_duration_mode === "custom" ? "active" : ""}`}
-              aria-pressed={form.sequence_duration_mode === "custom"}
-              onClick={() => update({ sequence_duration_mode: "custom", min_sequence_duration: form.min_sequence_duration ?? 1.5 })}
-            >
-              {copy.clipCustom}
-            </button>
-          </div>
-          {form.sequence_duration_mode === "auto" ? (
-            <>
-              <p className="field-hint">{copy.clipAutoHint}</p>
-              <div className="grid-2">
-                <div className="field">
-                  <label htmlFor="seqMinAuto">{copy.minSequence}</label>
-                  <input
-                    id="seqMinAuto"
-                    type="number"
-                    min={0.5}
-                    step={0.5}
-                    placeholder="1.5"
-                    aria-describedby="seqMinAuto-hint"
-                    value={form.min_sequence_duration ?? ""}
-                    onChange={(e) => {
-                      const raw = e.target.value.trim();
-                      update({ min_sequence_duration: raw ? Number(raw) : null });
-                    }}
-                  />
-                  <p className="field-hint" id="seqMinAuto-hint">
-                    {copy.minSequenceHint}
-                  </p>
-                </div>
-              </div>
-            </>
-          ) : (
-            <div className="grid-2 reveal">
-              <div className="field">
-                <label htmlFor="seqMin">{copy.minSequence}</label>
-                <input
-                  id="seqMin"
-                  type="number"
-                  min={0.5}
-                  step={0.5}
-                  aria-describedby="seqMin-hint"
-                  value={form.min_sequence_duration ?? 1.5}
-                  onChange={(e) => update({ min_sequence_duration: Number(e.target.value) })}
-                />
-                <p className="field-hint" id="seqMin-hint">
-                  {copy.minSequenceCustomHint}
-                </p>
-              </div>
-              <div className="field">
-                <label htmlFor="seqMax">{copy.maxSequence}</label>
-                <input
-                  id="seqMax"
-                  type="number"
-                  min={1}
-                  step={0.5}
-                  aria-describedby="seqMax-hint"
-                  value={form.max_sequence_duration}
-                  onChange={(e) => update({ max_sequence_duration: Number(e.target.value) })}
-                />
-                <p className="field-hint" id="seqMax-hint">
-                  {copy.maxSequenceHint}
-                </p>
-              </div>
+          {/* Empty means Auto. A longest value switches to fixed limits; Auto (with or without a
+              shortest value) lets each clip's content decide its length. */}
+          <div className="form-grid">
+            <div className="field">
+              <label htmlFor="seqMin">{copy.minSequence}</label>
+              <input
+                id="seqMin"
+                type="number"
+                min={0.5}
+                step={0.5}
+                inputMode="decimal"
+                placeholder={copy.auto}
+                aria-describedby="seqMin-hint"
+                value={form.min_sequence_duration ?? ""}
+                onChange={(e) => {
+                  const raw = e.target.value.trim();
+                  const value = Number(raw);
+                  update({ min_sequence_duration: raw && Number.isFinite(value) ? value : null });
+                }}
+              />
+              <p className="field-hint" id="seqMin-hint">
+                {copy.shortestClipHint}
+              </p>
             </div>
-          )}
+            <div className="field">
+              <label htmlFor="seqMax">{copy.maxSequence}</label>
+              <input
+                id="seqMax"
+                type="number"
+                min={1}
+                step={0.5}
+                inputMode="decimal"
+                placeholder={copy.auto}
+                aria-describedby="seqMax-hint"
+                value={autoClipLength ? "" : numberValue(form.max_sequence_duration)}
+                onChange={(e) => {
+                  const raw = e.target.value.trim();
+                  const value = Number(raw);
+                  if (!raw || !Number.isFinite(value)) {
+                    update({ sequence_duration_mode: "auto" });
+                    return;
+                  }
+                  update({ sequence_duration_mode: "custom", max_sequence_duration: value });
+                }}
+              />
+              <p className="field-hint" id="seqMax-hint">
+                {autoClipLength ? fill(copy.longestClipAuto, { cap: clipCap }) : copy.longestClipSet}
+              </p>
+            </div>
+          </div>
         </div>
 
         <div className="config-section">
           <h4 className="sub-title">{copy.content}</h4>
-          <div className="grid-2">
+          <div className="form-grid">
             <div className="field">
               <label htmlFor="context">{copy.preserve}</label>
               <select
@@ -390,7 +448,7 @@ export function HighlightConfigPanel({
             </span>
           </label>
           {form.allow_repeated_content && (
-            <div className="grid-2 reveal">
+            <div className="form-grid reveal">
               <div className="field">
                 <label htmlFor="repMax">{copy.maxRepeat}</label>
                 <input
@@ -411,7 +469,7 @@ export function HighlightConfigPanel({
         </div>
 
         <div className="config-section">
-          <div className="grid-2">
+          <div className="form-grid">
             <div className="field">
               <label htmlFor="mustInclude">{copy.mustInclude}</label>
               <input
@@ -445,6 +503,7 @@ export function HighlightConfigPanel({
 export const defaultForm = (): HighlightForm => ({
   min_duration: 20,
   max_duration: 30,
+  length_mode: "range",
   style: "auto",
   custom_focus: "",
   preserve_context: "balanced",
@@ -462,6 +521,8 @@ export const defaultForm = (): HighlightForm => ({
   aspect_ratio: "original",
   subtitles: "none",
   transition: "cut",
+  frame_rate: "source",
+  smooth_motion: false,
   codec: "auto",
   quality: "source",
   resolution: "original",

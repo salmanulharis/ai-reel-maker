@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
-import { api, formatTime } from "../services/api";
+import { api, formatElapsed, formatTime } from "../services/api";
 import { messages } from "../i18n";
 import { Alert, HistoryIcon, PageLoader, Spinner } from "../components/Feedback";
 import type { Job } from "../types";
@@ -105,6 +105,9 @@ export default function JobHistory() {
               <th scope="col" className="hide-sm">
                 {copy.style}
               </th>
+              <th scope="col" className="hide-sm">
+                {copy.timeTaken}
+              </th>
               <th scope="col">{copy.status}</th>
               <th scope="col">
                 <span className="sr-only">{copy.actions}</span>
@@ -121,6 +124,13 @@ export default function JobHistory() {
                 <td>{job.metadata?.duration ? formatTime(job.metadata.duration) : "—"}</td>
                 <td>{job.outputs?.[0]?.duration ? formatTime(job.outputs[0].duration) : "—"}</td>
                 <td className="hide-sm">{styleLabel(job.style)}</td>
+                <td className="hide-sm nowrap">
+                  {job.timing?.attempt_started_at
+                    ? `${statusLabel(job.status)}…`
+                    : (job.timing?.total_seconds ?? job.processing_seconds) > 0
+                      ? formatElapsed(job.timing?.total_seconds ?? job.processing_seconds)
+                      : "—"}
+                </td>
                 <td>
                   <span className={`status-pill ${statusTone(job.status)}`}>{statusLabel(job.status)}</span>
                 </td>

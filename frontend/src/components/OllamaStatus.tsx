@@ -45,7 +45,7 @@ export function OllamaStatus() {
     .join("\n");
 
   return (
-    <Link className="ollama-chip" to="/settings" title={details || undefined} aria-label={`${label}. ${hint}`.trim()}>
+    <Link className="ollama-chip" to="/settings?section=ai" title={details || undefined} aria-label={`${label}. ${hint}`.trim()}>
       <span className={`status-dot ${dot}`} aria-hidden="true" />
       {label}
       {accel && <span className="chip-accel">{accel}</span>}

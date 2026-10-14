@@ -41,12 +41,32 @@ export interface JobSource {
   duration?: number;
   width?: number;
   height?: number;
+  fps?: number;
 }
 
 export interface Stage {
   name: string;
   status: string;
   detail: string;
+  /** Finished time spent in this stage, summed over its runs. */
+  seconds?: number;
+  /** Set while the stage runs: live time is seconds + (now - started_at). */
+  started_at?: string | null;
+}
+
+export interface JobTiming {
+  /** Total of finished attempts (analysis and rendering), in seconds. */
+  total_seconds: number;
+  analysis_seconds: number;
+  render_seconds: number;
+  /** Length of the last finished attempt. */
+  attempt_seconds: number;
+  /** Start of the attempt in progress, or null when nothing runs. */
+  attempt_started_at: string | null;
+  attempt_phase: string;
+  attempt_outcome: string;
+  /** Server clock when this was sent, to count live time without trusting the local clock. */
+  server_time: string;
 }
 
 export interface Job {
@@ -62,6 +82,7 @@ export interface Job {
   progress: number;
   last_stage: string;
   processing_seconds: number;
+  timing?: JobTiming;
   metadata: VideoMeta;
   config: Record<string, unknown>;
   stages: Stage[];
@@ -89,6 +110,7 @@ export interface CropBox {
 export interface HighlightForm {
   min_duration: number;
   max_duration: number;
+  length_mode: "range" | "auto";
   style: string;
   cropEnabled: boolean;
   crop: CropBox;
@@ -108,6 +130,8 @@ export interface HighlightForm {
   aspect_ratio: string;
   subtitles: string;
   transition: string;
+  frame_rate: string;
+  smooth_motion: boolean;
   codec: string;
   quality: string;
   resolution: string;
@@ -201,4 +225,42 @@ export interface OllamaStatus {
   runtime?: RuntimeStatus;
   test?: { state?: string; result?: AiTestResult | null };
   whisper_download?: { state?: string; model?: string | null; error?: string | null };
+}
+
+export interface OptimizationItem {
+  key: string;
+  label: string;
+  current: string | number | null;
+  recommended: string | number | null;
+  changed: boolean;
+  reason: string;
+}
+
+export interface PerformanceRun {
+  ts: number;
+  video_seconds: number;
+  total_seconds: number;
+  visual_enabled: boolean;
+  vision?: { calls: number; seconds_per_call: number; tokens_per_sec: number } | null;
+  text?: { calls: number; seconds_per_call: number; tokens_per_sec: number } | null;
+}
+
+export interface OptimizationPlan {
+  enabled: boolean;
+  hardware: {
+    text: string;
+    system?: string;
+    ram_available_gb?: number | null;
+    disk_free_gb?: number | null;
+    uses_gpu: boolean;
+  };
+  items: OptimizationItem[];
+  changes: OptimizationItem[];
+  tradeoffs: string[];
+  warnings: string[];
+  notes: string[];
+  can_undo: boolean;
+  undo_saved_at?: number | null;
+  history: PerformanceRun[];
+  tips: string[];
 }

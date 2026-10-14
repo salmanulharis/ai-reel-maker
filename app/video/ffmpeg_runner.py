@@ -169,6 +169,7 @@ def parse_probe(payload: dict, path: Path) -> VideoMetadata:
         width=int(video.get("width") or 0),
         height=int(video.get("height") or 0),
         fps=round(fps, 3),
+        avg_fps=round(_parse_frame_rate(video.get("avg_frame_rate")), 3),
         bitrate=int(fmt.get("bit_rate") or 0),
         video_codec=str(video.get("codec_name") or ""),
         audio_codec=str(audio.get("codec_name") or ""),

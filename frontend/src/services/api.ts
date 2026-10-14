@@ -1,5 +1,5 @@
 import { messages } from "../i18n";
-import type { HighlightForm, Job, OllamaStatus } from "../types";
+import type { HighlightForm, Job, OllamaStatus, OptimizationPlan } from "../types";
 
 // Short server messages that are worth rewording for people.
 const SERVER_MESSAGES: Record<string, string> = {
@@ -65,6 +65,19 @@ export function formatTime(seconds?: number): string {
   return `${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
 }
 
+/** Processing time in words: "12.4 seconds", "2 min 15 sec", "1 hr 5 min".
+ *  live: whole seconds under a minute ("12 sec"), so a ticking counter does not flicker. */
+export function formatElapsed(seconds?: number | null, live = false): string {
+  const value = Math.max(0, Number(seconds) || 0);
+  if (value < 60) return live ? `${Math.floor(value)} sec` : `${value.toFixed(1)} seconds`;
+  const total = Math.floor(value);
+  const hours = Math.floor(total / 3600);
+  const minutes = Math.floor((total % 3600) / 60);
+  const secs = total % 60;
+  if (hours) return minutes ? `${hours} hr ${minutes} min` : `${hours} hr`;
+  return secs ? `${minutes} min ${secs} sec` : `${minutes} min`;
+}
+
 export function formatBytes(bytes?: number): string {
   const value = bytes || 0;
   if (value < 1024) return `${value} B`;
@@ -83,6 +96,7 @@ export function configPayload(form: HighlightForm) {
   return {
     min_duration: finiteOr(form.min_duration, Math.min(20, max)),
     max_duration: max,
+    length_mode: form.social_short ? "range" : form.length_mode,
     style: form.style,
     custom_focus: form.custom_focus,
     preserve_context: form.preserve_context,
@@ -100,6 +114,8 @@ export function configPayload(form: HighlightForm) {
     aspect_ratio: form.aspect_ratio,
     subtitles: form.subtitles,
     transition: form.transition,
+    frame_rate: form.frame_rate,
+    smooth_motion: form.smooth_motion,
     codec: form.codec,
     quality: form.quality,
     resolution: form.resolution,
@@ -171,6 +187,15 @@ export const api = {
       body: JSON.stringify({ models }),
     }),
   applyRecommended: () => http<Record<string, unknown>>("/api/system/ai/apply-recommended", { method: "POST" }),
+  optimization: (refresh = false) =>
+    http<OptimizationPlan>(`/api/system/ai/optimization${refresh ? "?refresh=1" : ""}`),
+  setOptimization: (enabled: boolean) =>
+    http<OptimizationPlan>("/api/system/ai/optimization", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ enabled }),
+    }),
+  undoOptimization: () => http<OptimizationPlan>("/api/system/ai/optimization/undo", { method: "POST" }),
   startAiTest: () => http("/api/system/ai/test", { method: "POST" }),
   downloadWhisper: (model: string) =>
     http("/api/system/whisper/download", {

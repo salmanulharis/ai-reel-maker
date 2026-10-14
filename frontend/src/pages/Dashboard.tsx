@@ -124,7 +124,7 @@ export default function Dashboard() {
       {aiNotice && (
         <div className="notice" role="status">
           <span>
-            {messages.localAi.notice} <Link to="/settings">{messages.localAi.action}</Link>
+            {messages.localAi.notice} <Link to="/settings?section=ai">{messages.localAi.action}</Link>
           </span>
           <button
             className="btn sm"
@@ -205,7 +205,11 @@ export default function Dashboard() {
         <h3 className="step-title" id="step-2">
           {copy.step2}
         </h3>
-        <HighlightConfigPanel form={form} setForm={setForm} />
+        <HighlightConfigPanel
+          form={form}
+          setForm={setForm}
+          sourceFps={sources[previewIndex]?.fps || sources[0]?.fps || meta.fps}
+        />
       </section>
 
       {error && <Alert>{error}</Alert>}

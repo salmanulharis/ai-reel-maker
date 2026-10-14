@@ -11,6 +11,7 @@ from flask import Blueprint, jsonify, request
 from app.ai.ollama import OllamaError, OllamaPullError
 from app.ai.registry_pull import models_root
 from app.config import get_settings
+from app.services import auto_tune
 from app.services.ai_profile import apply_recommendation, resolve_runtime, sync_hardware_profile
 from app.services.ai_test import (
     explain_ai_error,
@@ -88,6 +89,29 @@ def apply_recommended():
         "ai_config_mode": settings.ai_config_mode,
     }
     return jsonify(profile)
+
+
+@system_bp.get("/system/ai/optimization")
+def optimization_plan():
+    refresh = request.args.get("refresh") in {"1", "true", "yes"}
+    return jsonify(auto_tune.build_plan(get_settings(), refresh=refresh))
+
+
+@system_bp.post("/system/ai/optimization")
+def set_optimization():
+    payload = request.get_json(silent=True) or {}
+    if not isinstance(payload.get("enabled"), bool):
+        return jsonify({"error": "enabled must be true or false"}), 400
+    settings = get_settings()
+    plan = auto_tune.enable(settings) if payload["enabled"] else auto_tune.disable(settings)
+    return jsonify(plan)
+
+
+@system_bp.post("/system/ai/optimization/undo")
+def undo_optimization():
+    if not auto_tune.read_snapshot():
+        return jsonify({"error": "There is nothing to undo."}), 400
+    return jsonify(auto_tune.undo(get_settings()))
 
 
 @system_bp.post("/system/ai/test")

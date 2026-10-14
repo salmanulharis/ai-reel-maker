@@ -120,6 +120,9 @@ class VideoMetadata(BaseModel):
     width: int = 0
     height: int = 0
     fps: float = 0.0
+    # Frames divided by duration. Unlike the declared rate, it is not thrown off by small
+    # timestamp gaps, such as at the joins of clips concatenated without re-encoding.
+    avg_fps: float = 0.0
     bitrate: int = 0
     video_codec: str = ""
     audio_codec: str = ""
@@ -191,6 +194,11 @@ class CropRegion(BaseModel):
 class HighlightConfig(BaseModel):
     min_duration: float = 20.0
     max_duration: float = 30.0
+    # "range": aim for min..max. "auto": no maximum; keep every clearly strong moment, at least
+    # min_duration long (max_duration is kept but not used as a cap).
+    length_mode: Literal["range", "auto"] = "range"
+    # Set by "Shorter" on an automatic-length plan: only keep moments closer to the very best.
+    auto_length_strict: bool = False
     style: Literal["auto", "informative", "exciting", "social", "educational", "custom"] = "auto"
     custom_focus: str = ""
     preserve_context: Literal["low", "balanced", "high"] = "balanced"
@@ -201,6 +209,10 @@ class HighlightConfig(BaseModel):
     aspect_ratio: Literal["original", "16:9", "9:16", "1:1", "4:5"] = "original"
     subtitles: Literal["none", "auto", "burned", "srt"] = "none"
     transition: Literal["cut", "fade"] = "cut"
+    # "source" keeps the original frame rate; a number converts the output to that rate.
+    frame_rate: Literal["source", "24", "25", "30", "50", "60"] = "source"
+    # Create in-between frames when converting would otherwise judder. Much slower.
+    smooth_motion: bool = False
     output_format: str = "mp4"
     quality: Literal["high", "very_high", "source", "custom"] = "source"
     codec: str = "auto"
@@ -220,6 +232,9 @@ class HighlightConfig(BaseModel):
     def _range(self) -> "HighlightConfig":
         if self.social_short and self.aspect_ratio == "original":
             self.aspect_ratio = "9:16"
+        if self.social_short:
+            # Social platforms limit the length, so a short always uses its range.
+            self.length_mode = "range"
         if self.min_duration > self.max_duration:
             self.min_duration, self.max_duration = self.max_duration, self.min_duration
         if self.allow_repeated_content is None:
@@ -274,4 +289,6 @@ class RenderSettings(BaseModel):
     aspect_ratio: str = "original"
     subtitles: str = "none"
     transition: str = "cut"
+    frame_rate: str = "source"
+    smooth_motion: bool = False
     audio_bitrate: str = "192k"

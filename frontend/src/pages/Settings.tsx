@@ -1,8 +1,9 @@
 import { useEffect, useId, useState, type ReactNode } from "react";
+import { useSearchParams } from "react-router-dom";
 import { api, formatBytes } from "../services/api";
 import { fill, messages } from "../i18n";
 import { Alert, InlineStatus, PageLoader, Spinner } from "../components/Feedback";
-import type { AiTestResult, ModelSpec, OllamaStatus, PullStatus, RuntimeStatus } from "../types";
+import type { AiTestResult, ModelSpec, OllamaStatus, OptimizationItem, OptimizationPlan, PullStatus, RuntimeStatus } from "../types";
 
 type Info = {
   hardware?: Record<string, unknown>;
@@ -17,44 +18,61 @@ type Info = {
 
 const copy = messages.settings;
 
+type SectionId = keyof typeof copy.sections;
+
+// Everyday sections first; tuning and connection details are grouped under "Advanced".
+const NAV: Array<{ group: string; items: SectionId[] }> = [
+  { group: copy.navGeneral, items: ["optimize", "ai", "speech", "video", "storage", "system"] },
+  { group: copy.navAdvanced, items: ["performance", "connection"] },
+];
+const SECTIONS = NAV.flatMap((entry) => entry.items);
+
+// Fields saved together with "Save changes", by the section that shows them. Everything else
+// on the page (model choices, switches, storage actions) applies right away.
+const SECTION_FIELDS: Partial<Record<SectionId, string[]>> = {
+  speech: ["whisper_device"],
+  video: ["scene_threshold", "output_crf", "output_video_codec"],
+  performance: ["ollama_vision_batch_size", "ollama_num_thread", "ollama_vision_num_ctx", "ollama_text_num_ctx"],
+  connection: ["ollama_base_url", "ollama_timeout", "ollama_max_retries"],
+};
+const FORM_KEYS = Object.values(SECTION_FIELDS).flat();
+const DEFAULT_SECTION: SectionId = "optimize";
+const opt = copy.optimize;
 // Model choices are saved only when changed, so an untouched form never switches to custom mode.
-const INFERENCE_KEYS = [
-  "ollama_vision_model",
-  "ollama_text_model",
-  "whisper_model",
+const INFERENCE_KEYS = new Set([
   "whisper_device",
   "ollama_vision_batch_size",
   "ollama_vision_num_ctx",
   "ollama_text_num_ctx",
   "ollama_num_thread",
-  "whisper_cpu_threads",
-];
-const ADVANCED_KEYS = [
-  "ollama_base_url",
-  "ollama_timeout",
-  "ollama_max_retries",
-  "scene_threshold",
-  "output_video_codec",
-  "output_crf",
-  ...INFERENCE_KEYS,
-];
+]);
+
+function isSection(value: string | null): value is SectionId {
+  return Boolean(value && (SECTIONS as string[]).includes(value));
+}
 
 export default function Settings() {
+  const [params, setParams] = useSearchParams();
+  const section: SectionId = isSection(params.get("section")) ? (params.get("section") as SectionId) : DEFAULT_SECTION;
   const [settings, setSettings] = useState<Record<string, unknown>>({});
   const [loaded, setLoaded] = useState<Record<string, unknown>>({});
   const [storage, setStorage] = useState<Record<string, number | string>>({});
   const [info, setInfo] = useState<Info | null>(null);
   const [ollama, setOllama] = useState<OllamaStatus | null>(null);
+  const [plan, setPlan] = useState<OptimizationPlan | null>(null);
+  const [reviewing, setReviewing] = useState(false);
   const [saved, setSaved] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState("");
 
   const load = async (refresh = false) => {
-    const [systemSettings, systemInfo, status] = await Promise.all([
+    const [systemSettings, systemInfo, status, optimization] = await Promise.all([
       api.settings(),
       api.info({ refresh, encoders: refresh }),
       api.ollama(),
+      api.optimization(refresh).catch(() => null),
     ]);
+    setPlan(optimization);
     setSettings(systemSettings.settings);
     setLoaded(systemSettings.settings);
     setStorage(systemSettings.storage);
@@ -84,13 +102,29 @@ export default function Settings() {
     api.info().then((systemInfo) => setInfo(systemInfo as Info)).catch(() => undefined);
   }, [whisperState]);
 
+  const changed = (key: string) => String(settings[key] ?? "") !== String(loaded[key] ?? "");
+  const dirtySections = new Set(SECTIONS.filter((id) => (SECTION_FIELDS[id] || []).some(changed)));
+  const unsaved = dirtySections.size > 0;
+
+  // Reloading or closing the tab would lose unsaved edits; let the browser ask first.
+  useEffect(() => {
+    if (!unsaved) return;
+    const warn = (event: BeforeUnloadEvent) => event.preventDefault();
+    window.addEventListener("beforeunload", warn);
+    return () => window.removeEventListener("beforeunload", warn);
+  }, [unsaved]);
+
+  function go(next: SectionId) {
+    setParams(next === DEFAULT_SECTION ? {} : { section: next }, { replace: false });
+  }
+
   function set(key: string, value: unknown) {
     setSettings((cur) => ({ ...cur, [key]: value }));
   }
 
   function flashSaved(key: string) {
     setSaved(key);
-    setTimeout(() => setSaved((current) => (current === key ? "" : current)), 2000);
+    setTimeout(() => setSaved((current) => (current === key ? "" : current)), 2500);
   }
 
   /** Run a button's request with a busy state and shared error handling. */
@@ -106,25 +140,66 @@ export default function Settings() {
     }
   }
 
-  const changed = (key: string) => String(settings[key] ?? "") !== String(loaded[key] ?? "");
-  const unsaved = ADVANCED_KEYS.some(changed);
-
-  async function saveAdvanced() {
-    const payload: Record<string, unknown> = {
-      ollama_base_url: settings.ollama_base_url,
-      ollama_timeout: settings.ollama_timeout,
-      ollama_max_retries: settings.ollama_max_retries,
-      scene_threshold: settings.scene_threshold,
-      output_video_codec: settings.output_video_codec,
-      output_crf: settings.output_crf,
-    };
-    for (const key of INFERENCE_KEYS) {
-      if (changed(key)) payload[key] = settings[key];
+  async function saveChanges() {
+    const payload: Record<string, unknown> = {};
+    for (const key of FORM_KEYS) {
+      if (!INFERENCE_KEYS.has(key) || changed(key)) payload[key] = settings[key];
     }
     await act("save", async () => {
       await api.saveSettings(payload);
       await load();
-      flashSaved("advanced");
+      flashSaved("form");
+    });
+  }
+
+  function discardChanges() {
+    setSettings((cur) => {
+      const next = { ...cur };
+      for (const key of FORM_KEYS) next[key] = loaded[key];
+      return next;
+    });
+  }
+
+  /** Turning optimization on shows what will change first; turning it off keeps every value. */
+  function toggleOptimization(enabled: boolean) {
+    if (enabled && plan && plan.changes.length > 0) {
+      setReviewing(true);
+      return;
+    }
+    void setOptimization(enabled);
+  }
+
+  async function setOptimization(enabled: boolean) {
+    setReviewing(false);
+    await act("optimize", async () => {
+      setPlan(await api.setOptimization(enabled));
+      await load();
+      flashSaved("optimize");
+    });
+  }
+
+  async function undoOptimization() {
+    if (!window.confirm(opt.confirmUndo)) return;
+    await act("undo", async () => {
+      setPlan(await api.undoOptimization());
+      await load();
+      flashSaved("optimize");
+    });
+  }
+
+  /** Save one choice right away, restoring the previous value if saving fails. */
+  async function setInstant(key: string, value: unknown, flash: string) {
+    const previous = settings[key];
+    set(key, value);
+    await act(flash, async () => {
+      try {
+        await api.saveSettings({ [key]: value });
+        setLoaded((cur) => ({ ...cur, [key]: value }));
+        flashSaved(flash);
+      } catch (err) {
+        set(key, previous);
+        throw err;
+      }
     });
   }
 
@@ -179,17 +254,153 @@ export default function Settings() {
   const visionName = String(recommendation.vision_model || "");
   const textName = String(recommendation.text_model || "");
   const missingRecommended = [visionName, textName].filter((name) => name && !modelPresent(name, ollama));
+  const embedModel = String(settings.ollama_embed_model || "");
+  const embedInstalled = Boolean(embedModel) && modelPresent(embedModel, ollama);
+  const embedPull = embedModel ? ollama?.pull?.[embedModel] : undefined;
   const gb = (value: unknown) => (value ? `${value} GB` : "—");
 
   if (!info && !error) return <PageLoader />;
 
-  return (
-    <div>
-      {error && <Alert>{error}</Alert>}
+  const enabled = Boolean(plan?.enabled);
+  const lastRun = plan?.history?.[0];
+  const views: Record<SectionId, ReactNode> = {
+    optimize: !plan ? (
+      <p className="hint">{messages.common.loading}</p>
+    ) : (
+      <>
+        <div className="switch-row">
+          <label className="check">
+            <input
+              type="checkbox"
+              checked={enabled || reviewing}
+              disabled={busy === "optimize" || busy === "undo"}
+              aria-describedby="optimize-hint"
+              onChange={(e) => toggleOptimization(e.target.checked)}
+            />
+            <span>
+              <strong>{opt.switch}</strong>
+              <span className="field-hint block" id="optimize-hint">
+                {opt.switchHint}
+              </span>
+            </span>
+          </label>
+          {busy === "optimize" && <InlineStatus busy>{messages.common.working}</InlineStatus>}
+          {saved === "optimize" && <InlineStatus ok>{copy.saved}</InlineStatus>}
+        </div>
 
-      <section className="panel" aria-labelledby="ai-title">
-        <h3 id="ai-title">{copy.ai}</h3>
-        <p className="panel-intro">{copy.aiIntro}</p>
+        {reviewing && (
+          <div className="review-box reveal" role="region" aria-label={opt.reviewTitle}>
+            <h4 className="group-title">{opt.reviewTitle}</h4>
+            <p className="hint group-hint">{opt.reviewHint}</p>
+            <ChangeList items={plan.changes} />
+            <div className="btn-row panel-actions">
+              <button className="btn primary" onClick={() => void setOptimization(true)}>
+                {opt.confirm}
+              </button>
+              <button className="btn ghost" onClick={() => setReviewing(false)}>
+                {opt.cancel}
+              </button>
+            </div>
+          </div>
+        )}
+
+        <h4 className="group-title">{opt.detected}</h4>
+        <p className="hardware-line">
+          {plan.hardware.text}
+          {plan.hardware.system ? ` · ${plan.hardware.system}` : ""}
+          <button
+            className="btn sm ghost"
+            disabled={busy === "refresh"}
+            aria-busy={busy === "refresh"}
+            onClick={() => act("refresh", () => load(true))}
+          >
+            {busy === "refresh" && <Spinner />}
+            {opt.checkAgain}
+          </button>
+        </p>
+
+        {plan.warnings.length > 0 && (
+          <>
+            <h4 className="group-title">{opt.warnings}</h4>
+            {plan.warnings.map((warning) => (
+              <Alert key={warning}>{warning}</Alert>
+            ))}
+          </>
+        )}
+
+        {enabled ? (
+          <>
+            <h4 className="group-title">{opt.chosen}</h4>
+            <ChangeList items={plan.items} showCurrentOnly />
+          </>
+        ) : (
+          !reviewing && (
+            <>
+              <p className="hint">{opt.offNote}</p>
+              {plan.changes.length > 0 ? (
+                <>
+                  <h4 className="group-title">{opt.recommendedTitle}</h4>
+                  <p className="hint group-hint">{opt.recommendedHint}</p>
+                  <ChangeList items={plan.changes} />
+                  <div className="btn-row panel-actions">
+                    <button className="btn" onClick={() => toggleOptimization(true)}>
+                      {opt.apply}
+                    </button>
+                  </div>
+                </>
+              ) : (
+                <p className="hint">{opt.upToDate}</p>
+              )}
+            </>
+          )
+        )}
+
+        {(plan.tradeoffs.length > 0 || plan.notes.length > 0) && (
+          <>
+            <h4 className="group-title">{opt.tradeoffs}</h4>
+            <ul className="plain-list">
+              {[...plan.tradeoffs, ...plan.notes].map((item) => (
+                <li key={item}>{item}</li>
+              ))}
+            </ul>
+          </>
+        )}
+
+        <h4 className="group-title">{opt.tips}</h4>
+        {lastRun ? (
+          <>
+            <p className="hint group-hint">
+              {fill(opt.lastRun, { video: formatDuration(lastRun.video_seconds), time: formatDuration(lastRun.total_seconds) })}{" "}
+              {opt.tipsHint}
+            </p>
+            {plan.tips.length > 0 && (
+              <ul className="plain-list">
+                {plan.tips.map((tip) => (
+                  <li key={tip}>{tip}</li>
+                ))}
+              </ul>
+            )}
+          </>
+        ) : (
+          <p className="hint">{opt.noHistory}</p>
+        )}
+
+        {plan.can_undo && (
+          <div className="storage-action panel-actions">
+            <button className="btn" disabled={busy === "undo"} aria-busy={busy === "undo"} aria-describedby="undo-hint" onClick={undoOptimization}>
+              {busy === "undo" && <Spinner />}
+              {opt.undo}
+            </button>
+            <span className="hint" id="undo-hint">
+              {fill(opt.undoHint, { when: plan.undo_saved_at ? new Date(plan.undo_saved_at * 1000).toLocaleString() : "" })}
+            </span>
+          </div>
+        )}
+      </>
+    ),
+
+    ai: (
+      <>
         <div className="status-strip">
           <span className={`mode-badge ${runtime?.mode === "gpu" ? "gpu" : runtime?.mode === "split" ? "split" : "cpu"}`}>
             {runtime?.label || copy.hardware}
@@ -198,62 +409,30 @@ export default function Settings() {
           <span className="muted">{runtime?.measured ? copy.measured : copy.detected}</span>
         </div>
         {runtime?.hint && <p className="hint">{runtime.hint}</p>}
-        {info?.profile?.auto_summary && mode === "auto" && <p className="recommend">{info.profile.auto_summary}</p>}
-        {Array.isArray(recommendation.notes) &&
-          recommendation.notes.map((note) => (
-            <p key={String(note)} className="hint">
-              {String(note)}
-            </p>
-          ))}
+        <ManagedNote enabled={mode === "auto"} onOpen={() => go("optimize")} />
         {(ollama?.warnings || []).map((warning) => (
           <Alert key={warning}>{warning}</Alert>
         ))}
 
         <div className="btn-row settings-actions">
           {missingRecommended.length > 0 && (
-            <button
-              className="btn primary"
-              disabled={pullBusy}
-              aria-busy={pullBusy}
-              onClick={() => install(missingRecommended)}
-            >
+            <button className="btn primary" disabled={pullBusy} aria-busy={pullBusy} onClick={() => install(missingRecommended)}>
               {pullBusy && <Spinner />}
               {copy.installRecommended}
             </button>
           )}
           <button
-            className={`btn ${mode === "auto" ? "" : "primary"}`}
-            disabled={busy === "apply" || mode === "auto"}
-            aria-busy={busy === "apply"}
+            className="btn"
+            disabled={testBusy}
+            aria-busy={testBusy}
+            aria-describedby="test-hint"
             onClick={() =>
-              act("apply", async () => {
-                await api.applyRecommended();
-                await load();
+              act("test", async () => {
+                await api.startAiTest();
+                setOllama(await api.ollama());
               })
             }
           >
-            {busy === "apply" && <Spinner />}
-            {copy.useRecommended}
-          </button>
-          {mode === "auto" && (
-            <button
-              className="btn"
-              onClick={() =>
-                act("custom", async () => {
-                  await api.saveSettings({ ai_config_mode: "custom" });
-                  await load();
-                })
-              }
-            >
-              {copy.custom}
-            </button>
-          )}
-          <button className="btn" disabled={testBusy} aria-busy={testBusy} aria-describedby="test-hint" onClick={() =>
-            act("test", async () => {
-              await api.startAiTest();
-              setOllama(await api.ollama());
-            })
-          }>
             {testBusy && <Spinner />}
             {testBusy ? copy.testing : copy.test}
           </button>
@@ -282,6 +461,57 @@ export default function Settings() {
           {saved === "visual" && <InlineStatus ok>{copy.saved}</InlineStatus>}
         </div>
 
+        {Boolean(settings.enable_visual_analysis) && (
+          <fieldset className="choice-group">
+            <legend>{copy.visionScope}</legend>
+            {(["shortlist", "all"] as const).map((scope) => (
+              <label key={scope} className="check">
+                <input
+                  type="radio"
+                  name="vision-scope"
+                  value={scope}
+                  checked={String(settings.vision_scope || "shortlist") === scope}
+                  disabled={busy === "scope"}
+                  aria-describedby={`scope-${scope}-hint`}
+                  onChange={() => void setInstant("vision_scope", scope, "scope")}
+                />
+                <span>
+                  {scope === "shortlist" ? copy.visionScopeShortlist : copy.visionScopeAll}
+                  <span className="field-hint block" id={`scope-${scope}-hint`}>
+                    {scope === "shortlist" ? copy.visionScopeShortlistHint : copy.visionScopeAllHint}
+                  </span>
+                </span>
+              </label>
+            ))}
+            {saved === "scope" && <InlineStatus ok>{copy.saved}</InlineStatus>}
+          </fieldset>
+        )}
+
+        <div className="embed-row">
+          <div>
+            <strong>{copy.embedTitle}</strong>
+            <p className="field-hint">{copy.embedHint}</p>
+          </div>
+          <div className="btn-row">
+            <span className={`tag ${embedInstalled ? "ok" : ""}`}>
+              {fill(embedInstalled ? copy.embedReady : copy.embedMissing, { model: embedModel })}
+            </span>
+            {!embedInstalled && embedModel && (
+              <button
+                className="btn sm"
+                disabled={embedPull?.state === "running"}
+                aria-busy={embedPull?.state === "running"}
+                onClick={() => install([embedModel])}
+              >
+                {embedPull?.state === "running" && <Spinner />}
+                {embedPull?.state === "running" ? copy.installing : copy.install}
+              </button>
+            )}
+          </div>
+          {embedPull?.state === "running" && <PullBar pull={embedPull} />}
+          {embedPull?.state === "error" && embedPull.error && <p className="error-text">{embedPull.error}</p>}
+        </div>
+
         <ModelGroup
           title={copy.vision}
           hint={copy.visionHint}
@@ -304,8 +534,27 @@ export default function Settings() {
           onUse={(name) => useModel("ollama_text_model", name)}
           onInstall={(name) => install([name])}
         />
+      </>
+    ),
+
+    speech: (
+      <>
+        <ManagedNote enabled={mode === "auto"} onOpen={() => go("optimize")} />
+        <div className="form-grid">
+          <Field label={copy.whisperDevice} hint={copy.whisperDeviceHint}>
+            {(id, hintId) => (
+              <select id={id} aria-describedby={hintId} value={String(settings.whisper_device || "auto")} onChange={(e) => set("whisper_device", e.target.value)}>
+                <option value="auto">{copy.deviceAuto}</option>
+                <option value="cpu">{copy.deviceCpu}</option>
+                <option value="cuda">{copy.deviceCuda}</option>
+              </select>
+            )}
+          </Field>
+        </div>
         <h4 className="group-title">{copy.whisper}</h4>
-        <p className="hint group-hint">{copy.whisperHint}</p>
+        <p className="hint group-hint">
+          {copy.whisperHint} <span className="instant-note">{copy.instantNote}</span>
+        </p>
         <div className="model-list">
           {(info?.catalog?.whisper || []).map((model) => {
             const cached = Boolean(info?.whisper_cache?.[model.name]);
@@ -349,123 +598,29 @@ export default function Settings() {
             );
           })}
         </div>
+      </>
+    ),
 
-        <details className="help">
-          <summary>{copy.help}</summary>
-          <p>{copy.helpIntro}</p>
-          <p>{copy.helpCpu}</p>
-          <p>{copy.helpGpu}</p>
-          <p>{copy.helpAmd}</p>
-          <p>{copy.helpTrouble}</p>
-        </details>
-      </section>
+    video: (
+      <div className="form-grid">
+        <Field label={copy.codec} hint={copy.codecHint}>
+          {(id, hintId) => (
+            <select id={id} aria-describedby={hintId} value={String(settings.output_video_codec || "auto")} onChange={(e) => set("output_video_codec", e.target.value)}>
+              <option value="auto">{copy.codecAuto}</option>
+              <option value="h264">H.264</option>
+              <option value="h265">H.265 (HEVC)</option>
+              <option value="vp9">VP9</option>
+              <option value="av1">AV1</option>
+            </select>
+          )}
+        </Field>
+        <NumberField label={copy.crf} hint={copy.crfHint} min={0} max={51} value={settings.output_crf} onChange={(value) => set("output_crf", value)} />
+        <NumberField label={copy.scene} hint={copy.sceneHint} min={1} max={100} value={settings.scene_threshold} onChange={(value) => set("scene_threshold", value)} />
+      </div>
+    ),
 
-      <section className="panel" aria-labelledby="hw-title">
-        <h3 id="hw-title">{copy.hardware}</h3>
-        <p className="panel-intro">{copy.hardwareHint}</p>
-        <div className="meta-grid">
-          <Stat label={copy.cpu} value={String(hw.cpu || "—")} />
-          <Stat label={copy.cores} value={hw.cpu_cores ? String(hw.cpu_cores) : "—"} />
-          <Stat label={copy.ram} value={gb(hw.ram_gb)} />
-          <Stat label={copy.freeRam} value={gb(hw.ram_available_gb)} />
-          <Stat label={copy.gpu} value={String(hw.gpu || "—")} />
-          <Stat label={copy.vramTotal} value={gb(hw.vram_gb)} />
-          <Stat label={copy.freeVram} value={gb(hw.vram_free_gb)} />
-          <Stat label={copy.driver} value={String(hw.driver || "—")} />
-          <Stat label={copy.freeDisk} value={gb(hw.disk_free_gb)} />
-          <Stat label={copy.encode} value={String(hw.encode_acceleration || "—")} />
-        </div>
-        {hw.vram_note ? <p className="hint">{String(hw.vram_note)}</p> : null}
-        {Object.keys(checks).length > 0 && (
-          <>
-            <h4 className="group-title">{copy.checksTitle}</h4>
-            <ul className="checks">
-              {Object.entries(checks).map(([key, ok]) => (
-                <li key={key} className={`check-item ${ok ? "ok" : "bad"}`}>
-                  <span aria-hidden="true">{ok ? "✓" : "✗"}</span>
-                  {copy.checks[key as keyof typeof copy.checks] || key.replace(/_/g, " ")}
-                  <span className="sr-only">{ok ? ": ready" : ": not ready"}</span>
-                </li>
-              ))}
-            </ul>
-          </>
-        )}
-        <div className="btn-row panel-actions">
-          <button
-            className="btn"
-            disabled={busy === "refresh"}
-            aria-busy={busy === "refresh"}
-            onClick={() => act("refresh", () => load(true))}
-          >
-            {busy === "refresh" && <Spinner />}
-            {copy.refresh}
-          </button>
-        </div>
-      </section>
-
-      <details className="panel advanced" open={unsaved || undefined}>
-        <summary>{copy.advanced}</summary>
-        <p className="panel-intro">{copy.advancedHint}</p>
-
-        <h4 className="group-title">{copy.sectionAi}</h4>
-        <TextField
-          label={copy.ollamaUrl}
-          hint={copy.ollamaUrlHint}
-          value={String(settings.ollama_base_url || "")}
-          onChange={(value) => set("ollama_base_url", value)}
-        />
-        <div className="grid-2">
-          <NumberField label={copy.timeout} hint={copy.timeoutHint} value={settings.ollama_timeout} onChange={(value) => set("ollama_timeout", value)} />
-          <NumberField label={copy.retries} hint={copy.retriesHint} value={settings.ollama_max_retries} onChange={(value) => set("ollama_max_retries", value)} />
-        </div>
-
-        <h4 className="group-title">{copy.sectionSpeed}</h4>
-        <div className="grid-2">
-          <NumberField label={copy.batch} hint={copy.batchHint} value={settings.ollama_vision_batch_size} onChange={(value) => set("ollama_vision_batch_size", value)} />
-          <NumberField label={copy.threads} hint={copy.threadsHint} value={settings.ollama_num_thread} onChange={(value) => set("ollama_num_thread", value)} />
-          <NumberField label={copy.visionCtx} hint={copy.visionCtxHint} value={settings.ollama_vision_num_ctx} onChange={(value) => set("ollama_vision_num_ctx", value)} />
-          <NumberField label={copy.textCtx} hint={copy.textCtxHint} value={settings.ollama_text_num_ctx} onChange={(value) => set("ollama_text_num_ctx", value)} />
-          <Field label={copy.whisperDevice} hint={copy.whisperDeviceHint}>
-            {(id, hintId) => (
-              <select id={id} aria-describedby={hintId} value={String(settings.whisper_device || "auto")} onChange={(e) => set("whisper_device", e.target.value)}>
-                <option value="auto">{copy.deviceAuto}</option>
-                <option value="cpu">{copy.deviceCpu}</option>
-                <option value="cuda">{copy.deviceCuda}</option>
-              </select>
-            )}
-          </Field>
-        </div>
-
-        <h4 className="group-title">{copy.sectionVideo}</h4>
-        <div className="grid-2">
-          <NumberField label={copy.scene} hint={copy.sceneHint} value={settings.scene_threshold} onChange={(value) => set("scene_threshold", value)} />
-          <NumberField label={copy.crf} hint={copy.crfHint} value={settings.output_crf} onChange={(value) => set("output_crf", value)} />
-          <Field label={copy.codec} hint={copy.codecHint}>
-            {(id, hintId) => (
-              <select id={id} aria-describedby={hintId} value={String(settings.output_video_codec || "auto")} onChange={(e) => set("output_video_codec", e.target.value)}>
-                <option value="auto">{copy.codecAuto}</option>
-                <option value="h264">H.264</option>
-                <option value="h265">H.265 (HEVC)</option>
-                <option value="vp9">VP9</option>
-                <option value="av1">AV1</option>
-              </select>
-            )}
-          </Field>
-        </div>
-
-        <div className="btn-row panel-actions">
-          <button className="btn primary" disabled={busy === "save" || !unsaved} aria-busy={busy === "save"} onClick={saveAdvanced}>
-            {busy === "save" && <Spinner />}
-            {copy.save}
-          </button>
-          {unsaved && busy !== "save" && <span className="muted">{copy.unsaved}</span>}
-          {saved === "advanced" && <InlineStatus ok>{copy.saved}</InlineStatus>}
-        </div>
-      </details>
-
-      <section className="panel" aria-labelledby="storage-title">
-        <h3 id="storage-title">{copy.storage}</h3>
-        <p className="panel-intro">{copy.storageHint}</p>
+    storage: (
+      <>
         <div className="meta-grid">
           <Stat label={copy.storageJobs} value={formatBytes(Number(storage.jobs_bytes || 0))} />
           <Stat label={copy.storageOutputs} value={formatBytes(Number(storage.outputs_bytes || 0))} />
@@ -499,9 +654,206 @@ export default function Settings() {
             }}
           />
         </div>
-      </section>
+      </>
+    ),
+
+    system: (
+      <>
+        <div className="meta-grid">
+          <Stat label={copy.cpu} value={String(hw.cpu || "—")} />
+          <Stat label={copy.cores} value={hw.cpu_cores ? String(hw.cpu_cores) : "—"} />
+          <Stat label={copy.ram} value={gb(hw.ram_gb)} />
+          <Stat label={copy.freeRam} value={gb(hw.ram_available_gb)} />
+          <Stat label={copy.gpu} value={String(hw.gpu || "—")} />
+          <Stat label={copy.vramTotal} value={gb(hw.vram_gb)} />
+          <Stat label={copy.freeVram} value={gb(hw.vram_free_gb)} />
+          <Stat label={copy.driver} value={String(hw.driver || "—")} />
+          <Stat label={copy.freeDisk} value={gb(hw.disk_free_gb)} />
+          <Stat label={copy.encode} value={String(hw.encode_acceleration || "—")} />
+        </div>
+        {hw.vram_note ? <p className="hint">{String(hw.vram_note)}</p> : null}
+        {Object.keys(checks).length > 0 && (
+          <>
+            <h4 className="group-title">{copy.checksTitle}</h4>
+            <ul className="checks">
+              {Object.entries(checks).map(([key, ok]) => (
+                <li key={key} className={`check-item ${ok ? "ok" : "bad"}`}>
+                  <span aria-hidden="true">{ok ? "✓" : "✗"}</span>
+                  {copy.checks[key as keyof typeof copy.checks] || key.replace(/_/g, " ")}
+                  <span className="sr-only">{ok ? ": ready" : ": not ready"}</span>
+                </li>
+              ))}
+            </ul>
+          </>
+        )}
+        <div className="btn-row panel-actions">
+          <button className="btn" disabled={busy === "refresh"} aria-busy={busy === "refresh"} onClick={() => act("refresh", () => load(true))}>
+            {busy === "refresh" && <Spinner />}
+            {copy.refresh}
+          </button>
+        </div>
+        <details className="help">
+          <summary>{copy.help}</summary>
+          <p>{copy.helpIntro}</p>
+          <p>{copy.helpCpu}</p>
+          <p>{copy.helpGpu}</p>
+          <p>{copy.helpAmd}</p>
+          <p>{copy.helpTrouble}</p>
+        </details>
+      </>
+    ),
+
+    performance: (
+      <>
+      <ManagedNote enabled={mode === "auto"} onOpen={() => go("optimize")} />
+      <div className="form-grid">
+        <NumberField label={copy.batch} hint={copy.batchHint} min={1} max={16} value={settings.ollama_vision_batch_size} onChange={(value) => set("ollama_vision_batch_size", value)} />
+        <NumberField label={copy.threads} hint={copy.threadsHint} min={1} max={64} value={settings.ollama_num_thread} onChange={(value) => set("ollama_num_thread", value)} />
+        <NumberField label={copy.visionCtx} hint={copy.visionCtxHint} min={1024} step={1024} value={settings.ollama_vision_num_ctx} onChange={(value) => set("ollama_vision_num_ctx", value)} />
+        <NumberField label={copy.textCtx} hint={copy.textCtxHint} min={1024} step={1024} value={settings.ollama_text_num_ctx} onChange={(value) => set("ollama_text_num_ctx", value)} />
+      </div>
+      </>
+    ),
+
+    connection: (
+      <>
+        <TextField
+          label={copy.ollamaUrl}
+          hint={copy.ollamaUrlHint}
+          value={String(settings.ollama_base_url || "")}
+          onChange={(value) => set("ollama_base_url", value)}
+        />
+        <div className="form-grid">
+          <NumberField label={copy.timeout} hint={copy.timeoutHint} min={10} value={settings.ollama_timeout} onChange={(value) => set("ollama_timeout", value)} />
+          <NumberField label={copy.retries} hint={copy.retriesHint} min={0} max={10} value={settings.ollama_max_retries} onChange={(value) => set("ollama_max_retries", value)} />
+        </div>
+      </>
+    ),
+  };
+
+  return (
+    <div className="settings-layout">
+      <nav className="settings-nav" aria-label={copy.navLabel}>
+        {NAV.map((entry) => (
+          <div key={entry.group} className="settings-nav-group">
+            <p className="settings-nav-heading" aria-hidden="true">
+              {entry.group}
+            </p>
+            <ul>
+              {entry.items.map((id) => (
+                <li key={id}>
+                  <button
+                    type="button"
+                    className={`settings-nav-item ${section === id ? "active" : ""}`}
+                    aria-current={section === id ? "page" : undefined}
+                    onClick={() => go(id)}
+                  >
+                    {copy.sections[id]}
+                    {dirtySections.has(id) && (
+                      <span className="dirty-dot" role="img" aria-label={copy.unsavedDot} />
+                    )}
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </div>
+        ))}
+      </nav>
+
+      <div className="settings-body">
+        {error && <Alert>{error}</Alert>}
+        <section className="panel settings-section" aria-labelledby="settings-section-title" key={section}>
+          <h3 id="settings-section-title" className="sub-title settings-title">
+            {copy.sections[section]}
+          </h3>
+          <p className="panel-intro">{copy.sectionIntros[section]}</p>
+          {views[section]}
+        </section>
+
+        {(unsaved || saved === "form") && (
+          <div className="action-bar save-bar" role="region" aria-label={copy.saveChanges}>
+            <div className="btn-row">
+              {unsaved ? (
+                <>
+                  <button className="btn primary" disabled={busy === "save"} aria-busy={busy === "save"} onClick={saveChanges}>
+                    {busy === "save" && <Spinner />}
+                    {copy.saveChanges}
+                  </button>
+                  <button className="btn ghost" disabled={busy === "save"} onClick={discardChanges}>
+                    {copy.discard}
+                  </button>
+                  <span className="muted" role="status">
+                    {copy.saveBar}
+                  </span>
+                </>
+              ) : (
+                <InlineStatus ok>{copy.savedChanges}</InlineStatus>
+              )}
+            </div>
+          </div>
+        )}
+      </div>
     </div>
   );
+}
+
+function ManagedNote({ enabled, onOpen }: { enabled: boolean; onOpen: () => void }) {
+  if (!enabled) return null;
+  return (
+    <p className="managed-note">
+      {opt.managedNote}{" "}
+      <button type="button" className="link-button" onClick={onOpen}>
+        {copy.sections.optimize}
+      </button>
+    </p>
+  );
+}
+
+const DEVICE_LABELS: Record<string, string> = {
+  auto: copy.deviceAuto,
+  cpu: copy.deviceCpu,
+  cuda: copy.deviceCuda,
+};
+
+function showValue(item: OptimizationItem, value: OptimizationItem["current"]) {
+  if (value === null || value === undefined || value === "") return "—";
+  if (item.key === "whisper_device") return DEVICE_LABELS[String(value)] || String(value);
+  return String(value);
+}
+
+/** Settings with their values and the reason for each. */
+function ChangeList({ items, showCurrentOnly = false }: { items: OptimizationItem[]; showCurrentOnly?: boolean }) {
+  return (
+    <ul className="change-list">
+      {items.map((item) => (
+        <li key={item.key}>
+          <div className="change-head">
+            <span className="change-label">{item.label}</span>
+            {showCurrentOnly ? (
+              <strong>{showValue(item, item.current)}</strong>
+            ) : (
+              <span className="change-values">
+                <span className="muted" aria-label={opt.current}>
+                  {showValue(item, item.current)}
+                </span>
+                <span aria-hidden="true"> → </span>
+                <strong aria-label={opt.recommended}>{showValue(item, item.recommended)}</strong>
+              </span>
+            )}
+          </div>
+          {item.reason && <p className="hint">{item.reason}</p>}
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+function formatDuration(seconds: number) {
+  const total = Math.max(0, Math.round(seconds || 0));
+  const minutes = Math.floor(total / 60);
+  const rest = total % 60;
+  if (!minutes) return `${rest} s`;
+  return rest ? `${minutes} min ${rest} s` : `${minutes} min`;
 }
 
 function Stat({ label, value }: { label: string; value: string }) {
@@ -570,16 +922,32 @@ function NumberField({
   hint,
   value,
   onChange,
+  min,
+  max,
+  step,
 }: {
   label: string;
   hint?: string;
   value: unknown;
   onChange: (value: number) => void;
+  min?: number;
+  max?: number;
+  step?: number;
 }) {
   return (
     <Field label={label} hint={hint}>
       {(id, hintId) => (
-        <input id={id} type="number" aria-describedby={hintId} value={Number(value || 0)} onChange={(e) => onChange(Number(e.target.value))} />
+        <input
+          id={id}
+          type="number"
+          inputMode="numeric"
+          min={min}
+          max={max}
+          step={step}
+          aria-describedby={hintId}
+          value={Number(value || 0)}
+          onChange={(e) => onChange(Number(e.target.value))}
+        />
       )}
     </Field>
   );

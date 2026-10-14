@@ -24,6 +24,13 @@ def utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def as_utc(value: datetime | None) -> datetime | None:
+    """SQLite returns stored datetimes without a timezone; they are always UTC."""
+    if value is None:
+        return None
+    return value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
+
+
 class Job(Base):
     __tablename__ = "jobs"
 
@@ -43,8 +50,17 @@ class Job(Base):
     metadata_json: Mapped[str] = mapped_column(Text, default="{}")
     last_stage: Mapped[str] = mapped_column(String(64), default="")
     progress: Mapped[float] = mapped_column(Float, default=0)
+    # Total active processing time over every attempt (analysis and rendering), in seconds.
     processing_seconds: Mapped[float] = mapped_column(Float, default=0)
     cancelled: Mapped[bool] = mapped_column(Boolean, default=False)
+    # The attempt in progress: when it started and whether it analyzes or renders. Cleared when
+    # it ends; its length is then added to the totals below and kept as attempt_seconds.
+    attempt_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    attempt_phase: Mapped[str] = mapped_column(String(16), default="")
+    attempt_seconds: Mapped[float] = mapped_column(Float, default=0)
+    attempt_outcome: Mapped[str] = mapped_column(String(16), default="")
+    analysis_seconds: Mapped[float] = mapped_column(Float, default=0)
+    render_seconds: Mapped[float] = mapped_column(Float, default=0)
 
 
 class JobStage(Base):
@@ -57,6 +73,8 @@ class JobStage(Base):
     detail: Mapped[str] = mapped_column(Text, default="")
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Time actually spent in this stage, summed over every run (several videos, retries).
+    seconds: Mapped[float] = mapped_column(Float, default=0)
 
 
 class SceneRow(Base):
@@ -177,6 +195,24 @@ def _ensure_columns() -> None:
             conn.execute(text("ALTER TABLE selected_clips ADD COLUMN source_id VARCHAR(32) DEFAULT ''"))
         if "source_name" not in names:
             conn.execute(text("ALTER TABLE selected_clips ADD COLUMN source_name VARCHAR(255) DEFAULT ''"))
+
+        jobs = {row[1] for row in conn.execute(text("PRAGMA table_info(jobs)")).fetchall()}
+        for column, ddl in (
+            ("attempt_started_at", "DATETIME"),
+            ("attempt_phase", "VARCHAR(16) DEFAULT ''"),
+            ("attempt_seconds", "FLOAT DEFAULT 0"),
+            ("attempt_outcome", "VARCHAR(16) DEFAULT ''"),
+            ("analysis_seconds", "FLOAT DEFAULT 0"),
+            ("render_seconds", "FLOAT DEFAULT 0"),
+        ):
+            if column not in jobs:
+                conn.execute(text(f"ALTER TABLE jobs ADD COLUMN {column} {ddl}"))
+                if column == "analysis_seconds":
+                    # Before this column, processing_seconds held the analysis time only.
+                    conn.execute(text("UPDATE jobs SET analysis_seconds = COALESCE(processing_seconds, 0)"))
+        stages = {row[1] for row in conn.execute(text("PRAGMA table_info(job_stages)")).fetchall()}
+        if "seconds" not in stages:
+            conn.execute(text("ALTER TABLE job_stages ADD COLUMN seconds FLOAT DEFAULT 0"))
 
 
 def get_session():

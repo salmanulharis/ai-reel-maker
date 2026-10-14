@@ -51,13 +51,14 @@ def warm_ollama_models(settings: Settings | None = None) -> None:
 def _models_to_warm(settings: Settings, health: dict, *, warm_both: bool) -> list[tuple[str, str]]:
     """Models to load ahead of the first job, in the order a job uses them.
 
-    Visual analysis runs before transcript scoring, so the vision model goes first when it is
-    used. Without room for both, only the first one that is installed is loaded.
+    Transcript scoring runs before visual analysis (it decides which scenes the vision model
+    looks at), so the text model goes first. Without room for both, only the first one that is
+    installed is loaded.
     """
     installed = set(health.get("models") or [])
     order = [(settings.ollama_text_model, "text")]
     if settings.enable_visual_analysis and health.get("vision_ready", True):
-        order.insert(0, (settings.ollama_vision_model, "vision"))
+        order.append((settings.ollama_vision_model, "vision"))
     warmed: list[tuple[str, str]] = []
     for model, role in order:
         if not model or any(model == name for name, _ in warmed) or not _installed(model, installed):

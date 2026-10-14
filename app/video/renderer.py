@@ -9,6 +9,7 @@ from app.video.quality import (
     OutputCanvas,
     choose_canvas,
     clip_normalize_filters,
+    describe_frame_rate,
     encode_crf,
     encode_preset,
     quality_software_first,
@@ -71,7 +72,9 @@ class Renderer:
             clip_path = work_dir / f"clip_{i:03d}.mp4"
             clip_source = clip_sources[i]
             src_meta = self._cached_probe(probes, clip_source, metadata)
-            filters = clip_normalize_filters(src_meta, canvas, extra=[aspect] if aspect else None)
+            filters = clip_normalize_filters(
+                src_meta, canvas, extra=[aspect] if aspect else None, smooth_motion=settings.smooth_motion
+            )
             if settings.transition == "fade":
                 dur = max(0.05, clip.end - clip.start)
                 fade = min(0.12, dur / 6)
@@ -139,6 +142,7 @@ class Renderer:
             "metadata": probe.model_dump(),
             "validation": validation,
             "canvas": {"width": canvas.width, "height": canvas.height, "fps": canvas.fps},
+            "frame_rate": describe_frame_rate(source_metas, canvas.fps, settings.smooth_motion),
             "encoder": {
                 "codec": video_codec,
                 "preset": encode_preset(video_codec, settings.quality),
@@ -237,10 +241,13 @@ def validate_output(
                     f"target {canvas.width}×{canvas.height}"
                 ),
             }
-        if canvas.fps and probe.fps and abs(float(probe.fps) - canvas.fps) > 1.5:
+        # The average rate reflects what was encoded; the declared rate of a stream-copied
+        # concat can read double (e.g. 47.952 for 23.976 clips) because of gaps at the joins.
+        measured = float(probe.avg_fps or probe.fps or 0)
+        if canvas.fps and measured and abs(measured - canvas.fps) > 1.5:
             return {
                 "ok": False,
-                "error": f"Output frame rate {probe.fps} fps does not match target {canvas.fps:.3f} fps",
+                "error": f"Output frame rate {measured:.3f} fps does not match target {canvas.fps:.3f} fps",
             }
     return {"ok": True, "error": None}
 

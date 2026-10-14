@@ -10,6 +10,11 @@ from app.models.schemas import ClipPlan, ClipPlanItem
 
 SimilarityFn = Callable[[dict, dict], float]
 REPEAT_THRESHOLD = 0.48
+# Automatic length: keep moments scoring at least this share of the best moment ("Shorter"
+# raises it), and never use more than this share of the source video.
+AUTO_LENGTH_KEEP_RATIO = 0.65
+AUTO_LENGTH_STRICT_RATIO = 0.8
+AUTO_LENGTH_SOURCE_SHARE = 0.25
 
 
 def _duration(item: dict) -> float:
@@ -70,8 +75,15 @@ class ClipOptimizer:
         max_repeated_duration: float = 15.0,
         repeat_threshold: float = REPEAT_THRESHOLD,
         content_priorities: list[str] | None = None,
+        length_mode: str = "range",
+        auto_length_strict: bool = False,
     ) -> ClipPlan:
-        target = target or (min_duration + max_duration) / 2
+        auto_length = length_mode == "auto"
+        if auto_length:
+            # No maximum from the user: a safety limit stops a highlight from becoming most of
+            # the video when the model scores everything alike. The loop below stops on quality.
+            max_duration = self._auto_length_limit(min_duration, max_duration, source_duration)
+        target = target or (max_duration if auto_length else (min_duration + max_duration) / 2)
         notes = ""
         similarity_fn = similarity_fn or _default_similarity
         must_include = must_include or []
@@ -84,7 +96,7 @@ class ClipOptimizer:
         max_repeated_duration = max(0.0, float(max_repeated_duration))
         sequence_duration_mode = "auto" if sequence_duration_mode == "auto" else "custom"
         if sequence_duration_mode == "auto":
-            max_sequence_duration = auto_cap(min_duration, max_duration)
+            max_sequence_duration = auto_cap(min_duration, max_duration, length_mode)
 
         def fit(item: dict, cap: float | None = None) -> dict:
             return fit_candidate(
@@ -156,12 +168,17 @@ class ClipOptimizer:
 
         remaining = [c for c in pool if c not in selected]
         remaining.sort(key=lambda c: float(c.get("score", 0)), reverse=True)
+        keep_from = 0.0
+        if auto_length and pool:
+            ratio = AUTO_LENGTH_STRICT_RATIO if auto_length_strict else AUTO_LENGTH_KEEP_RATIO
+            best = max(float(c.get("score", 0)) for c in pool)
+            keep_from = max(self.quality_floor, best * ratio)
 
         def current_duration() -> float:
             return sum(_duration(c) for c in selected)
 
         while remaining:
-            if current_duration() >= min_duration and current_duration() >= target * 0.92:
+            if not auto_length and current_duration() >= min_duration and current_duration() >= target * 0.92:
                 break
             best_idx = None
             best_value = -1e9
@@ -183,6 +200,8 @@ class ClipOptimizer:
                 if current_duration() + dur > max_duration + 1e-6:
                     continue
                 if is_low_value(cand) and current_duration() >= min_duration * 0.55:
+                    continue
+                if auto_length and not need_more and float(cand.get("score", 0)) < keep_from:
                     continue
                 if float(cand.get("score", 0)) < self.quality_floor and current_duration() >= min_duration * 0.7:
                     continue
@@ -237,13 +256,23 @@ class ClipOptimizer:
         estimated = sum(c.duration for c in clips)
         if estimated < min_duration * 0.85 and remaining:
             notes = "Could not reach the target duration without adding low-value content. Preferring a shorter high-quality result."
+        elif auto_length and not notes:
+            notes = f"Length chosen from the content: {len(clips)} strong moment(s)."
         return ClipPlan(
-            target_duration=target,
+            target_duration=round(estimated, 3) if auto_length else target,
             estimated_duration=round(estimated, 3),
             clips=clips,
             notes=notes,
             order_mode=order_mode,
         )
+
+    @staticmethod
+    def _auto_length_limit(min_duration: float, max_duration: float, source_duration: float | None) -> float:
+        if source_duration and source_duration > 0:
+            limit = source_duration * AUTO_LENGTH_SOURCE_SHARE
+        else:
+            limit = max_duration
+        return max(float(min_duration), float(limit))
 
     def _short_source_plan(
         self,

@@ -69,6 +69,8 @@ export function VideoCropPreview({
     if (!wrap) return;
     const observer = new ResizeObserver(layout);
     observer.observe(wrap);
+    // The video is sized to its frame, so it can change size while the wrapper does not.
+    if (videoRef.current) observer.observe(videoRef.current);
     window.addEventListener("resize", layout);
     return () => {
       observer.disconnect();

@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
-import { api, formatBytes, formatTime } from "../services/api";
-import { messages } from "../i18n";
+import { api, formatBytes, formatElapsed, formatTime } from "../services/api";
+import { fill, messages } from "../i18n";
 import { Alert, CheckIcon, InlineStatus, PageLoader, Spinner } from "../components/Feedback";
 import type { Job } from "../types";
 
@@ -43,6 +43,7 @@ export default function Result() {
   const highlight = output?.duration || 0;
   const reduction = original && highlight ? `${Math.round((1 - highlight / original) * 100)}%` : "—";
   const clips = job.clips || [];
+  const timing = job.timing;
   const multi = (job.sources || []).length > 1;
 
   return (
@@ -89,9 +90,17 @@ export default function Result() {
           <span>{copy.clips}</span>
           {clips.length}
         </div>
-        <div>
+        <div title={timing ? fill(copy.processingSplit, { analysis: formatElapsed(timing.analysis_seconds), render: formatElapsed(timing.render_seconds) }) : undefined}>
           <span>{copy.processing}</span>
-          {formatTime(job.processing_seconds)}
+          {formatElapsed(timing?.total_seconds ?? job.processing_seconds)}
+          {timing && timing.render_seconds > 0 && (
+            <small className="stat-note">
+              {fill(copy.processingSplit, {
+                analysis: formatElapsed(timing.analysis_seconds),
+                render: formatElapsed(timing.render_seconds),
+              })}
+            </small>
+          )}
         </div>
         <div>
           <span>{copy.output}</span>

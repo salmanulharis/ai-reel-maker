@@ -36,6 +36,8 @@ EDITABLE = {
     "enable_whisper",
     "enable_visual_analysis",
     "enable_repetition_analysis",
+    "vision_scope",
+    "ollama_embed_model",
 }
 
 CUSTOM_ON_EDIT = {
@@ -67,6 +69,8 @@ def save_settings():
     if editing_models and payload.get("ai_config_mode") != "auto":
         payload["ai_config_mode"] = "custom"
     values = {key: value for key, value in payload.items() if key in EDITABLE}
+    if "vision_scope" in values and values["vision_scope"] not in {"shortlist", "all"}:
+        return jsonify({"error": "vision_scope must be shortlist or all"}), 400
     apply_values(values, get_settings())
     return jsonify({"settings": _current()})
 

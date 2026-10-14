@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 AUTO_MIN = 1.5
+# Longest single clip when the highlight itself has no maximum (automatic length).
+AUTO_LENGTH_CLIP_CAP = 30.0
 
 
 def keep_best_span(
@@ -52,11 +54,15 @@ def peak_from_candidate(candidate: dict) -> float | None:
 def sequence_cap(config) -> float:
     mode = str(getattr(config, "sequence_duration_mode", "custom") or "custom")
     if mode == "auto":
+        if str(getattr(config, "length_mode", "range") or "range") == "auto":
+            return AUTO_LENGTH_CLIP_CAP
         return max(1.0, float(getattr(config, "max_duration", 30.0)))
     return max(1.0, float(getattr(config, "max_sequence_duration", 5.0)))
 
 
-def auto_cap(min_duration: float, max_duration: float) -> float:
+def auto_cap(min_duration: float, max_duration: float, length_mode: str = "range") -> float:
+    if length_mode == "auto":
+        return AUTO_LENGTH_CLIP_CAP
     return max(1.0, float(max_duration))
 
 

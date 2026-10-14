@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { io } from "socket.io-client";
-import { api, formatTime } from "../services/api";
+import { api, formatElapsed } from "../services/api";
+import { useElapsed } from "../hooks/useElapsed";
 import { fill, messages } from "../i18n";
 import { Alert, CheckIcon, PageLoader, Spinner } from "../components/Feedback";
 import type { Job, JobSource } from "../types";
@@ -25,7 +26,7 @@ function StageMark({ status }: { status: string }) {
     );
   }
   if (status === "error" || status === "failed") return <span className="stage-mark error">✕</span>;
-  if (status === "skipped") return <span className="stage-mark skipped">–</span>;
+  if (status === "skipped" || status === "cancelled") return <span className="stage-mark skipped">–</span>;
   return <span className="stage-mark" />;
 }
 
@@ -35,6 +36,7 @@ const STATUS_TEXT: Record<string, string> = {
   error: "failed",
   failed: "failed",
   skipped: "skipped",
+  cancelled: "stopped",
 };
 
 function SourcePreview({ jobId, sources }: { jobId: string; sources: JobSource[] }) {
@@ -64,6 +66,7 @@ export default function Analysis() {
   const [openLog, setOpenLog] = useState(false);
   const [action, setAction] = useState<"" | "cancel" | "retry">("");
   const [actionError, setActionError] = useState("");
+  const elapsed = useElapsed(job?.timing);
   const queued = useRef(false);
   const logRef = useRef<HTMLDivElement>(null);
   const stickToBottom = useRef(true);
@@ -148,8 +151,13 @@ export default function Analysis() {
             <p className="progress-summary" aria-live="polite">
               <strong>{percent}%</strong>
               <span>
-                {copy.elapsed}: {formatTime(job.processing_seconds)}
+                {copy.elapsed}: <span className="tabular">{formatElapsed(elapsed.attempt, elapsed.running)}</span>
               </span>
+              {elapsed.total - elapsed.attempt >= 1 && (
+                <span>
+                  {copy.totalElapsed}: <span className="tabular">{formatElapsed(elapsed.total, elapsed.running)}</span>
+                </span>
+              )}
               {current && (
                 <span>
                   {copy.current}: {current}
@@ -170,26 +178,43 @@ export default function Analysis() {
         )}
         {failed && (
           <Alert>
-            <strong>{copy.failed}.</strong> {copy.failedHint}
+            <strong>
+              {copy.failed}
+              {elapsed.attempt > 0 ? ` ${fill(copy.endedAfter, { time: formatElapsed(elapsed.attempt) })}` : ""}.
+            </strong>{" "}
+            {copy.failedHint}
             {job.error && <span className="alert-detail">{job.error}</span>}
           </Alert>
         )}
         {cancelled && !failed && (
           <Alert kind="info">
-            <strong>{copy.cancelled}.</strong> {copy.cancelledHint}
+            <strong>
+              {copy.cancelled}
+              {!elapsed.running && elapsed.attempt > 0 ? ` ${fill(copy.endedAfter, { time: formatElapsed(elapsed.attempt) })}` : ""}.
+            </strong>{" "}
+            {copy.cancelledHint}
           </Alert>
         )}
         <ul className="stage-list">
-          {(job.stages || []).map((stage) => (
-            <li key={stage.name} className={stage.status || "pending"}>
-              <StageMark status={stage.status} />
-              <div>
-                <strong>{LABELS[stage.name] || stage.name}</strong>
-                <span className="sr-only"> — {STATUS_TEXT[stage.status] || "waiting"}</span>
-                {stage.detail && <div className="stage-detail">{stage.detail}</div>}
-              </div>
-            </li>
-          ))}
+          {(job.stages || []).map((stage) => {
+            const running = stage.status === "running" && Boolean(stage.started_at);
+            const seconds = elapsed.stageSeconds(stage.seconds, running ? stage.started_at : null);
+            return (
+              <li key={stage.name} className={stage.status || "pending"}>
+                <StageMark status={stage.status} />
+                <div className="stage-body">
+                  <strong>{LABELS[stage.name] || stage.name}</strong>
+                  <span className="sr-only"> — {STATUS_TEXT[stage.status] || "waiting"}</span>
+                  {stage.detail && <div className="stage-detail">{stage.detail}</div>}
+                </div>
+                {seconds >= 0.05 && (
+                  <span className="stage-time tabular" title={fill(copy.stageTime, { time: formatElapsed(seconds) })}>
+                    {formatElapsed(seconds, running)}
+                  </span>
+                )}
+              </li>
+            );
+          })}
         </ul>
         <div className="btn-row panel-actions">
           {stopped ? (

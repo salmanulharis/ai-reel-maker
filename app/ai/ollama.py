@@ -560,6 +560,34 @@ class OllamaClient:
                     ]
         raise OllamaError(last_error or "Ollama chat failed")
 
+    def reachable(self) -> bool:
+        """One quick request (2 s timeout, no retries) to see whether Ollama answers."""
+        try:
+            return self._request("GET", "/api/version").ok
+        except OllamaError:
+            return False
+
+    def embed(self, model: str, texts: list[str], batch: int = 64) -> list[list[float]]:
+        """Embedding vectors for texts, in order. Raises OllamaError when the model is missing
+        or this Ollama has no /api/embed; callers fall back to their non-embedding path."""
+        vectors: list[list[float]] = []
+        for start in range(0, len(texts), batch):
+            chunk = [text if text.strip() else " " for text in texts[start : start + batch]]
+            response = self._request(
+                "POST",
+                "/api/embed",
+                json={"model": model, "input": chunk, "keep_alive": self.settings.ollama_keep_alive},
+                timeout=min(self.timeout, 300),
+            )
+            if not response.ok:
+                raise OllamaError(_response_error(response))
+            body = response.json()
+            rows = body.get("embeddings") if isinstance(body, dict) else None
+            if not isinstance(rows, list) or len(rows) != len(chunk):
+                raise OllamaError("Ollama returned no embeddings")
+            vectors.extend(rows)
+        return vectors
+
     def encode_image(self, path: str, max_pixels: int | None = None) -> str:
         limit = max_pixels or self.settings.ollama_vision_max_pixels
         with Image.open(path) as image:

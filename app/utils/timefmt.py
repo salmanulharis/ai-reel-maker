@@ -19,6 +19,19 @@ def format_duration(seconds: float) -> str:
     return f"{minutes:02d}:{secs:02d}"
 
 
+def format_elapsed(seconds: float) -> str:
+    """Readable processing time: "12.4 seconds", "2 min 15 sec", "1 hr 5 min"."""
+    value = max(0.0, float(seconds or 0))
+    if value < 60:
+        return f"{value:.1f} seconds"
+    total = int(round(value))
+    hours, rem = divmod(total, 3600)
+    minutes, secs = divmod(rem, 60)
+    if hours:
+        return f"{hours} hr {minutes} min" if minutes else f"{hours} hr"
+    return f"{minutes} min {secs} sec" if secs else f"{minutes} min"
+
+
 def seconds_to_timecode(seconds: float) -> str:
     total_ms = int(round(float(seconds) * 1000))
     hours, rem = divmod(total_ms, 3_600_000)

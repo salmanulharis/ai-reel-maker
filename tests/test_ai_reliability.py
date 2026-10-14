@@ -230,8 +230,9 @@ def test_warm_probe_and_role_options_match(monkeypatch):
 def test_warm_up_loads_the_model_the_job_uses_first():
     settings = Settings(ollama_vision_model="qwen3-vl:4b", ollama_text_model="qwen3:4b")
     both = {"models": ["qwen3-vl:4b", "qwen3:4b"], "vision_ready": True}
-    assert _models_to_warm(settings, both, warm_both=False) == [("qwen3-vl:4b", "vision")]
-    assert _models_to_warm(settings, both, warm_both=True) == [("qwen3-vl:4b", "vision"), ("qwen3:4b", "text")]
+    # Transcript scoring runs first (it shortlists scenes for the vision model).
+    assert _models_to_warm(settings, both, warm_both=False) == [("qwen3:4b", "text")]
+    assert _models_to_warm(settings, both, warm_both=True) == [("qwen3:4b", "text"), ("qwen3-vl:4b", "vision")]
     text_only = {"models": ["qwen3:4b"], "vision_ready": False}
     assert _models_to_warm(settings, text_only, warm_both=False) == [("qwen3:4b", "text")]
     settings.enable_visual_analysis = False

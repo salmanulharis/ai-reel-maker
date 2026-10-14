@@ -26,7 +26,7 @@ def choose_canvas(metas: list[VideoMetadata], settings: RenderSettings | None = 
     best = max(usable, key=lambda item: int(item.width) * int(item.height))
     width = even_dim(best.width)
     height = even_dim(best.height)
-    fps = float(best.fps or 0) or max((float(item.fps or 0) for item in usable), default=0.0) or 30.0
+    fps = target_frame_rate(best, usable, getattr(settings, "frame_rate", "source"))
     cap = {"1080p": 1080, "720p": 720}.get(str(settings.resolution or ""), None)
     if cap and height > cap:
         scale = cap / height
@@ -35,20 +35,138 @@ def choose_canvas(metas: list[VideoMetadata], settings: RenderSettings | None = 
     return OutputCanvas(width=width, height=height, fps=fps)
 
 
+# NTSC rates and how far a probed value may be from them. Tight enough that a true 24 or 30 fps
+# source (0.024 / 0.03 away) keeps its own rate instead of being slowed to 23.976 / 29.97.
+_NTSC_RATES = ((24000, 1001), (30000, 1001), (60000, 1001))
+_NTSC_TOLERANCE = 0.01
+
+
 def fps_filter(fps: float) -> str:
-    if abs(fps - 24000 / 1001) < 0.05 or abs(fps - 23.976) < 0.04:
-        return "fps=24000/1001"
-    if abs(fps - 30000 / 1001) < 0.05 or abs(fps - 29.97) < 0.04:
-        return "fps=30000/1001"
+    return f"fps={rate_expression(fps)}"
+
+
+def rate_expression(fps: float) -> str:
+    """FFmpeg rate for a frame rate: exact fractions for NTSC rates, whole numbers when close."""
+    for num, den in _NTSC_RATES:
+        if abs(fps - num / den) < _NTSC_TOLERANCE or abs(fps - round(num / den, 2)) < _NTSC_TOLERANCE:
+            return f"{num}/{den}"
     if abs(fps - round(fps)) < 0.05:
-        return f"fps={int(round(fps))}"
-    return f"fps={fps:.3f}"
+        return str(int(round(fps)))
+    return f"{fps:.3f}"
+
+
+def snap_rate(fps: float) -> float:
+    """The exact value of a probed rate: 23.98 -> 23.976..., 30.0 -> 30.0, others unchanged."""
+    expression = rate_expression(fps)
+    if "/" in expression:
+        num, den = expression.split("/")
+        return int(num) / int(den)
+    return float(expression)
+
+
+# Choices offered for the output, besides keeping the source rate.
+FRAME_RATE_CHOICES = {"24": 24.0, "25": 25.0, "30": 30.0, "50": 50.0, "60": 60.0}
+# A declared rate this far from the measured average marks a variable-frame-rate source
+# (phone recordings, screen captures, game captures).
+_VFR_TOLERANCE = 0.02
+_MIN_FPS, _MAX_FPS = 1.0, 120.0
+_COMMON_RATES = (24000 / 1001, 24.0, 25.0, 30000 / 1001, 30.0, 48.0, 50.0, 60000 / 1001, 60.0, 120.0)
+_VFR_SNAP = 0.03
+
+
+def is_variable_rate(meta: VideoMetadata) -> bool:
+    declared, average = float(meta.fps or 0), float(meta.avg_fps or 0)
+    if declared <= 0 or average <= 0:
+        return False
+    return abs(declared - average) / declared > _VFR_TOLERANCE
+
+
+def source_frame_rate(meta: VideoMetadata) -> float:
+    """The rate a source plays at. For a variable-rate source the average is the honest value:
+    its declared rate is often a ceiling (60) or a doubled artifact (47.952 for 23.976 video)."""
+    variable = is_variable_rate(meta)
+    rate = float(meta.avg_fps or 0) if variable else float(meta.fps or meta.avg_fps or 0)
+    if rate <= 0:
+        return 0.0
+    rate = min(_MAX_FPS, max(_MIN_FPS, rate))
+    if variable:
+        # Averages are noisy (a 30 fps phone clip may average 29.87): use the nearest standard
+        # rate when it is close, and keep unusual rates (a 12 fps screen capture) as they are.
+        nearest = min(_COMMON_RATES, key=lambda common: abs(common - rate))
+        if abs(nearest - rate) / nearest <= _VFR_SNAP:
+            return nearest
+        return round(rate, 2)
+    return snap_rate(rate)
+
+
+def target_frame_rate(primary: VideoMetadata, sources: list[VideoMetadata], choice: str | None) -> float:
+    """Output rate: the chosen rate, or the main (largest) source's own rate."""
+    if choice in FRAME_RATE_CHOICES:
+        return FRAME_RATE_CHOICES[str(choice)]
+    rate = source_frame_rate(primary)
+    if rate:
+        return rate
+    return max((source_frame_rate(item) for item in sources), default=0.0) or 30.0
+
+
+def same_rate(a: float, b: float) -> bool:
+    return abs(a - b) < _NTSC_TOLERANCE
+
+
+def frame_rate_plan(source: VideoMetadata, target: float, smooth: bool = False) -> str:
+    """How one source reaches the output rate.
+
+    "keep": constant rate that already matches; no filter, so no frame is duplicated or dropped.
+    "convert": the fps filter. It keeps every frame on its own timestamp, so duration and audio
+        sync are preserved; whole-number reductions (60->30, 50->25) drop frames evenly.
+    "smooth": motion interpolation, only when asked for and when plain conversion would judder
+        (rates that are not whole multiples of each other, or raising the rate)."""
+    rate = source_frame_rate(source)
+    if rate and same_rate(rate, target) and not is_variable_rate(source):
+        return "keep"
+    if smooth and rate and not _even_reduction(rate, target):
+        return "smooth"
+    return "convert"
+
+
+def _even_reduction(rate: float, target: float) -> bool:
+    if target > rate or same_rate(rate, target):
+        return False
+    ratio = rate / target
+    return abs(ratio - round(ratio)) < 0.01
+
+
+def frame_rate_filters(source: VideoMetadata, target: float, smooth: bool = False) -> list[str]:
+    plan = frame_rate_plan(source, target, smooth)
+    if plan == "keep":
+        return []
+    if plan == "smooth":
+        # Motion-compensated interpolation: creates in-between frames instead of repeating or
+        # skipping them. Much slower than "convert", so it is opt-in.
+        return [
+            f"minterpolate=fps={rate_expression(target)}:mi_mode=mci:mc_mode=aobmc:me_mode=bidir:vsbmc=1",
+        ]
+    return [fps_filter(target)]
+
+
+def describe_frame_rate(sources: list[VideoMetadata], target: float, smooth: bool = False) -> str:
+    """One log line about what happens to the frame rate."""
+    plans = [(source_frame_rate(item), frame_rate_plan(item, target, smooth), is_variable_rate(item)) for item in sources]
+    if plans and all(plan == "keep" for _, plan, _ in plans):
+        return f"Frame rate: keeping the original {target:.3f} fps (no conversion)."
+    parts = []
+    for rate, plan, variable in plans:
+        source = f"{rate:.3f} fps{' (variable)' if variable else ''}" if rate else "unknown rate"
+        how = {"keep": "kept", "convert": "converted", "smooth": "converted with motion smoothing"}[plan]
+        parts.append(f"{source} {how}")
+    return f"Frame rate: output {target:.3f} fps; " + ", ".join(dict.fromkeys(parts)) + "."
 
 
 def clip_normalize_filters(
     source: VideoMetadata,
     canvas: OutputCanvas,
     extra: list[str] | None = None,
+    smooth_motion: bool = False,
 ) -> list[str]:
     filters: list[str] = []
     src_w = even_dim(source.width or canvas.width)
@@ -58,7 +176,7 @@ def clip_normalize_filters(
             f"scale={canvas.width}:{canvas.height}:force_original_aspect_ratio=decrease:flags=lanczos"
         )
         filters.append(f"pad={canvas.width}:{canvas.height}:(ow-iw)/2:(oh-ih)/2:color=black")
-    filters.append(fps_filter(canvas.fps))
+    filters.extend(frame_rate_filters(source, canvas.fps, smooth_motion))
     filters.extend(extra or [])
     filters.append("format=yuv420p")
     filters.append("setpts=PTS-STARTPTS")

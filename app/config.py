@@ -69,6 +69,12 @@ class Settings(BaseSettings):
     ollama_keep_alive: str = "15m"
     ollama_num_thread: int = 6
     ollama_warm_on_start: bool = True
+    # Text embedding model for meaning-based repeat detection and focus matching. Optional:
+    # when it is not installed, analysis uses word-based similarity as before.
+    ollama_embed_model: str = "nomic-embed-text"
+    # "shortlist": run the vision model only on scenes that could make the highlight.
+    # "all": every scene (slowest, the previous behaviour).
+    vision_scope: str = "shortlist"
 
     whisper_cpu_threads: int = 6
     whisper_num_workers: int = 1

@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
-import { api, formatTime } from "../services/api";
+import { api, formatElapsed, formatTime } from "../services/api";
 import { fill, messages } from "../i18n";
 import { Alert, FilmIcon, InlineStatus, PageLoader, Spinner } from "../components/Feedback";
 import type { Clip, Job, JobSource } from "../types";
@@ -90,7 +90,8 @@ export default function Review() {
   if (!job || !id) return error ? <Alert>{error}</Alert> : <PageLoader />;
   const kept = clips.filter((c) => c.kept !== false);
   const estimated = kept.reduce((s, c) => s + (c.end - c.start), 0);
-  const over = estimated > job.max_duration;
+  const autoLength = (job.config as { length_mode?: string } | undefined)?.length_mode === "auto";
+  const over = !autoLength && estimated > job.max_duration;
   const sources: JobSource[] =
     job.sources && job.sources.length
       ? job.sources
@@ -141,7 +142,14 @@ export default function Review() {
     <div>
       <div className="summary-bar">
         <span>
-          {copy.target} <strong>{job.min_duration === job.max_duration ? `${job.max_duration}s` : `${job.min_duration}–${job.max_duration}s`}</strong>
+          {copy.target}{" "}
+          <strong>
+            {autoLength
+              ? fill(copy.targetAuto, { n: job.min_duration })
+              : job.min_duration === job.max_duration
+                ? `${job.max_duration}s`
+                : `${job.min_duration}–${job.max_duration}s`}
+          </strong>
         </span>
         <span className={over ? "over" : ""}>
           {copy.estimated} <strong>{estimated.toFixed(1)}s</strong>
@@ -152,6 +160,11 @@ export default function Review() {
         {multi && (
           <span>
             {copy.sources} <strong>{sources.length}</strong>
+          </span>
+        )}
+        {(job.timing?.analysis_seconds ?? 0) > 0 && (
+          <span>
+            {copy.analysisTook} <strong>{formatElapsed(job.timing?.analysis_seconds)}</strong>
           </span>
         )}
       </div>
@@ -198,6 +211,7 @@ export default function Review() {
         })}
       </div>
 
+      <div className="clip-grid">
       {clips.map((clip, i) => {
         const removed = clip.kept === false;
         const label = fill(copy.clipNumber, { n: i + 1 });
@@ -227,7 +241,7 @@ export default function Review() {
               </p>
             )}
             {clip.transcript && <p className="clip-transcript">“{clip.transcript}”</p>}
-            <div className="grid-2 clip-times">
+            <div className="form-grid clip-times">
               <div className="field">
                 <label htmlFor={`clip-${i}-start`}>{copy.start}</label>
                 <input
@@ -291,6 +305,7 @@ export default function Review() {
           </article>
         );
       })}
+      </div>
 
       {adjust}
       {error && <Alert>{error}</Alert>}

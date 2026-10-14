@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import pytest
+
 from app.models.schemas import ClipPlan, ClipPlanItem, RenderSettings, VideoMetadata
 from app.video.processor import VideoProcessor
 from app.video.quality import choose_canvas, clip_normalize_filters, encode_crf, video_encode_args
@@ -107,3 +109,41 @@ def test_source_quality_ignores_nvenc(tmp_path: Path):
     assert codecs
     assert "h264_nvenc" not in codecs
     assert "libx264" in codecs
+
+
+def test_fps_filter_keeps_whole_rates_and_maps_ntsc_rates():
+    from app.video.quality import fps_filter
+
+    assert fps_filter(24.0) == "fps=24"
+    assert fps_filter(30.0) == "fps=30"
+    assert fps_filter(60.0) == "fps=60"
+    assert fps_filter(25.0) == "fps=25"
+    assert fps_filter(24000 / 1001) == "fps=24000/1001"
+    assert fps_filter(23.98) == "fps=24000/1001"
+    assert fps_filter(29.97) == "fps=30000/1001"
+    assert fps_filter(59.94) == "fps=60000/1001"
+    assert fps_filter(12.5) == "fps=12.500"
+
+
+def test_output_check_uses_average_rate_not_doubled_declared_rate(tmp_path):
+    from app.video.ffmpeg_runner import parse_probe
+
+    out = tmp_path / "highlight.mp4"
+    out.write_bytes(b"0" * 5000)
+    # Real probe of a stream-copied concat: declared 48000/1001, actually about 23.75 fps.
+    payload = {
+        "format": {"duration": "26.02"},
+        "streams": [
+            {"codec_type": "video", "width": 1920, "height": 1080,
+             "r_frame_rate": "48000/1001", "avg_frame_rate": "14832000/624569"},
+            {"codec_type": "audio", "codec_name": "aac"},
+        ],
+    }
+    probe = parse_probe(payload, out)
+    assert probe.avg_fps == pytest.approx(23.748, abs=0.01)
+    canvas = choose_canvas([VideoMetadata(width=1920, height=1080, fps=24)])
+    assert validate_output(probe, None, out, canvas=canvas)["ok"] is True
+
+    probe.avg_fps = 12.0
+    result = validate_output(probe, None, out, canvas=canvas)
+    assert result["ok"] is False and "12.000 fps" in result["error"]

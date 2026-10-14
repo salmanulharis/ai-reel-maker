@@ -136,7 +136,11 @@ def regenerate_job(job_id: str):
             if hasattr(config, key):
                 setattr(config, key, value)
         if preset == "more_concise":
-            config.max_duration = min(config.max_duration, max(8.0, config.min_duration))
+            if config.length_mode == "auto":
+                # No maximum to lower: keep only moments closer to the very best instead.
+                config.auto_length_strict = True
+            else:
+                config.max_duration = min(config.max_duration, max(8.0, config.min_duration))
     cache = load_cache(manager.job_dir(job_id))
     if cache.get("candidates"):
         plan = plan_from_cache(cache, config, get_settings())

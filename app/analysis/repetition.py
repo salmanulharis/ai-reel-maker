@@ -9,6 +9,8 @@ import numpy as np
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 
+from app.analysis.semantic import calibrated_repeat_similarity
+
 STOP = {
     "the", "a", "an", "and", "or", "to", "of", "in", "on", "for", "we", "our",
     "is", "are", "was", "be", "this", "that", "it", "with", "as", "at", "can",
@@ -73,16 +75,21 @@ class RepetitionAnalyzer:
             normalized = normalize_text(text)
             has_text.append(bool(normalized))
             cleaned.append(normalized if normalized else f"blank{index}")
+        try:
+            matrix = TfidfVectorizer(ngram_range=(1, 2), min_df=1).fit_transform(cleaned)
+            sim = cosine_similarity(matrix)
+        except ValueError:
+            sim = np.eye(n)
         if self.embedding_fn is not None:
-            vectors = self.embedding_fn(texts)
-            norms = np.linalg.norm(vectors, axis=1, keepdims=True) + 1e-8
-            sim = (vectors / norms) @ (vectors / norms).T
-        else:
+            # Meaning-based similarity catches paraphrases that share few words. It can only add
+            # to the word-based score, and only clear paraphrases count (see semantic.py).
             try:
-                matrix = TfidfVectorizer(ngram_range=(1, 2), min_df=1).fit_transform(cleaned)
-                sim = cosine_similarity(matrix)
-            except ValueError:
-                sim = np.eye(n)
+                vectors = np.asarray(self.embedding_fn(texts), dtype=np.float32)
+                norms = np.linalg.norm(vectors, axis=1, keepdims=True) + 1e-8
+                cosine = (vectors / norms) @ (vectors / norms).T
+                sim = np.maximum(sim, calibrated_repeat_similarity(cosine))
+            except Exception:  # noqa: BLE001 - fall back to word-based similarity
+                pass
         for i in range(n):
             for j in range(i, n):
                 if i != j and (not has_text[i] or not has_text[j]):

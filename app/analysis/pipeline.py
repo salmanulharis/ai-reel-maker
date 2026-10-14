@@ -25,7 +25,9 @@ from app.analysis.optimizer import ClipOptimizer
 from app.analysis.repetition import RepetitionAnalyzer
 from app.analysis.scenes import detect_scenes
 from app.analysis.scorer import HighlightScorer
-from app.analysis.visual import analyze_scenes_visual, fitting_vision_batch, sample_timestamps
+from app.analysis.semantic import Embedder, apply_focus, repetition_embedding_fn
+from app.analysis.signals import audio_energy, scene_quality
+from app.analysis.visual import analyze_scenes_visual, fitting_vision_batch, sample_timestamps, shortlist_scenes
 from app.config import Settings
 from app.models.schemas import CandidateScore, HighlightConfig, Scene, Transcript
 from app.video.ffmpeg_runner import CancelledError, FFmpegRunner
@@ -39,11 +41,16 @@ STAGES = [
     ("transcript", "Transcription"),
     ("silence", "Silence detection"),
     ("frames", "Keyframe extraction"),
-    ("visual", "Visual AI analysis"),
     ("content", "Finding important moments"),
+    ("visual", "Visual AI analysis"),
     ("repetition", "Removing repetition"),
     ("planning", "Planning highlight"),
 ]
+
+# Candidate moments kept for planning: the configured number, or more for long videos so
+# their later parts are not crowded out (one per ~8 s), up to this ceiling.
+_MAX_CANDIDATES_CEILING = 200
+_SECONDS_PER_CANDIDATE = 8.0
 
 # Upper bound on reply tokens per segment in a batched transcript-scoring reply. qwen3:4b
 # pretty-prints the JSON and was measured at 42-46 tokens per segment; a lower budget cuts
@@ -58,6 +65,8 @@ class PipelineProgress:
         # Seconds spent in each stage that actually ran (cached stages are not counted).
         self.timings: dict[str, float] = {}
         self._running: dict[str, float] = {}
+        # Model work per AI stage ("vision", "text"), summed over every source video.
+        self.usage: dict[str, dict[str, float]] = {}
 
     def log(self, message: str, level: str = "INFO") -> None:
         self.emit("log", {"level": level, "message": message, "ts": time.time()})
@@ -112,6 +121,9 @@ class VideoAnalyzer:
         self.scorer = HighlightScorer()
         self.repetition = RepetitionAnalyzer()
         self.optimizer = ClipOptimizer()
+        # Meaning-based repeat detection and focus matching; unavailable without Ollama or
+        # without the embedding model, in which case word-based similarity is used as before.
+        self.embedder = Embedder(ollama, getattr(settings, "ollama_embed_model", ""))
 
     def analyze(
         self,
@@ -197,6 +209,19 @@ class VideoAnalyzer:
             progress.log(f"Representative frames sampled ({sum(len(v) for v in frame_map.values())} frames)")
             progress.stage("frames", "done")
         cache["frames"] = frame_map
+        quality = self._scene_quality(job_dir, scenes, frame_map, cache)
+        energy = self._audio_energy(job_dir, wav, cache)
+
+        progress.stage("content", "running")
+        usage_before = self._usage()
+        segment_scores, scores_changed = self._score_transcript(
+            transcript, config, progress, cache.get("segment_scores")
+        )
+        self._log_usage(progress, "Transcript AI", usage_before)
+        if scores_changed:
+            _write(job_dir / "segment_scores.json", segment_scores)
+        cache["segment_scores"] = segment_scores
+        progress.stage("content", "done")
 
         visual = dict(cache.get("visual") or {})
         ollama_ok = bool(self.ollama)
@@ -217,13 +242,24 @@ class VideoAnalyzer:
                 )
             elif not ollama_ok:
                 progress.log("Ollama is unavailable. Using deterministic visual scoring.", "WARNING")
-            if visual and pending_scenes:
-                progress.log(f"Re-running visual AI for {len(pending_scenes)} scene(s) that used fallback scores")
+            shortlist = None
+            if vision_ready and str(getattr(self.settings, "vision_scope", "shortlist")) != "all":
+                shortlist = shortlist_scenes(
+                    scenes, segment_scores, _highlight_seconds(config, source_duration), quality
+                )
             ai_scene_count = sum(
                 1
                 for scene in pending_scenes
                 if float(scene.get("duration") or 0) >= self.settings.ollama_vision_min_scene_duration
+                and (shortlist is None or int(scene["scene_id"]) in shortlist)
             )
+            if visual and pending_scenes and ai_scene_count:
+                progress.log(f"Re-running visual AI for {ai_scene_count} scene(s) that used fallback scores")
+            if shortlist is not None:
+                progress.log(
+                    f"Visual AI: {len(shortlist)} of {len(scenes)} scenes could make the highlight; "
+                    "the others use quick motion and picture-quality scoring"
+                )
             vision_batch = self.settings.ollama_vision_batch_size
             if self.ollama is not None:
                 vision_batch = fitting_vision_batch(
@@ -261,6 +297,7 @@ class VideoAnalyzer:
                 enabled=self.settings.enable_visual_analysis and vision_ok,
                 settings=self.settings,
                 on_batch_start=_visual_batch_progress,
+                shortlist=shortlist,
             )
             for scene in pending_scenes:
                 scene_id = int(scene["scene_id"])
@@ -276,16 +313,6 @@ class VideoAnalyzer:
             progress.log("Visual analysis completed")
         cache["visual"] = visual
 
-        progress.stage("content", "running")
-        usage_before = self._usage()
-        segment_scores, scores_changed = self._score_transcript(
-            transcript, config, progress, cache.get("segment_scores")
-        )
-        self._log_usage(progress, "Transcript AI", usage_before)
-        if scores_changed:
-            _write(job_dir / "segment_scores.json", segment_scores)
-        cache["segment_scores"] = segment_scores
-
         visual_by_scene = {int(k): v for k, v in visual.items()}
         candidates = generate_candidates(
             transcript,
@@ -296,15 +323,26 @@ class VideoAnalyzer:
             source_duration,
             config,
             self.scorer,
-            self.settings.maximum_candidates,
+            _candidate_limit(self.settings.maximum_candidates, source_duration),
+            scene_quality=quality,
+            energy=energy,
         )
         progress.log(f"{len(candidates)} candidates generated")
-        progress.stage("content", "done")
+        if config.custom_focus.strip():
+            boosted = apply_focus(candidates, config.custom_focus, self.embedder)
+            if boosted:
+                progress.log(f"Focus: {boosted} moment(s) match \"{config.custom_focus.strip()[:60]}\"")
+            elif not self.embedder.available:
+                progress.log(
+                    f"Focus matching needs the embedding model '{self.settings.ollama_embed_model}'. "
+                    "Install it in Ollama for better results; the focus still guides the AI prompts."
+                )
         cache["candidates"] = candidates
         if not plan:
             return cache
 
         progress.stage("repetition", "running")
+        self.repetition.embedding_fn = repetition_embedding_fn(self.embedder)
         similarity_fn = None
         if self.settings.enable_repetition_analysis and candidates:
             similarity_fn = self.repetition.as_similarity_fn(candidates)
@@ -336,6 +374,8 @@ class VideoAnalyzer:
             max_repeated_duration=config.max_repeated_duration,
             repeat_threshold=self.repetition.threshold_for(config.repetition_mode),
             content_priorities=config.content_priorities,
+            length_mode=config.length_mode,
+            auto_length_strict=config.auto_length_strict,
         )
         plan_data = plan.model_dump()
         _write(job_dir / "clip_plan.json", plan_data)
@@ -400,6 +440,7 @@ class VideoAnalyzer:
         save_sources(job_dir, sources)
 
         progress.stage("repetition", "running")
+        self.repetition.embedding_fn = repetition_embedding_fn(self.embedder)
         similarity_fn = None
         candidates = all_candidates
         if self.settings.enable_repetition_analysis and candidates:
@@ -430,6 +471,8 @@ class VideoAnalyzer:
             max_repeated_duration=config.max_repeated_duration,
             repeat_threshold=self.repetition.threshold_for(config.repetition_mode),
             content_priorities=config.content_priorities,
+            length_mode=config.length_mode,
+            auto_length_strict=config.auto_length_strict,
         )
         used = {c.source_id for c in plan.clips if c.source_id}
         if used and len(sources) > 1:
@@ -449,6 +492,35 @@ class VideoAnalyzer:
             progress.log(f"Stage timings: {summary}")
             _write(job_dir / "analysis_timings.json", progress.timings)
         return cache
+
+    def _scene_quality(self, job_dir: Path, scenes: list[dict], frame_map: dict, cache: dict) -> dict[int, dict]:
+        """Picture quality per scene from its sampled frames; cached with the analysis."""
+        cached = cache.get("scene_quality")
+        if isinstance(cached, dict) and cached:
+            return {int(k): v for k, v in cached.items()}
+        quality: dict[int, dict] = {}
+        try:
+            for scene in scenes:
+                paths = [entry["image_path"] for entry in frame_map.get(str(scene["scene_id"]), [])]
+                if paths:
+                    quality[int(scene["scene_id"])] = scene_quality(paths)
+        except Exception:  # noqa: BLE001 - quality is an extra signal, never a requirement
+            return {}
+        if quality:
+            _write(job_dir / "scene_quality.json", {str(k): v for k, v in quality.items()})
+            cache["scene_quality"] = {str(k): v for k, v in quality.items()}
+        return quality
+
+    def _audio_energy(self, job_dir: Path, wav: Path, cache: dict) -> list[float]:
+        """Loudness curve of the extracted audio; cached with the analysis."""
+        cached = cache.get("audio_energy")
+        if isinstance(cached, list) and cached:
+            return cached
+        energy = audio_energy(wav) if wav.exists() else []
+        if energy:
+            _write(job_dir / "audio_energy.json", energy)
+            cache["audio_energy"] = energy
+        return energy
 
     def _extract_frames(
         self,
@@ -664,6 +736,10 @@ class VideoAnalyzer:
         text = describe_usage(usage)
         if not text:
             return
+        key = "vision" if label.startswith("Visual") else "text"
+        total = progress.usage.setdefault(key, {})
+        for name, value in usage.items():
+            total[name] = total.get(name, 0) + value
         progress.log(f"{label}: {text}")
         if usage["near_context_limit"]:
             progress.log(
@@ -689,10 +765,11 @@ def plan_from_cache(cache: dict, config: HighlightConfig, settings: Settings) ->
             priority_weights=config.priority_weights,
         )
         cand["reason"] = scorer.reason_for(metrics, cand.get("reason") or "Meaningful moment")
+    embedding_fn = repetition_embedding_fn(_plan_embedder(settings))
     if config.remove_repetition:
-        analyzer = RepetitionAnalyzer()
+        analyzer = RepetitionAnalyzer(embedding_fn)
         candidates = analyzer.deduplicate(candidates, threshold=analyzer.threshold_for(config.repetition_mode))
-    analyzer = RepetitionAnalyzer()
+    analyzer = RepetitionAnalyzer(embedding_fn)
     similarity_fn = analyzer.as_similarity_fn(candidates) if candidates else None
     optimizer = ClipOptimizer()
     meta = cache.get("metadata") or {}
@@ -712,6 +789,8 @@ def plan_from_cache(cache: dict, config: HighlightConfig, settings: Settings) ->
         max_repeated_duration=config.max_repeated_duration,
         repeat_threshold=analyzer.threshold_for(config.repetition_mode),
         content_priorities=config.content_priorities,
+        length_mode=config.length_mode,
+        auto_length_strict=config.auto_length_strict,
     )
     return plan.model_dump()
 
@@ -831,6 +910,33 @@ def plan_text_batches(
     if current:
         batches.append(current)
     return batches
+
+
+def _plan_embedder(settings: Settings) -> Embedder | None:
+    """Embeddings for re-planning outside a job, when Ollama answers quickly."""
+    if not str(getattr(settings, "ollama_embed_model", "") or "").strip():
+        return None
+    try:
+        from app.services.ollama_runtime import get_ollama_client
+
+        client = get_ollama_client(settings)
+        if not client.reachable():
+            return None
+        return Embedder(client, settings.ollama_embed_model)
+    except Exception:  # noqa: BLE001 - re-planning works without embeddings
+        return None
+
+
+def _highlight_seconds(config: HighlightConfig, source_duration: float) -> float:
+    """Roughly how long the highlight will be, for sizing the vision shortlist."""
+    if getattr(config, "length_mode", "range") == "auto":
+        return max(float(config.min_duration), source_duration * 0.25)
+    return float(config.max_duration)
+
+
+def _candidate_limit(configured: int, source_duration: float) -> int:
+    scaled = int(source_duration / _SECONDS_PER_CANDIDATE)
+    return max(int(configured), min(_MAX_CANDIDATES_CEILING, scaled))
 
 
 def frame_extract_workers(frame_count: int) -> int:
