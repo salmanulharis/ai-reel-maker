@@ -251,7 +251,10 @@ def _run_render(app: Flask, job_id: str) -> None:
         plan_path = job_dir / "clip_plan.json"
         if not plan_path.exists():
             raise FileNotFoundError("No clip plan to render")
-        plan = ClipPlan.model_validate(json.loads(plan_path.read_text(encoding="utf-8")))
+        plan_data = json.loads(plan_path.read_text(encoding="utf-8"))
+        # The saved plan keeps clips removed on the review page (so they can be restored).
+        plan_data["clips"] = [c for c in plan_data.get("clips") or [] if c.get("kept", True) is not False]
+        plan = ClipPlan.model_validate(plan_data)
         kept = [c for c in (manager.serialize(job).get("clips") or []) if c.get("kept", True)]
         if kept:
             plan.clips = [

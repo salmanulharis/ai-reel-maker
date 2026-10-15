@@ -199,7 +199,7 @@ def visual_batch_schema(with_avoid: bool = False) -> dict:
     """The batch reply schema; with ``with_avoid`` each scene may also carry an "avoid" score."""
     if not with_avoid:
         return VISUAL_BATCH_SCHEMA
-    item = {**VISUAL_SCENE_SCHEMA_FAST, "properties": {**VISUAL_SCENE_SCHEMA_FAST["properties"], "avoid": {"type": "number"}}}
+    item = {**VISUAL_SCENE_SCHEMA_FAST, "properties": {**VISUAL_SCENE_SCHEMA_FAST["properties"], "avoid": {"type": "number", "minimum": 0, "maximum": 1}}}
     return {**VISUAL_BATCH_SCHEMA, "properties": {"scenes": {"type": "array", "items": item}}}
 
 

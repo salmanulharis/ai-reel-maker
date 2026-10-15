@@ -62,16 +62,20 @@ PICTURE_CONTRAST = ("a photo", "people", "a room", "outdoors", "an object", "a v
 CUSTOM_PICTURE_RANGE = (0.012, 0.04)
 
 _SPONSOR = re.compile(
-    r"\b(sponsor(ed|s|ship)?|use (my |the )?code|promo code|discount code|link (is )?in (the |my )?"
-    r"(description|bio)|affiliate|brought to you by|check out .{0,30}(link|website)|"
-    r"limited[- ]time offer|percent off|% off)\b",
+    r"\b(sponsored by|is sponsored|today'?s sponsor|our sponsor|sponsorship|promo code|discount code|"
+    r"coupon code|link (is )?in (the |my )?(description|bio)|affiliate link|brought to you by|"
+    r"limited[- ]time offer|percent off)\b|\d\s?% off\b",
     re.IGNORECASE,
 )
+# "use code SAVE20": the code itself is written in capitals, unlike "use the code from the repo".
+_SPONSOR_CODE = re.compile(r"\b(?i:use (?:my |the )?code) [A-Z0-9]{3,}\b")
 _SWEARING = re.compile(
-    r"\b(fuck\w*|shit\w*|bitch\w*|bastard\w*|asshole\w*|dick(head)?s?|cunt\w*|motherfuck\w*|"
-    r"bullshit|damn(it)?|goddamn\w*|piss(ed)?|crap)\b",
+    r"\b(fuck\w*|shit\w*|bitch\w*|bastard\w*|asshole\w*|dickhead\w*|cunt\w*|motherfuck\w*|"
+    r"bullshit|goddamn\w*)\b",
     re.IGNORECASE,
 )
+# Mild words count half: ranked lower, but not removed by "Always remove".
+_MILD_SWEARING = re.compile(r"\b(damn(it)?|crap|piss(ed)?)\b", re.IGNORECASE)
 _GREETING = re.compile(
     r"\b(hi|hello|hey) (guys|everyone|everybody|all|there)\b|\bwelcome (back|to)\b|"
     r"\bwhat'?s up\b|\bmy name is\b",
@@ -142,6 +146,15 @@ def picture_avoid_scores(matcher, vectors: np.ndarray, texts: dict) -> list[dict
     return rows
 
 
+def _unit(value) -> float:
+    """A 0-1 strength from any stored value (model replies can be out of range or not numbers)."""
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return 0.0
+    return float(np.clip(number, 0.0, 1.0)) if np.isfinite(number) else 0.0
+
+
 def _ramp(value: float, low: float, high: float) -> float:
     return float(np.clip((float(value) - low) / max(high - low, 1e-6), 0.0, 1.0))
 
@@ -189,27 +202,31 @@ def annotate(
         result: dict[str, float] = {}
         for item in items:
             if item == "filler":
-                greeting = 1.0 if text and _GREETING.search(text) and len(text.split()) < 14 else 0.0
+                # A greeting is filler when it is the whole line, or near the start of the video.
+                words = len(text.split())
+                near_start = start < edge and words < 14
+                greeting = 1.0 if text and _GREETING.search(text) and (words <= 6 or near_start) else 0.0
                 result[item] = max(_ramp(metrics.get("filler_score") or 0, 0.3, 0.8), greeting)
             elif item == "sponsor":
-                result[item] = 1.0 if _SPONSOR.search(text) else 0.0
+                result[item] = 1.0 if _SPONSOR.search(text) or _SPONSOR_CODE.search(text) else 0.0
             elif item == "swearing":
-                result[item] = 1.0 if _SWEARING.search(text) else 0.0
+                result[item] = 1.0 if _SWEARING.search(text) else 0.5 if _MILD_SWEARING.search(text) else 0.0
             elif item == "talking_heads":
                 speech = _ramp(metrics.get("speech_presence") or 0, 0.5, 0.9)
                 # Little happening in the picture (vision model's action, or measured motion).
                 action = max((float(v.get("action_strength") or 0) for v in visual), default=0.3)
                 still = _ramp(0.6 - action, 0.0, 0.4)
-                face = picture_of("talking_heads")
                 # With picture matching, a close-up face confirms it; without, speech and calm do.
-                result[item] = speech * still * ((0.5 + 0.5 * face) if picture else 1.0)
+                checked = any("talking_heads" in row for row in picture)
+                face = picture_of("talking_heads")
+                result[item] = speech * still * ((0.5 + 0.5 * face) if checked else 1.0)
             elif item == "dark":
                 quality = float(metrics.get("production_quality", 0.7))
                 result[item] = _ramp(POOR_QUALITY + 0.1 - quality, 0.0, 0.2)
             elif item in {"text", "screens", "empty"}:
                 result[item] = picture_of(item)
             elif item == "intro_outro":
-                result[item] = _intro_outro(start, end, source_duration, edge, text, visual, picture_of("text"))
+                result[item] = _intro_outro(start, end, source_duration, edge, text, picture_of("text"))
             elif item == "silence":
                 result[item] = _ramp(metrics.get("silence_penalty") or 0, 0.25, 0.7)
         if terms:
@@ -218,24 +235,22 @@ def annotate(
         if asks_vision:
             # One score from the vision model for everything it was asked to recognize.
             result["vision"] = max(
-                (float(v.get("avoid") or 0) for v in visual if v.get("avoid") is not None), default=0.0
+                (_unit(v.get("avoid")) for v in visual if v.get("avoid") is not None), default=0.0
             )
         cand["avoid_match"] = {key: round(value, 3) for key, value in result.items()}
 
 
-def _intro_outro(
-    start: float, end: float, duration: float, edge: float, text: str, visual: list[dict], title: float
-) -> float:
-    """Openings and endings: half strength for the position alone, full with a sign of it
-    (a greeting or sign-off, a title card, or the vision model calling it an intro/ending)."""
+def _intro_outro(start: float, end: float, duration: float, edge: float, text: str, title: float) -> float:
+    """Openings and endings: half strength for the position alone, full with a sign of it (a
+    greeting or sign-off, or a title card). The scenes' "appears_intro"/"appears_ending" flags
+    are not used: they are set from the position alone, so every moment near the start or end
+    would count as a full match."""
     if not duration:
         return 0.0
     if start < edge:
-        sign = bool(_GREETING.search(text)) or any(v.get("appears_intro") for v in visual) or title >= 0.6
-        return 1.0 if sign else 0.5
+        return 1.0 if _GREETING.search(text) or title >= 0.6 else 0.5
     if end > duration - edge:
-        sign = bool(_SIGN_OFF.search(text)) or any(v.get("appears_ending") for v in visual) or title >= 0.6
-        return 1.0 if sign else 0.5
+        return 1.0 if _SIGN_OFF.search(text) or title >= 0.6 else 0.5
     return 0.0
 
 
@@ -263,7 +278,7 @@ def strength(candidate: dict, items: list[str], custom: str) -> float:
     """The strongest match among what the user chose to leave out."""
     matches = candidate.get("avoid_match") or {}
     keys = list(items) + (["custom"] if custom_terms(custom) else []) + ["vision"]
-    return max((float(matches.get(key) or 0) for key in keys), default=0.0)
+    return max((_unit(matches.get(key)) for key in keys), default=0.0)
 
 
 def apply(candidates: list[dict], items: list[str], custom: str, mode: str) -> tuple[list[dict], int, bool]:

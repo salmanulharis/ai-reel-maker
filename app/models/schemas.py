@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -85,6 +86,18 @@ class VisualAnalysis(BaseModel):
     @classmethod
     def _clamp(cls, value: Any) -> float:
         return _unit(value)
+
+    @field_validator("avoid", mode="before")
+    @classmethod
+    def _clamp_avoid(cls, value: Any) -> float | None:
+        # Kept to 0-1 (a reply on another scale would otherwise push scores below zero); an
+        # unreadable value means "not answered", not a failed batch.
+        if value is None:
+            return None
+        try:
+            return _unit(value)
+        except (TypeError, ValueError):
+            return None
 
 
 class TranscriptSegment(BaseModel):
@@ -197,6 +210,20 @@ class CropRegion(BaseModel):
         return self
 
 
+_MAX_FOCUS_CHARS = 500
+_MAX_RANGES = 50
+
+
+def _clean_ranges(ranges: list[tuple[float, float]]) -> list[tuple[float, float]]:
+    """Time ranges that can be used: finite, not negative, start before end; at most 50."""
+    clean = []
+    for start, end in ranges or []:
+        start, end = float(start), float(end)
+        if math.isfinite(start) and math.isfinite(end) and 0 <= start < end:
+            clean.append((start, end))
+    return clean[:_MAX_RANGES]
+
+
 class HighlightConfig(BaseModel):
     min_duration: float = 20.0
     max_duration: float = 30.0
@@ -257,6 +284,17 @@ class HighlightConfig(BaseModel):
 
     @model_validator(mode="after")
     def _range(self) -> "HighlightConfig":
+        # NaN/Infinity would be saved as null and make the job's settings unreadable later.
+        # Negative clip and repeat lengths are corrected below, as before.
+        for name in ("min_duration", "max_duration", "max_sequence_duration", "max_repeated_duration"):
+            value = float(getattr(self, name))
+            if not math.isfinite(value) or (value < 0 and name in {"min_duration", "max_duration"}):
+                raise ValueError(f"{name.replace('_', ' ')} must be a positive number")
+        if self.min_sequence_duration is not None and not math.isfinite(float(self.min_sequence_duration)):
+            raise ValueError("min sequence duration must be a positive number")
+        self.must_include = _clean_ranges(self.must_include)
+        self.must_exclude = _clean_ranges(self.must_exclude)
+        self.custom_focus = (self.custom_focus or "")[:_MAX_FOCUS_CHARS]
         if self.social_short and self.aspect_ratio == "original":
             self.aspect_ratio = "9:16"
         if self.social_short:

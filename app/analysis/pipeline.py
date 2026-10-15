@@ -149,6 +149,16 @@ class VideoAnalyzer:
         plan: bool = True,
     ) -> dict:
         meta = cache.get("metadata")
+        if meta and "source_count" in meta and "has_audio" not in meta:
+            # Older versions saved the shortened multi-video summary over a single video's
+            # metadata; probe again so sound, codecs, and rotation are known.
+            try:
+                meta = {**meta, **self.runner.probe(source).model_dump()}
+                _write(job_dir / "metadata.json", meta)
+            except CancelledError:
+                raise
+            except Exception:  # noqa: BLE001 - the summary still has duration and size
+                pass
         if not meta:
             progress.stage("metadata", "running")
             meta = self.runner.probe(source).model_dump()
@@ -488,6 +498,7 @@ class VideoAnalyzer:
         total_duration = 0.0
         multi = len(sources) > 1
         combined_meta: dict = cache.get("metadata") or {}
+        piece_metas: list[dict] = []
         for index, source in enumerate(sources):
             label = source.get("filename") or f"video {index + 1}"
             if multi:
@@ -502,6 +513,7 @@ class VideoAnalyzer:
             else:
                 piece_cache = dict(cache)
             piece = self.analyze(work, working_path(source), config, progress, piece_cache, plan=False)
+            piece_metas.append(dict(piece.get("metadata") or {}))
             tagged = tag_candidates(piece.get("candidates") or [], source)
             all_candidates.extend(tagged)
             duration = float((piece.get("metadata") or {}).get("duration") or 0)
@@ -513,6 +525,11 @@ class VideoAnalyzer:
             progress.log(f"{label}: {len(tagged)} candidate moments")
 
         best = max(sources, key=lambda item: int(item.get("width") or 0) * int(item.get("height") or 0))
+        if not multi:
+            # One video: keep its full probe (sound, codecs, rotation) under the summary.
+            combined_meta = piece_metas[0] if piece_metas else combined_meta
+        else:
+            combined_meta = {**combined_meta, "has_audio": any(m.get("has_audio") for m in piece_metas)}
         combined_meta = {
             **combined_meta,
             "duration": total_duration,

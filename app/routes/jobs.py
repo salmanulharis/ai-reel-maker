@@ -4,17 +4,25 @@ import json
 import subprocess
 import sys
 
-from flask import Blueprint, jsonify, request, send_file
+from flask import Blueprint, abort, jsonify, request, send_file
 
 from app.analysis.pipeline import plan_from_cache
 from app.config import get_settings
 from app.models.schemas import HighlightConfig
 from app.services.job_manager import get_job_manager
 from app.services.storage import delete_job_files
+from app.utils.security import valid_job_id
 from app.video.sources import load_sources
 from app.workers.worker import load_cache
 
 jobs_bp = Blueprint("jobs", __name__)
+
+
+@jobs_bp.url_value_preprocessor
+def _check_job_id(_endpoint, values):
+    if values and "job_id" in values and not valid_job_id(values["job_id"]):
+        abort(404)
+
 
 REGEN_PRESETS = {
     "more_concise": {"preserve_context": "low"},
@@ -66,6 +74,18 @@ def _clean_clips(job_id: str, clips: object, strict: bool) -> list[dict]:
 STILL_STOPPING = "This job is still stopping. Try again in a few seconds."
 
 
+def _error_message(exc: ValueError) -> str:
+    """A short message for a rejected request; validation errors carry one per field."""
+    errors = getattr(exc, "errors", None)
+    if callable(errors):
+        try:
+            first = errors()[0]
+            return str(first.get("msg") or exc).removeprefix("Value error, ")
+        except (IndexError, TypeError, AttributeError):
+            pass
+    return str(exc)
+
+
 def _config_from_request(data: dict | None = None) -> HighlightConfig:
     data = data or {}
     payload = dict(data)
@@ -87,7 +107,7 @@ def create_job():
         job = get_job_manager().update(job.id, status="uploaded")
         return jsonify(get_job_manager().serialize(job)), 201
     except ValueError as exc:
-        return jsonify({"error": str(exc)}), 400
+        return jsonify({"error": _error_message(exc)}), 400
 
 
 @jobs_bp.get("/jobs")
@@ -113,7 +133,10 @@ def analyze_job(job_id: str):
     if not job:
         return jsonify({"error": "not found"}), 404
     data = request.get_json(silent=True) or {}
-    config = _config_from_request({**json.loads(job.config_json or "{}"), **data})
+    try:
+        config = _config_from_request({**json.loads(job.config_json or "{}"), **data})
+    except ValueError as exc:
+        return jsonify({"error": _error_message(exc)}), 400
     job = manager.update(
         job_id,
         status="queued",
@@ -160,6 +183,8 @@ def render_job(job_id: str):
             clips = _clean_clips(job_id, data["clips"], strict=True)
         except ValueError as exc:
             return jsonify({"error": str(exc)}), 400
+        if not any(clip.get("kept", True) for clip in clips):
+            return jsonify({"error": "Keep at least one clip to create a video."}), 400
         manager.save_plan(job_id, clips)
         plan_path = manager.job_dir(job_id) / "clip_plan.json"
         if plan_path.exists():
@@ -170,15 +195,8 @@ def render_job(job_id: str):
     return jsonify(manager.serialize(job))
 
 
-@jobs_bp.post("/jobs/<job_id>/regenerate")
-def regenerate_job(job_id: str):
-    manager = get_job_manager()
-    job = manager.get(job_id)
-    if not job:
-        return jsonify({"error": "not found"}), 404
-    if manager.has_runners(job_id):
-        return jsonify({"error": STILL_STOPPING}), 409
-    data = request.get_json(silent=True) or {}
+def _regenerated_config(job, data: dict) -> HighlightConfig:
+    """The job's options with the request's changes and the chosen review preset applied."""
     values = {**json.loads(job.config_json or "{}"), **{k: v for k, v in data.items() if k != "preset"}}
     preset = data.get("preset")
     if preset in REGEN_PRESETS:
@@ -196,7 +214,22 @@ def regenerate_job(job_id: str):
                 values["min_duration"] = min(current.min_duration, shorter)
                 values["max_duration"] = min(current.max_duration, shorter)
     # Validate the result as a whole, so preset values go through the same rules as a new job.
-    config = HighlightConfig.model_validate(values)
+    return HighlightConfig.model_validate(values)
+
+
+@jobs_bp.post("/jobs/<job_id>/regenerate")
+def regenerate_job(job_id: str):
+    manager = get_job_manager()
+    job = manager.get(job_id)
+    if not job:
+        return jsonify({"error": "not found"}), 404
+    if manager.has_runners(job_id):
+        return jsonify({"error": STILL_STOPPING}), 409
+    data = request.get_json(silent=True) or {}
+    try:
+        config = _regenerated_config(job, data)
+    except ValueError as exc:
+        return jsonify({"error": _error_message(exc)}), 400
     common = {
         "config_json": config.model_dump_json(),
         "style": config.style,

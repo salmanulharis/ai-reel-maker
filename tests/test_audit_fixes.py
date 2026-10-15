@@ -690,3 +690,137 @@ def test_speech_model_is_told_what_to_rate_low():
     hint = speech_avoid_text(["sponsor", "dark"], "prices")
     assert hint == "sponsor messages and ads; prices"
     assert "Give low importance to: sponsor messages and ads; prices." in transcript_batch_prompt_fast("auto", "", [], hint)
+
+
+# Batch 1 of the second audit
+
+
+def test_probe_reads_non_ascii_file_names(tmp_path: Path):
+    import shutil
+    import subprocess
+
+    from app.video.ffmpeg_runner import FFmpegRunner
+
+    if not shutil.which("ffmpeg") or not shutil.which("ffprobe"):
+        pytest.skip("FFmpeg is not installed")
+    clip = tmp_path / "മലയാളം_Łódź.mp4"
+    subprocess.run(
+        ["ffmpeg", "-y", "-v", "error", "-f", "lavfi", "-i", "testsrc=size=64x36:rate=10:duration=1",
+         "-pix_fmt", "yuv420p", str(clip)],
+        check=True,
+    )
+    meta = FFmpegRunner().probe(clip)
+    assert meta.duration > 0.5 and meta.width == 64
+
+
+def test_nan_never_becomes_the_top_score():
+    from app.ai.json_util import clamp_unit
+    from app.utils.timefmt import clamp
+
+    assert clamp(float("nan")) == 0.0
+    assert clamp_unit("nan") == 0.0
+    assert clamp(float("inf")) == 1.0
+
+
+def test_intro_outro_ignores_position_only_scene_flags():
+    from app.analysis import avoid
+
+    scenes = [{"scene_id": 0, "start": 0, "end": 10}, {"scene_id": 1, "start": 590, "end": 600}]
+    visual = {0: {"appears_intro": True, "score_source": "ai"}, 1: {"appears_ending": True}}
+    cands = [_cand("open", 2, 9, "this mountain view is amazing"), _cand("goal", 591, 599, "what a goal")]
+    avoid.annotate(cands, ["intro_outro"], "", scenes, visual, {}, 600)
+    assert [c["avoid_match"]["intro_outro"] for c in cands] == [0.5, 0.5]
+
+
+def test_talking_heads_reach_full_strength_without_picture_matching():
+    from app.analysis import avoid
+
+    scenes = [{"scene_id": 0, "start": 20, "end": 40}]
+    visual = {0: {"action_strength": 0.1}}
+    cand = _cand("talk", 22, 38, "so the main thing I want to explain is this", speech_presence=0.95)
+    avoid.annotate([cand], ["talking_heads"], "", scenes, visual, {0: {}}, 120)
+    assert cand["avoid_match"]["talking_heads"] >= avoid.NEVER_FROM
+
+
+def test_out_of_range_vision_avoid_never_makes_scores_negative():
+    from app.analysis import avoid
+    from app.models.schemas import VisualAnalysis
+
+    assert VisualAnalysis(avoid=8).avoid == 1.0
+    assert VisualAnalysis(avoid="unknown").avoid is None
+    stored = {**_cand("x", 0, 4, score=0.8), "avoid_match": {"vision": 8}}
+    kept, _, _ = avoid.apply([stored], ["text"], "", "avoid")
+    assert kept[0]["score"] >= 0
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("you can use the code from the repo", 0.0),
+        ("the team's sponsors cheered", 0.0),
+        ("this video is sponsored by Acme", 1.0),
+        ("use code SAVE20 at checkout", 1.0),
+        ("get 20 % off today", 1.0),
+    ],
+)
+def test_sponsor_detector_avoids_common_false_positives(text, expected):
+    from app.analysis import avoid
+
+    cand = _cand("c", 50, 54, text)
+    avoid.annotate([cand], ["sponsor"], "", [], {}, {}, 200)
+    assert cand["avoid_match"]["sponsor"] == expected
+
+
+def test_mild_words_and_mid_video_greetings_are_weaker_matches():
+    from app.analysis import avoid
+
+    mild = _cand("m", 50, 54, "oh damn that was close")
+    hello = _cand("h", 100, 104, "and then she said hi everyone, look at this huge waterfall over here")
+    avoid.annotate([mild], ["swearing"], "", [], {}, {}, 200)
+    avoid.annotate([hello], ["filler"], "", [], {}, {}, 200)
+    assert mild["avoid_match"]["swearing"] == 0.5
+    assert hello["avoid_match"]["filler"] == 0.0
+
+
+def test_single_video_keeps_its_full_metadata(tmp_path: Path):
+    from app.analysis.pipeline import PipelineProgress, VideoAnalyzer
+
+    analyzer = VideoAnalyzer(Settings(data_dir=tmp_path / "data", enable_repetition_analysis=False), runner=None, ollama=None)
+    full = {"duration": 30.0, "width": 640, "height": 360, "fps": 30.0, "has_audio": True, "video_codec": "h264"}
+    analyzer.analyze = lambda *args, **kwargs: {"metadata": dict(full), "candidates": []}
+    source = tmp_path / "in.mp4"
+    source.write_bytes(b"x")
+    cache = analyzer.analyze_sources(
+        tmp_path, [{"id": "v0", "path": str(source), "filename": "in.mp4"}], HighlightConfig(), PipelineProgress(lambda *_: None), {}
+    )
+    assert cache["metadata"]["has_audio"] is True and cache["metadata"]["video_codec"] == "h264"
+    assert cache["metadata"]["source_count"] == 1
+
+
+def test_job_routes_refuse_ids_that_leave_the_jobs_folder(client):
+    assert client.get("/api/jobs/..%5C..%5Cx/logs").status_code == 404
+    assert client.get("/api/media/..%5Cx/srt").status_code == 404
+
+
+def test_invalid_config_values_are_refused_with_a_clear_message(client):
+    data = {
+        "file": (io.BytesIO(b"one"), "one.mp4"),
+        "config": '{"min_duration": NaN, "max_duration": 30}',
+    }
+    response = client.post("/api/jobs", data=data, content_type="multipart/form-data")
+    assert response.status_code == 400
+    assert response.get_json()["error"] == "min duration must be a positive number"
+    config = HighlightConfig(must_include=[[5, 1], [2, 4]], custom_focus="x" * 900)
+    assert config.must_include == [(2.0, 4.0)] and len(config.custom_focus) == 500
+
+
+def test_render_keeps_removed_clips_and_needs_one_kept(client):
+    from app.services.job_manager import get_job_manager
+
+    job_id = _upload(client)
+    removed_only = [{"start": 1, "end": 3, "kept": False}]
+    assert client.post(f"/api/jobs/{job_id}/render", json={"clips": removed_only}).status_code == 400
+    both = [{"start": 1, "end": 3, "kept": False}, {"start": 5, "end": 8, "kept": True}]
+    assert client.post(f"/api/jobs/{job_id}/render", json={"clips": both}).status_code == 200
+    saved = get_job_manager().serialize(get_job_manager().get(job_id))["clips"]
+    assert [(c["start"], c["kept"]) for c in saved] == [(1.0, False), (5.0, True)]

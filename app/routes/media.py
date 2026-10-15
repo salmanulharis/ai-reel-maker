@@ -6,10 +6,16 @@ from flask import Blueprint, abort, send_file
 
 from app.config import get_settings
 from app.services.job_manager import get_job_manager
-from app.utils.security import is_relative_to
+from app.utils.security import is_relative_to, valid_job_id
 from app.video.sources import load_sources, lookup_path
 
 media_bp = Blueprint("media", __name__)
+
+
+@media_bp.url_value_preprocessor
+def _check_job_id(_endpoint, values):
+    if values and "job_id" in values and not valid_job_id(values["job_id"]):
+        abort(404)
 
 
 @media_bp.get("/media/sample")

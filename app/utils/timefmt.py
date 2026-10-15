@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import re
 from typing import Union
 
@@ -7,7 +8,11 @@ Number = Union[int, float, str]
 
 
 def clamp(value: float, low: float = 0.0, high: float = 1.0) -> float:
-    return max(low, min(high, float(value)))
+    number = float(value)
+    if not math.isfinite(number):
+        # NaN would otherwise pass min()/max() as the upper bound; infinity keeps its side.
+        return high if number == math.inf else low
+    return max(low, min(high, number))
 
 
 def format_duration(seconds: float) -> str:

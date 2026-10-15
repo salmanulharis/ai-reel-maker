@@ -30,7 +30,11 @@ def _run_once(video: Path, use_ai: bool) -> dict:
     from app.services.settings_store import effective_settings
     from app.video.ffmpeg_runner import FFmpegRunner
 
+    from app.db import init_db
+
     settings = get_settings()
+    # Saved settings live in the app database; open it before reading them.
+    init_db(settings.db_path)
     effective_settings(settings)
     client = None
     vision = text = False

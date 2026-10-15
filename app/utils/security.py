@@ -10,6 +10,15 @@ ALLOWED_MIME_PREFIXES = ("video/",)
 MAX_FILENAME_LEN = 180
 
 
+_JOB_ID = re.compile(r"[A-Za-z0-9_-]{1,64}")
+
+
+def valid_job_id(value: str | None) -> bool:
+    """Job ids are short hex strings; anything with dots or slashes (either kind) is refused so a
+    URL can never point outside the jobs folder."""
+    return bool(value) and bool(_JOB_ID.fullmatch(str(value)))
+
+
 def sanitize_filename(name: str) -> str:
     base = PurePath(name).name
     base = re.sub(r"[^\w.\- ]+", "_", base, flags=re.UNICODE)

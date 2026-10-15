@@ -13,7 +13,9 @@ def test_generates_scene_windows_when_transcript_is_empty():
         segment_scores=[],
         silences=[],
         source_duration=30.5,
-        config=HighlightConfig(min_duration=20, max_duration=30),
+        config=HighlightConfig(
+            min_duration=20, max_duration=30, sequence_duration_mode="custom", max_sequence_duration=5
+        ),
         scorer=HighlightScorer(),
     )
     assert candidates

@@ -52,6 +52,10 @@ class FFmpegRunner:
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE if collect_stderr else subprocess.DEVNULL,
             text=True,
+            # FFmpeg writes UTF-8 (file names included). The Windows default code page cannot
+            # decode names in other scripts, which silently emptied every probe.
+            encoding="utf-8",
+            errors="replace",
         )
         with self._procs_lock:
             self._procs.add(proc)
