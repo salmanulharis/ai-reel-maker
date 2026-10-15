@@ -278,7 +278,7 @@ def test_vision_model_without_image_support_is_not_ready(monkeypatch):
 
 
 def test_old_ollama_blocks_qwen3_vl(monkeypatch):
-    client = _client(ollama_vision_model="qwen3-vl:4b", ollama_text_model="qwen3:4b")
+    client = _client(ollama_vision_model="qwen3-vl:4b", ollama_text_model="qwen3:4b-instruct-2507-q4_K_M")
     _patch_session(monkeypatch, _health_handler("0.11.4", ["completion", "vision"]))
     health = client.health()
     assert health["vision_capable"] is True
@@ -288,7 +288,7 @@ def test_old_ollama_blocks_qwen3_vl(monkeypatch):
 
 
 def test_unknown_capabilities_do_not_block_vision(monkeypatch):
-    client = _client(ollama_vision_model="qwen3-vl:4b", ollama_text_model="qwen3:4b")
+    client = _client(ollama_vision_model="qwen3-vl:4b", ollama_text_model="qwen3:4b-instruct-2507-q4_K_M")
     calls = _patch_session(monkeypatch, _health_handler("0.13.0", None))
     health = client.health()
     assert health["vision_capable"] is None
@@ -620,3 +620,15 @@ def test_untagged_cache_from_older_versions_is_kept(tmp_path, monkeypatch):
     result = _analyze(tmp_path, job_dir, legacy, ollama=client)
     assert client.calls == []
     assert result["visual"]["0"] == {"visual_importance": 0.3}
+
+
+def test_thinking_only_text_model_gets_a_warning(monkeypatch):
+    client = _client(ollama_vision_model="qwen3-vl:4b", ollama_text_model="qwen3:4b")
+    _patch_session(monkeypatch, _health_handler("0.13.0", ["completion", "vision"]))
+    health = client.health()
+    assert any("thinking-only" in w and "qwen3:4b-instruct-2507-q4_K_M" in w for w in health["warnings"])
+    # Hybrid tags honour think=false and are not flagged.
+    from app.ai.ollama import thinking_text_warning
+
+    assert thinking_text_warning("qwen3:8b") is None
+    assert thinking_text_warning("qwen3:4b-instruct-2507-q4_K_M") is None

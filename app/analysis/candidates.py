@@ -11,6 +11,10 @@ from app.models.schemas import CandidateScore, HighlightConfig, Transcript
 # A moment with picture quality below POOR_QUALITY (dark, blurry, black) keeps this share of
 # its score, so it is only used when nothing better covers that content.
 _POOR_QUALITY_FACTOR = 0.6
+# A moment in the first seconds that looks like an intro or filler keeps this share of its score.
+_INTRO_FACTOR = 0.68
+# Scene coverage keeps at least this score (unless its picture is poor).
+_SCENE_FLOOR = 0.42
 # Sentence-complete candidates join at most this many following segments, across short gaps.
 _MAX_JOINED_SEGMENTS = 2
 _MAX_JOIN_GAP = 1.2
@@ -39,6 +43,8 @@ def generate_candidates(
     candidates: list[dict] = []
     quality_of = _quality_lookup(scenes, scene_quality)
     loudness = _Loudness(energy)
+    signals = audio_signals(transcript, loudness.available)
+    audio_focus = effective_audio_focus(config.audio_focus, signals)
 
     def transcript_candidate(
         cid: str,
@@ -86,12 +92,14 @@ def generate_candidates(
             incomplete_sentence=incomplete,
             priorities=config.content_priorities,
             priority_weights=config.priority_weights,
-            audio_focus=config.audio_focus,
+            audio_focus=audio_focus,
         )
+        factor = 1.0
         if start < 10 and (visual.get("appears_intro") or score_model.filler_score >= 0.5):
-            final *= 0.68
+            factor *= _INTRO_FACTOR
         if quality is not None and quality < POOR_QUALITY:
-            final *= _POOR_QUALITY_FACTOR
+            factor *= _POOR_QUALITY_FACTOR
+        final *= factor
         return {
             "id": cid,
             "start": start,
@@ -103,6 +111,8 @@ def generate_candidates(
             "source": "transcript",
             "metrics": score_model.model_dump(),
             "peak": peak,
+            "score_factor": factor,
+            "audio_signals": signals,
         }
 
     for idx, item in enumerate(segment_scores):
@@ -175,6 +185,7 @@ def generate_candidates(
                 repetition_score=visual.get("repetition_likelihood", 0.1),
                 production_quality=0.7 if quality is None else quality,
                 silence_penalty=_silence_ratio(start, end, silences),
+                incomplete_sentence=incomplete,
             )
             final = scorer.finalize(
                 metrics,
@@ -182,7 +193,7 @@ def generate_candidates(
                 incomplete_sentence=incomplete,
                 priorities=config.content_priorities,
                 priority_weights=config.priority_weights,
-                audio_focus=config.audio_focus,
+                audio_focus=audio_focus,
             )
             poor = quality is not None and quality < POOR_QUALITY
             candidates.append(
@@ -191,12 +202,15 @@ def generate_candidates(
                     "start": start,
                     "end": end,
                     # Scene coverage keeps a minimum score, except when the picture is poor.
-                    "score": final * _POOR_QUALITY_FACTOR if poor else max(final, 0.42),
+                    "score": final * _POOR_QUALITY_FACTOR if poor else max(final, _SCENE_FLOOR),
                     "text": text,
                     "reason": scorer.reason_for(metrics, "Scene coverage"),
                     "topic": _topic(text) if (text or "").strip() else f"scene-{scene.get('scene_id', 0)}-{int(start)}",
                     "source": "visual",
                     "metrics": metrics.model_dump(),
+                    "score_factor": _POOR_QUALITY_FACTOR if poor else 1.0,
+                    "score_floor": None if poor else _SCENE_FLOOR,
+                    "audio_signals": signals,
                 }
             )
 
@@ -213,11 +227,56 @@ def generate_candidates(
                     "topic": f"coverage-{w_i}",
                     "source": "fallback",
                     "metrics": {},
+                    "score_fixed": True,
                 }
             )
 
     candidates.sort(key=lambda c: c["score"], reverse=True)
     return candidates[:max_candidates]
+
+
+def audio_signals(transcript: Transcript, has_loudness: bool) -> list[str]:
+    """The audio focuses that have data behind them for this video."""
+    signals = ["balanced"]
+    if has_loudness:
+        signals.append("natural")
+    if transcript.segments or transcript.words:
+        signals.append("dialogue")
+    return signals
+
+
+def effective_audio_focus(focus: str, signals: list[str] | None) -> str:
+    """An audio focus without its signal would only lower every score, so it falls back to
+    balanced. Without stored signals (candidates from older versions) the focus is used as is."""
+    if signals is not None and focus not in signals:
+        return "balanced"
+    return focus
+
+
+def rescore_candidate(candidate: dict, scorer: HighlightScorer, config: HighlightConfig) -> float:
+    """A stored candidate's score under new options, with the same adjustments as when it was
+    made (intro, picture quality, scene floor). Focus boosts are added separately."""
+    if candidate.get("score_fixed") or candidate.get("source") == "fallback":
+        return float(candidate.get("score") or 0)
+    metrics = CandidateScore.model_validate(candidate.get("metrics") or {})
+    factor = candidate.get("score_factor")
+    floor = candidate.get("score_floor")
+    if factor is None and candidate.get("source") == "visual":
+        # Saved by an older version: the scene adjustments follow from the stored picture quality.
+        poor = metrics.production_quality < POOR_QUALITY
+        factor = _POOR_QUALITY_FACTOR if poor else 1.0
+        floor = None if poor else _SCENE_FLOOR
+    final = scorer.finalize(
+        metrics,
+        style=config.style,
+        priorities=config.content_priorities,
+        priority_weights=config.priority_weights,
+        audio_focus=effective_audio_focus(config.audio_focus, candidate.get("audio_signals")),
+    )
+    final *= float(1.0 if factor is None else factor)
+    if floor is not None:
+        final = max(final, float(floor))
+    return final
 
 
 def _coverage_windows(start: float, end: float, window: float = 8.0, overlap: float = 1.0) -> list[tuple[float, float]]:

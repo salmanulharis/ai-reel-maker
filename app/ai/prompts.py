@@ -121,27 +121,101 @@ action is meaningful, whether the scene looks repetitive, introductory, or an en
 Score every numeric field from 0.0 to 1.0."""
 
 
+# What the vision model should rate higher for a "What matters most" choice. Priorities that are
+# not listed (action, speech, ...) only change how the scores are weighted.
+PRIORITY_VISUAL_HINTS = {
+    "connection": (
+        "Prioritize clearly visible affectionate or romantic interactions, meaningful gestures, "
+        "embraces, kisses, and non-explicit intimate moments. Judge the action and interaction, "
+        "not merely the presence of people, and do not infer details that are not visible."
+    ),
+    "people": (
+        "Prioritize scenes where people's faces, expressions, and interactions are clearly visible; "
+        "rate empty or faceless scenes lower."
+    ),
+    "scenery": (
+        "Prioritize beautiful landscapes, cityscapes, wide views, sunsets, and well-composed shots "
+        "of places; rate cluttered or close-up indoor shots lower."
+    ),
+    "fun": (
+        "Prioritize people laughing, playing, joking, or celebrating, and visibly funny or joyful moments."
+    ),
+    "pets": "Prioritize scenes where pets or other animals are clearly visible, especially moving or playing.",
+    "music": "Prioritize people singing, dancing, playing instruments, or performing on stage.",
+    "sports": (
+        "Prioritize sports and games in motion: shots, goals, tricks, races, and the reactions to them."
+    ),
+}
+
+# Short picture descriptions for fast picture matching (SigLIP) per priority.
+PRIORITY_PICTURE_TEXT = {
+    "connection": "two people hugging, holding hands, or kissing",
+    "people": "a close-up of people's faces and expressions",
+    "scenery": "a beautiful landscape or scenic view",
+    "fun": "people laughing, playing, or celebrating",
+    "pets": "a pet or an animal",
+    "music": "people singing, dancing, or playing music",
+    "sports": "people playing a sport",
+}
+
+# A sentence about each newer style for the transcript prompt; older styles are named only.
+STYLE_PROMPT_HINTS = {
+    "cinematic": "prefer vivid, descriptive, emotional lines over explanations",
+    "funny": "prefer jokes, witty lines, laughter, and surprising reactions",
+    "story": "prefer lines that move the story forward and are understandable on their own",
+    "trailer": "prefer short, striking, dramatic lines that make people want to watch",
+    "calm": "prefer gentle, reflective lines; avoid shouting and hype",
+}
+
+
+def visual_focus_priorities(priorities: list[str] | None) -> list[str]:
+    """The chosen priorities that change what the vision model looks for, in a stable order."""
+    chosen = set(priorities or [])
+    return [name for name in PRIORITY_VISUAL_HINTS if name in chosen]
+
+
 def visual_analysis_focus(custom_focus: str, priorities: list[str] | None = None) -> str:
     focus = custom_focus.strip()
-    if "connection" in (priorities or []):
-        connection = (
-            "Prioritize clearly visible affectionate or romantic interactions, meaningful gestures, "
-            "embraces, kisses, and non-explicit intimate moments. Judge the action and interaction, "
-            "not merely the presence of people, and do not infer details that are not visible."
-        )
-        focus = f"{focus}. {connection}" if focus else connection
+    for name in visual_focus_priorities(priorities):
+        hint = PRIORITY_VISUAL_HINTS[name]
+        focus = f"{focus}. {hint}" if focus else hint
     return focus
 
 
-def visual_batch_prompt(scenes: list[dict], custom_focus: str = "") -> str:
+def picture_focus_texts(custom_focus: str, priorities: list[str] | None = None) -> list[str]:
+    """What fast picture matching compares scenes with: the user's focus and the chosen
+    priorities' picture descriptions."""
+    texts = [custom_focus.strip()] if custom_focus.strip() else []
+    texts += [PRIORITY_PICTURE_TEXT[name] for name in PRIORITY_PICTURE_TEXT if name in set(priorities or [])]
+    return texts
+
+
+def _style_label(style: str) -> str:
+    hint = STYLE_PROMPT_HINTS.get(style)
+    return f"{style} ({hint})" if hint else style
+
+
+def visual_batch_schema(with_avoid: bool = False) -> dict:
+    """The batch reply schema; with ``with_avoid`` each scene may also carry an "avoid" score."""
+    if not with_avoid:
+        return VISUAL_BATCH_SCHEMA
+    item = {**VISUAL_SCENE_SCHEMA_FAST, "properties": {**VISUAL_SCENE_SCHEMA_FAST["properties"], "avoid": {"type": "number"}}}
+    return {**VISUAL_BATCH_SCHEMA, "properties": {"scenes": {"type": "array", "items": item}}}
+
+
+def visual_batch_prompt(scenes: list[dict], custom_focus: str = "", avoid: str = "") -> str:
     extra = f" Focus: {custom_focus}." if custom_focus else ""
+    avoid_key = ',"avoid":0-1' if avoid else ""
+    if avoid:
+        extra += f' "avoid" is how clearly the scene shows any of: {avoid}. Use 0 when none is visible.'
+
     lines = "\n".join(
         f"{idx}. scene_id={scene['scene_id']} [{scene['start']:.1f}-{scene['end']:.1f}s]"
         for idx, scene in enumerate(scenes)
     )
     return f"""Analyze each scene from its frame image. Image order matches scene order.{extra}
 Return compact JSON only:
-{{"scenes":[{{"scene_id":n,"visual_importance":0-1,"action_strength":0-1,"information_density":0-1,"visual_change":0-1,"repetition_likelihood":0-1,"context_dependency":0-1}}]}}
+{{"scenes":[{{"scene_id":n,"visual_importance":0-1,"action_strength":0-1,"information_density":0-1,"visual_change":0-1,"repetition_likelihood":0-1,"context_dependency":0-1{avoid_key}}}]}}
 Use the same scene_id values. Score 0.0-1.0. Penalize intros, endings, repetition, and empty frames.
 Scenes:
 {lines}"""
@@ -165,13 +239,15 @@ Segments:
 Return JSON: {{"segments":[...in the same order...]}}."""
 
 
-def transcript_batch_prompt_fast(style: str, custom_focus: str, segments: list[dict]) -> str:
+def transcript_batch_prompt_fast(style: str, custom_focus: str, segments: list[dict], avoid: str = "") -> str:
     extra = f" Focus: {custom_focus}." if custom_focus else ""
+    if avoid:
+        extra += f" Give low importance to: {avoid}."
     lines = "\n".join(
         f"{idx}. [{item['start']:.1f}-{item['end']:.1f}] {item['text']}"
         for idx, item in enumerate(segments)
     )
-    return f"""Score highlight value for each segment (0.0-1.0). Style: {style}.{extra}
+    return f"""Score highlight value for each segment (0.0-1.0). Style: {_style_label(style)}.{extra}
 Return compact JSON only: {{"segments":[{{"i":n,"importance":n,"novelty":n,"information_density":n}}]}}
 One entry per segment, in the same order. "i" is the segment number shown before it. Penalize filler, greetings, and repetition.
 Segments:

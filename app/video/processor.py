@@ -82,6 +82,7 @@ class VideoProcessor:
         quality: str = "high",
         audio_bitrate: str = "192k",
         extra: Sequence[str] | None = None,
+        silent_audio: bool = False,
     ) -> list[str]:
         duration = max(0.01, float(end) - float(start))
         cmd = [
@@ -91,9 +92,21 @@ class VideoProcessor:
             f"{max(0.0, float(start)):.3f}",
             "-i",
             safe_path_argument(input_path),
-            "-t",
-            f"{duration:.3f}",
         ]
+        if silent_audio:
+            # A source without sound still gets a silent stereo track, so clips from several
+            # videos join with continuous audio.
+            cmd += [
+                "-f",
+                "lavfi",
+                "-i",
+                "anullsrc=r=48000:cl=stereo",
+                "-map",
+                "0:v:0",
+                "-map",
+                "1:a:0",
+            ]
+        cmd += ["-t", f"{duration:.3f}"]
         if stream_copy:
             cmd += ["-c", "copy", "-avoid_negative_ts", "make_zero"]
         else:

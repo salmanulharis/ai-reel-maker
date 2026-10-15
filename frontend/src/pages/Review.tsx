@@ -27,7 +27,6 @@ export default function Review() {
     setJob(data);
     setClips(data.clips || []);
     setDuration(data.metadata?.duration || 0);
-    if (data.status === "completed") navigate(`/jobs/${id}/result`);
     if (["queued", "analyzing", "rendering"].includes(data.status)) {
       navigate(`/jobs/${id}/analysis`);
     }

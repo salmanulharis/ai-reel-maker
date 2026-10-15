@@ -18,17 +18,21 @@ from app.ai.ollama import (
 )
 from app.ai.prompts import (
     TRANSCRIPT_BATCH_SCHEMA_FAST,
+    picture_focus_texts,
     transcript_batch_prompt_fast,
     visual_analysis_focus,
+    visual_focus_priorities,
 )
 from app.analysis import score_source
 from app.analysis.audio import detect_silence, extract_audio, transcribe_detailed
-from app.analysis.candidates import generate_candidates, populate_candidate_audio_metrics
+from app.analysis import avoid as leave_out
+from app.analysis.avoid import picture_avoid_texts, speech_avoid_text, vision_avoid_text
+from app.analysis.candidates import generate_candidates, populate_candidate_audio_metrics, rescore_candidate
 from app.analysis.optimizer import ClipOptimizer
 from app.analysis.repetition import RepetitionAnalyzer
 from app.analysis.scenes import detect_scenes
 from app.analysis.scorer import HighlightScorer
-from app.analysis.semantic import Embedder, apply_focus, repetition_embedding_fn
+from app.analysis.semantic import FOCUS_BOOST, Embedder, apply_focus, repetition_embedding_fn
 from app.analysis.signals import ENERGY_HOP, audio_energy, scene_quality
 from app.analysis.image_match import get_matcher, score_scenes
 from app.analysis.visual import (
@@ -173,7 +177,12 @@ class VideoAnalyzer:
             try:
                 extract_audio(self.runner, source, wav)
                 progress.log("Audio extracted")
+            except CancelledError:
+                # A cancel stops FFmpeg mid-file; a partial file would be reused as finished audio.
+                wav.unlink(missing_ok=True)
+                raise
             except Exception as exc:  # noqa: BLE001
+                wav.unlink(missing_ok=True)
                 progress.log(f"Audio extraction failed: {exc}", "WARNING")
             progress.stage("audio", "done")
         elif not wav.exists():
@@ -193,11 +202,15 @@ class VideoAnalyzer:
             if wav.exists():
                 transcript_data, transcribed = self._transcribe(wav, progress)
             else:
+                # Not cached: if the audio can be extracted on a later run, it is transcribed then.
+                transcribed = False
                 transcript_data = Transcript().model_dump()
                 progress.log("No transcript available; continuing with visual/scene analysis", "WARNING")
             if transcribed:
                 _write(job_dir / "transcript.json", transcript_data)
-            progress.stage("transcript", "done", "" if transcribed else "Transcription failed")
+            progress.stage(
+                "transcript", "done", "" if transcribed or not wav.exists() else "Transcription failed"
+            )
         cache["transcript"] = transcript_data
         transcript = Transcript.model_validate(transcript_data)
 
@@ -255,8 +268,12 @@ class VideoAnalyzer:
             progress.stage("content", "skipped", "Speech is turned off")
         cache["segment_scores"] = segment_scores
 
-        connection_focus = "connection" in config.content_priorities
-        if bool(cache.get("visual_connection_focus", False)) != connection_focus:
+        # Priorities that change the vision prompt; their scores are redone when these change.
+        vision_avoid = vision_avoid_text(config.avoid, config.avoid_custom)
+        connection_focus = visual_focus_priorities(config.content_priorities)
+        if vision_avoid:
+            connection_focus = connection_focus + [f"avoid:{vision_avoid}"]
+        if _stored_visual_focus(cache.get("visual_connection_focus")) != connection_focus:
             cache["visual"] = {}
         visual = dict(cache.get("visual") or {})
         ollama_ok = bool(self.ollama)
@@ -287,6 +304,13 @@ class VideoAnalyzer:
                     visual_signal=signals,
                     match=match,
                 )
+            if vision_ready and config.avoid_mode == "never":
+                # Scenes that will be left out anyway are not worth the vision model's time.
+                left_out = _never_scenes(match, config)
+                if left_out:
+                    every = {int(scene["scene_id"]) for scene in scenes}
+                    shortlist = (every if shortlist is None else set(shortlist)) - left_out
+                    progress.log(f"Leave out: {len(left_out)} scene(s) skipped by the vision model")
             ai_scene_count = sum(
                 1
                 for scene in pending_scenes
@@ -338,6 +362,7 @@ class VideoAnalyzer:
                 settings=self.settings,
                 on_batch_start=_visual_batch_progress,
                 shortlist=shortlist,
+                avoid=vision_avoid,
             )
             for scene in pending_scenes:
                 scene_id = int(scene["scene_id"])
@@ -370,10 +395,11 @@ class VideoAnalyzer:
             energy=energy,
         )
         progress.log(f"{len(candidates)} candidates generated")
-        if config.custom_focus.strip() and match:
+        picture_focus = picture_focus_texts(config.custom_focus, config.content_priorities)
+        if picture_focus and match:
             matched = _apply_visual_focus(candidates, scenes, match)
             if matched:
-                progress.log(f"Focus: {matched} moment(s) look like \"{config.custom_focus.strip()[:60]}\"")
+                progress.log(f"Focus: {matched} moment(s) look like \"{'; '.join(picture_focus)[:80]}\"")
         if config.custom_focus.strip():
             boosted = apply_focus(candidates, config.custom_focus, self.embedder)
             if boosted:
@@ -383,6 +409,17 @@ class VideoAnalyzer:
                     f"Focus matching needs the embedding model '{self.settings.ollama_embed_model}'. "
                     "Install it in Ollama for better results; the focus still guides the AI prompts."
                 )
+        if config.avoid or config.avoid_custom:
+            leave_out.annotate(
+                candidates,
+                config.avoid,
+                config.avoid_custom,
+                scenes,
+                visual_by_scene,
+                match,
+                source_duration,
+                self.embedder if config.avoid_custom else None,
+            )
         cache["candidates"] = candidates
         if not plan:
             return cache
@@ -392,6 +429,10 @@ class VideoAnalyzer:
         similarity_fn = None
         if self.settings.enable_repetition_analysis and candidates:
             similarity_fn = self.repetition.as_similarity_fn(candidates)
+        # Kept before repeats are removed, so re-planning with a lighter setting can use them.
+        _write(job_dir / "candidates_all.json", candidates)
+        cache["candidates_all"] = candidates
+        candidates = _leave_out(candidates, config, progress)
         if config.remove_repetition and self.settings.enable_repetition_analysis:
             before = len(candidates)
             threshold = self.repetition.threshold_for(config.repetition_mode)
@@ -422,6 +463,7 @@ class VideoAnalyzer:
             content_priorities=config.content_priorities,
             length_mode=config.length_mode,
             auto_length_strict=config.auto_length_strict,
+            style=config.style,
         )
         plan_data = plan.model_dump()
         _write(job_dir / "clip_plan.json", plan_data)
@@ -491,6 +533,10 @@ class VideoAnalyzer:
         candidates = all_candidates
         if self.settings.enable_repetition_analysis and candidates:
             similarity_fn = self.repetition.as_similarity_fn(candidates)
+        # Kept before repeats are removed, so re-planning with a lighter setting can use them.
+        _write(job_dir / "candidates_all.json", candidates)
+        cache["candidates_all"] = candidates
+        candidates = _leave_out(candidates, config, progress)
         if config.remove_repetition and self.settings.enable_repetition_analysis:
             before = len(candidates)
             threshold = self.repetition.threshold_for(config.repetition_mode)
@@ -509,6 +555,7 @@ class VideoAnalyzer:
             must_exclude=config.must_exclude,
             order_mode=config.order_mode,
             source_duration=total_duration,
+            multi_source=multi,
             similarity_fn=similarity_fn,
             max_sequence_duration=config.max_sequence_duration,
             min_sequence_duration=config.min_sequence_duration,
@@ -519,6 +566,7 @@ class VideoAnalyzer:
             content_priorities=config.content_priorities,
             length_mode=config.length_mode,
             auto_length_strict=config.auto_length_strict,
+            style=config.style,
         )
         used = {c.source_id for c in plan.clips if c.source_id}
         if used and len(sources) > 1:
@@ -569,9 +617,18 @@ class VideoAnalyzer:
         """SigLIP interest, focus match, and lookalikes per scene; cached with the focus text."""
         if not getattr(self.settings, "image_matching", True):
             return {}
-        focus = config.custom_focus.strip()
+        texts = picture_focus_texts(config.custom_focus, config.content_priorities)
+        # The cache key is the plain focus text when there is only that (as in older versions).
+        focus = " | ".join(texts)
+        avoid_texts = picture_avoid_texts(config.avoid, config.avoid_custom)
+        avoid_key = sorted(f"{key}:{'|'.join(value[0])}" for key, value in avoid_texts.items())
         cached = cache.get("image_match")
-        if isinstance(cached, dict) and cached.get("focus") == focus and cached.get("scenes"):
+        if (
+            isinstance(cached, dict)
+            and cached.get("focus") == focus
+            and (cached.get("avoid") or []) == avoid_key
+            and cached.get("scenes")
+        ):
             return {int(k): v for k, v in cached["scenes"].items()}
         frames = {}
         for scene in scenes:
@@ -585,7 +642,7 @@ class VideoAnalyzer:
             return {}
         started = time.perf_counter()
         try:
-            result = score_scenes(matcher, frames, focus)
+            result = score_scenes(matcher, frames, texts, avoid_texts)
         except Exception as exc:  # noqa: BLE001 - a ranking aid, never a requirement
             progress.log(f"Image matching skipped ({exc})", "WARNING")
             return {}
@@ -594,7 +651,7 @@ class VideoAnalyzer:
             f"Image matching ({matcher.device}): {len(result)} scenes in {time.perf_counter() - started:.1f}s"
             + (f", {duplicates} look like an earlier scene" if duplicates else "")
         )
-        payload = {"focus": focus, "scenes": {str(k): v for k, v in result.items()}}
+        payload = {"focus": focus, "avoid": avoid_key, "scenes": {str(k): v for k, v in result.items()}}
         _write(job_dir / "image_match.json", payload)
         cache["image_match"] = payload
         return result
@@ -635,6 +692,8 @@ class VideoAnalyzer:
             try:
                 self.runner.extract_frame(source, out, stamp, duration=source_duration)
             except CancelledError:
+                # A stopped command can leave a partial image that a later run would reuse.
+                out.unlink(missing_ok=True)
                 raise
             except Exception as ext:  # noqa: BLE001
                 return f"Frame extract failed at {stamp:.2f}s: {ext}"
@@ -728,7 +787,9 @@ class VideoAnalyzer:
         batches = plan_text_batches(
             [segments[index].text for index in pending],
             max_items=self.settings.ollama_text_batch_size,
-            fixed_tokens=estimate_tokens(transcript_batch_prompt_fast(config.style, config.custom_focus, [])),
+            fixed_tokens=estimate_tokens(transcript_batch_prompt_fast(
+                    config.style, config.custom_focus, [], speech_avoid_text(config.avoid, config.avoid_custom)
+                )),
             configured_predict=self.settings.ollama_text_num_predict,
             per_item_output=_TEXT_TOKENS_PER_SEGMENT,
             num_ctx=self.ollama.role_options("text")["num_ctx"],
@@ -781,7 +842,9 @@ class VideoAnalyzer:
         try:
             data = self.ollama.chat(
                 self.settings.ollama_text_model,
-                transcript_batch_prompt_fast(config.style, config.custom_focus, payload),
+                transcript_batch_prompt_fast(
+                    config.style, config.custom_focus, payload, speech_avoid_text(config.avoid, config.avoid_custom)
+                ),
                 schema=TRANSCRIPT_BATCH_SCHEMA_FAST,
                 options=options,
                 schema_first=False,
@@ -842,7 +905,11 @@ class VideoAnalyzer:
 
 
 def plan_from_cache(cache: dict, config: HighlightConfig, settings: Settings) -> dict:
-    candidates = list(cache.get("candidates") or [])
+    """A new plan from the cached candidates under changed options (the review page's adjust
+    buttons). Scores are recomputed with the same adjustments as the first analysis."""
+    # The list from before repeat removal, when there is one, so a lighter repeat setting can
+    # bring back moments that a stricter one removed.
+    candidates = [dict(c) for c in (cache.get("candidates_all") or cache.get("candidates") or [])]
     populate_candidate_audio_metrics(
         candidates,
         Transcript.model_validate(cache.get("transcript") or {}),
@@ -851,14 +918,17 @@ def plan_from_cache(cache: dict, config: HighlightConfig, settings: Settings) ->
     scorer = HighlightScorer()
     for cand in candidates:
         metrics = CandidateScore.model_validate(cand.get("metrics") or {})
-        cand["score"] = scorer.finalize(
-            metrics,
-            style=config.style,
-            priorities=config.content_priorities,
-            priority_weights=config.priority_weights,
-            audio_focus=config.audio_focus,
-        )
-        cand["reason"] = scorer.reason_for(metrics, cand.get("reason") or "Meaningful moment")
+        score = rescore_candidate(cand, scorer, config)
+        visual_focus = cand.get("visual_focus_match")
+        if visual_focus is not None and float(visual_focus) > _VISUAL_FOCUS_FROM:
+            strength = (float(visual_focus) - _VISUAL_FOCUS_FROM) / (1 - _VISUAL_FOCUS_FROM)
+            score = min(1.0, score + _VISUAL_FOCUS_BOOST * strength)
+        score = min(1.0, score + FOCUS_BOOST * float(cand.get("focus_match") or 0))
+        cand["score"] = round(score, 4)
+        if not cand.get("score_fixed"):
+            cand["reason"] = scorer.reason_for(metrics, cand.get("reason") or "Meaningful moment")
+    candidates.sort(key=lambda c: c.get("score", 0), reverse=True)
+    candidates = _leave_out(candidates, config, None)
     embedding_fn = repetition_embedding_fn(_plan_embedder(settings))
     if config.remove_repetition:
         analyzer = RepetitionAnalyzer(embedding_fn)
@@ -875,6 +945,7 @@ def plan_from_cache(cache: dict, config: HighlightConfig, settings: Settings) ->
         must_exclude=config.must_exclude,
         order_mode=config.order_mode,
         source_duration=float(meta.get("duration") or 0),
+        multi_source=int(meta.get("source_count") or 1) > 1,
         similarity_fn=similarity_fn,
         max_sequence_duration=config.max_sequence_duration,
         min_sequence_duration=config.min_sequence_duration,
@@ -885,6 +956,7 @@ def plan_from_cache(cache: dict, config: HighlightConfig, settings: Settings) ->
         content_priorities=config.content_priorities,
         length_mode=config.length_mode,
         auto_length_strict=config.auto_length_strict,
+        style=config.style,
     )
     return plan.model_dump()
 
@@ -1056,6 +1128,46 @@ def _with_image_match(visual_by_scene: dict[int, dict], match: dict[int, dict]) 
         quick = float(entry.get("visual_importance", 0.4))
         blended[scene_id] = {**entry, "visual_importance": round(0.5 * quick + 0.5 * (0.25 + 0.65 * float(interest)), 3)}
     return blended
+
+
+def _leave_out(candidates: list[dict], config: HighlightConfig, progress: "PipelineProgress | None") -> list[dict]:
+    """Lower or remove the moments that show what the user chose to leave out."""
+    if not (config.avoid or config.avoid_custom):
+        return candidates
+    kept, removed, fell_back = leave_out.apply(candidates, config.avoid, config.avoid_custom, config.avoid_mode)
+    if progress is not None:
+        lowered = sum(1 for c in kept if c.get("avoid_factor") is not None)
+        if fell_back:
+            progress.log(
+                "Leave out: every moment matched, so they were ranked lower instead of removed.", "WARNING"
+            )
+        elif removed or lowered:
+            progress.log(f"Leave out: {removed} moment(s) removed, {lowered} ranked lower")
+    return kept
+
+
+def _never_scenes(match: dict[int, dict], config: HighlightConfig) -> set[int]:
+    """Scenes whose picture clearly shows something to leave out (fast picture matching)."""
+    keys = [key for key in config.avoid if key in {"text", "screens", "empty"}]
+    if leave_out.custom_terms(config.avoid_custom):
+        keys.append("custom")
+    if not keys or not match:
+        return set()
+    return {
+        int(scene_id)
+        for scene_id, row in match.items()
+        if max(float((row.get("avoid") or {}).get(key) or 0) for key in keys) >= leave_out.NEVER_FROM
+    }
+
+
+def _stored_visual_focus(value) -> list[str]:
+    """The priorities the cached visual scores were made for. Older versions stored only
+    whether Connection was on."""
+    if isinstance(value, bool):
+        return ["connection"] if value else []
+    if isinstance(value, list):
+        return [str(item) for item in value]
+    return []
 
 
 # Most a strong visual focus match adds to a moment's score, and where matching starts to count.

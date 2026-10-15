@@ -231,9 +231,17 @@ def _spread(values: np.ndarray) -> np.ndarray:
     return np.clip((values - low) / (high - low), 0.0, 1.0)
 
 
-def score_scenes(matcher: ImageMatcher, scene_frames: dict[int, str], focus: str = "") -> dict[int, dict]:
+def score_scenes(
+    matcher: ImageMatcher,
+    scene_frames: dict[int, str],
+    focus: str | list[str] = "",
+    avoid_texts: dict | None = None,
+) -> dict[int, dict]:
     """Per scene: interest (0-1, relative to this video), focus match (0-1, or None without a
-    focus), and the scene it duplicates, if any."""
+    focus), the scene it duplicates, if any, and with ``avoid_texts`` how strongly it shows each
+    kind of content to leave out. Several focus texts count by the best match."""
+    texts = [focus] if isinstance(focus, str) else list(focus or [])
+    texts = [text.strip() for text in texts if text and text.strip()]
     scene_ids = list(scene_frames)
     if not scene_ids:
         return {}
@@ -248,8 +256,13 @@ def score_scenes(matcher: ImageMatcher, scene_frames: dict[int, str], focus: str
     raw = (vectors @ positive.T).max(axis=1) - (vectors @ negative.T).max(axis=1)
     interest = _spread(raw)
     focus_scores = None
-    if focus.strip():
-        focus_scores = _spread(vectors @ matcher.embed_texts([focus.strip()])[0])
+    if texts:
+        focus_scores = _spread((vectors @ matcher.embed_texts(texts).T).max(axis=1))
+    avoid_rows = None
+    if avoid_texts:
+        from app.analysis.avoid import picture_avoid_scores
+
+        avoid_rows = picture_avoid_scores(matcher, vectors, avoid_texts)
     result: dict[int, dict] = {}
     for row, scene_id in enumerate(ids):
         duplicate_of = None
@@ -263,4 +276,6 @@ def score_scenes(matcher: ImageMatcher, scene_frames: dict[int, str], focus: str
             "focus": round(float(focus_scores[row]), 3) if focus_scores is not None else None,
             "duplicate_of": duplicate_of,
         }
+        if avoid_rows is not None:
+            result[scene_id]["avoid"] = avoid_rows[row]
     return result

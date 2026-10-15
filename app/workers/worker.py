@@ -11,7 +11,6 @@ from flask import Flask
 
 from app.ai.ollama import OllamaError
 from app.analysis.pipeline import PipelineProgress, VideoAnalyzer
-from app.analysis.sequence_limits import clamp_plan_clips, sequence_cap
 from app.config import get_settings
 from app.services.ollama_runtime import get_ollama_client
 from app.models.schemas import ClipPlan, ClipPlanItem, HighlightConfig, RenderSettings, VideoMetadata
@@ -41,17 +40,26 @@ def start_worker(app: Flask) -> None:
 
 
 def _recover_orphaned_jobs() -> None:
+    from sqlalchemy import and_, or_
+
     from app.models.db_models import Job, get_session
 
     session = get_session()
     try:
+        # "planning" with a running analysis is the last analysis step, not the review page.
         stuck = (
             session.query(Job)
-            .filter(Job.status.in_(["analyzing", "rendering"]), Job.cancelled.is_(False))
+            .filter(
+                or_(
+                    Job.status.in_(["analyzing", "rendering"]),
+                    and_(Job.status == "planning", Job.analysis_status == "running"),
+                ),
+                Job.cancelled.is_(False),
+            )
             .all()
         )
         for job in stuck:
-            if job.status == "analyzing":
+            if job.status in {"analyzing", "planning"}:
                 job.status = "queued"
                 job.analysis_status = "pending"
             elif job.status == "rendering":
@@ -127,8 +135,6 @@ def _run_analysis(app: Flask, job_id: str) -> None:
     runner = FFmpegRunner(cancel)
     job_dir = manager.job_dir(job_id)
     original = Path(job.input_path)
-    config = HighlightConfig.model_validate(json.loads(job.config_json or "{}"))
-    cache = load_cache(job_dir)
 
     def emit(kind: str, payload: dict) -> None:
         if kind == "log":
@@ -172,9 +178,15 @@ def _run_analysis(app: Flask, job_id: str) -> None:
         progress.log("Ollama is unavailable. Continuing in degraded mode.", "WARNING")
 
     analyzer = VideoAnalyzer(settings, runner, ollama, vision_enabled=vision_enabled, text_enabled=text_enabled)
+    manager.register_runner(job_id, runner)
     try:
+        config = HighlightConfig.model_validate(json.loads(job.config_json or "{}"))
+        cache = load_cache(job_dir)
         sources, cache = _prepare_all_sources(manager, job, original, job_dir, config, runner, progress, cache)
         cache = analyzer.analyze_sources(job_dir, sources, config, progress, cache)
+        if cancel.is_set():
+            # Cancelled during the last steps, which have no cancel point of their own.
+            raise CancelledError("Job cancelled")
         plan = cache.get("clip_plan") or {}
         save_sources(job_dir, cache.get("sources") or sources)
         manager.save_plan(job_id, plan.get("clips") or [])
@@ -207,6 +219,8 @@ def _run_analysis(app: Flask, job_id: str) -> None:
         progress.log(str(exc), "ERROR")
         progress.log(f"Analysis failed after {format_elapsed(took)}", "WARNING")
         _emit(app, job_id, "job_failed", {"error": str(exc)})
+    finally:
+        manager.unregister_runner(job_id, runner)
 
 
 def _run_render(app: Flask, job_id: str) -> None:
@@ -218,84 +232,83 @@ def _run_render(app: Flask, job_id: str) -> None:
     manager.update(job_id, status="rendering", render_status="running")
     manager.start_attempt(job_id, "render")
     cancel = manager.cancel_event(job_id)
+    # A cancel of an earlier run must not stop this one before it starts.
+    cancel.clear()
     runner = FFmpegRunner(cancel)
+    manager.register_runner(job_id, runner)
     job_dir = manager.job_dir(job_id)
-    sources = load_sources(job_dir) or [fallback_source(job.input_path, job.original_filename)]
-    source = Path(sources[0].get("analysis_path") or sources[0]["path"])
-    source_lookup = {str(item["id"]): Path(item.get("analysis_path") or item["path"]) for item in sources}
-    config = HighlightConfig.model_validate(json.loads(job.config_json or "{}"))
-    plan_path = job_dir / "clip_plan.json"
-    if not plan_path.exists():
-        manager.update(job_id, status="failed", error="No clip plan to render", render_status="failed")
-        manager.finish_attempt(job_id, "failed")
-        return
-    plan = ClipPlan.model_validate(json.loads(plan_path.read_text(encoding="utf-8")))
-    kept = [c for c in (manager.serialize(job).get("clips") or []) if c.get("kept", True)]
-    if kept:
-        plan.clips = [
-            ClipPlanItem(
-                start=c["start"],
-                end=c["end"],
-                reason=c.get("reason") or "Selected moment",
-                score=c.get("score") or 0,
-                transcript=c.get("transcript") or "",
-                duration_reason=c.get("duration_reason") or "",
-                source_id=c.get("source_id") or "",
-                source_name=c.get("source_name") or "",
-                source_path=c.get("source_path")
-                or str(source_lookup.get(c.get("source_id") or "") or source),
-            )
-            for c in kept
-        ]
-        plan.estimated_duration = sum(c.duration for c in plan.clips)
-
-    clamp_plan_clips(plan.clips, sequence_cap(config))
-    plan.estimated_duration = sum(c.duration for c in plan.clips)
-
-    render_settings = RenderSettings(
-        format=config.output_format,
-        quality=config.quality,
-        codec=config.codec,
-        crf=settings.output_crf,
-        resolution=config.resolution,
-        aspect_ratio=config.aspect_ratio,
-        subtitles=config.subtitles,
-        transition=config.transition,
-        frame_rate=config.frame_rate,
-        smooth_motion=config.smooth_motion,
-        audio_bitrate=settings.output_audio_bitrate,
-    )
-    outputs = job_dir / "outputs"
-    outputs.mkdir(parents=True, exist_ok=True)
-    ext = render_settings.format if render_settings.format in {"mp4", "webm"} else "mp4"
-    output = outputs / f"highlight.{ext}"
-    srt_path = None
-    transcript = {}
-    tpath = job_dir / "transcript.json"
-    if tpath.exists():
-        transcript = json.loads(tpath.read_text(encoding="utf-8"))
-    if config.subtitles in {"auto", "burned", "srt"}:
-        srt_path = outputs / "highlight.srt"
-        build_srt(plan, transcript.get("segments") or [], srt_path)
-
-    meta = VideoMetadata.model_validate(json.loads(job.metadata_json or "{}"))
-    renderer = Renderer(runner)
 
     def emit_log(message: str, level: str = "INFO") -> None:
         payload = {"level": level, "message": message, "ts": time.time()}
         append_log(job_dir, payload)
         _emit(app, job_id, "job_log", payload)
 
-    emit_log("Rendering highlight")
-    encoder = None
-    if render_settings.quality not in {"source", "very_high"}:
-        encoder = preferred_hw_encoder()
-    if encoder:
-        emit_log(f"Using hardware encoder {encoder}")
-    else:
-        emit_log("Using high-quality CPU encoder libx264 to preserve source detail")
-    manager.set_stage(job_id, "rendering", "running")
     try:
+        sources = load_sources(job_dir) or [fallback_source(job.input_path, job.original_filename)]
+        source = Path(sources[0].get("analysis_path") or sources[0]["path"])
+        source_lookup = {str(item["id"]): Path(item.get("analysis_path") or item["path"]) for item in sources}
+        config = HighlightConfig.model_validate(json.loads(job.config_json or "{}"))
+        plan_path = job_dir / "clip_plan.json"
+        if not plan_path.exists():
+            raise FileNotFoundError("No clip plan to render")
+        plan = ClipPlan.model_validate(json.loads(plan_path.read_text(encoding="utf-8")))
+        kept = [c for c in (manager.serialize(job).get("clips") or []) if c.get("kept", True)]
+        if kept:
+            plan.clips = [
+                ClipPlanItem(
+                    start=c["start"],
+                    end=c["end"],
+                    reason=c.get("reason") or "Selected moment",
+                    score=c.get("score") or 0,
+                    transcript=c.get("transcript") or "",
+                    duration_reason=c.get("duration_reason") or "",
+                    source_id=c.get("source_id") or "",
+                    source_name=c.get("source_name") or "",
+                    source_path=c.get("source_path")
+                    or str(source_lookup.get(c.get("source_id") or "") or source),
+                )
+                for c in kept
+            ]
+        # The planner already keeps generated clips within the per-clip limit; clips the user
+        # lengthened on the review page are rendered as edited.
+        plan.estimated_duration = sum(c.duration for c in plan.clips)
+
+        render_settings = RenderSettings(
+            format=config.output_format,
+            quality=config.quality,
+            codec=config.codec,
+            crf=settings.output_crf,
+            resolution=config.resolution,
+            aspect_ratio=config.aspect_ratio,
+            subtitles=config.subtitles,
+            transition=config.transition,
+            frame_rate=config.frame_rate,
+            smooth_motion=config.smooth_motion,
+            audio_bitrate=settings.output_audio_bitrate,
+        )
+        outputs = job_dir / "outputs"
+        outputs.mkdir(parents=True, exist_ok=True)
+        ext = render_settings.format if render_settings.format in {"mp4", "webm"} else "mp4"
+        output = outputs / f"highlight.{ext}"
+        transcripts: dict[str, list[dict]] = {}
+        if config.subtitles in {"auto", "burned", "srt"}:
+            transcripts = load_transcripts(job_dir, sources)
+            build_srt(plan, transcripts, outputs / "highlight.srt")
+            if not any(transcripts.values()):
+                emit_log("No speech transcript is available, so the subtitles are empty.", "WARNING")
+
+        meta = VideoMetadata.model_validate(json.loads(job.metadata_json or "{}"))
+        renderer = Renderer(runner)
+
+        emit_log("Rendering highlight")
+        encoder = None
+        if render_settings.quality not in {"source", "very_high"}:
+            encoder = preferred_hw_encoder()
+        if encoder:
+            emit_log(f"Using hardware encoder {encoder}")
+        else:
+            emit_log("Using high-quality CPU encoder libx264 to preserve source detail")
+        manager.set_stage(job_id, "rendering", "running")
         result = renderer.render(
             source,
             plan,
@@ -303,9 +316,9 @@ def _run_render(app: Flask, job_id: str) -> None:
             render_settings,
             job_dir / "tmp_render",
             metadata=meta,
-            srt_path=srt_path if config.subtitles == "burned" else None,
             hardware_encoder=encoder,
             source_lookup=source_lookup,
+            subtitle_segments=transcripts if config.subtitles == "burned" else None,
         )
         out_meta = result["metadata"]
         canvas = result.get("canvas") or {}
@@ -358,6 +371,8 @@ def _run_render(app: Flask, job_id: str) -> None:
         emit_log(str(exc), "ERROR")
         emit_log(f"Creating the video failed after {format_elapsed(took)}", "WARNING")
         _emit(app, job_id, "job_failed", {"error": str(exc)})
+    finally:
+        manager.unregister_runner(job_id, runner)
 
 
 ANALYSIS_VIDEO = "analysis.mp4"
@@ -373,6 +388,7 @@ _CACHE_FILES = (
     "scene_quality.json",
     "audio_energy.json",
     "image_match.json",
+    "candidates_all.json",
     "candidates.json",
     "clip_plan.json",
 )
@@ -429,6 +445,10 @@ def _crop_one(
         f"Cropping {original.name} to {box.width}×{box.height} at ({box.x},{box.y}) for analysis. Original file is unchanged."
     )
     settings = get_settings()
+    # The stamp describes a finished crop, so it goes first: an interrupted or failed crop must
+    # never leave a half-written file that looks like an earlier finished one.
+    if stamp.exists():
+        stamp.unlink()
     runner.run(
         VideoProcessor.crop_command(
             original,
@@ -495,6 +515,7 @@ def load_cache(job_dir: Path) -> dict:
         "scene_quality": "scene_quality.json",
         "audio_energy": "audio_energy.json",
         "image_match": "image_match.json",
+        "candidates_all": "candidates_all.json",
         "candidates": "candidates.json",
         "clip_plan": "clip_plan.json",
     }
@@ -506,6 +527,24 @@ def load_cache(job_dir: Path) -> dict:
             except json.JSONDecodeError:
                 pass
     return cache
+
+
+def load_transcripts(job_dir: Path, sources: list[dict]) -> dict[str, list[dict]]:
+    """Transcript segments per source id. One video keeps its transcript in the job folder;
+    with several, each video's analysis lives in ``work/<source id>/``."""
+    multi = len(sources) > 1
+    result: dict[str, list[dict]] = {}
+    for index, src in enumerate(sources or [{}]):
+        sid = str(src.get("id") or f"v{index}")
+        path = (job_dir / "work" / sid if multi else job_dir) / "transcript.json"
+        segments: list[dict] = []
+        if path.exists():
+            try:
+                segments = list(json.loads(path.read_text(encoding="utf-8")).get("segments") or [])
+            except (json.JSONDecodeError, AttributeError):
+                segments = []
+        result[sid] = segments
+    return result
 
 
 def append_log(job_dir: Path, payload: dict) -> None:

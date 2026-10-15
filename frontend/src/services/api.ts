@@ -90,6 +90,9 @@ function finiteOr(value: number, fallback: number) {
   return Number.isFinite(value) && value > 0 ? value : fallback;
 }
 
+/** Leave-out kinds detected from what is said (app/analysis/avoid.py SPEECH_ITEMS). */
+export const SPEECH_AVOID = ["filler", "sponsor", "swearing", "talking_heads"];
+
 export function configPayload(form: HighlightForm) {
   // A length field can be empty while it is being edited; never send that to the server.
   const max = finiteOr(form.max_duration, finiteOr(form.min_duration, 30));
@@ -99,7 +102,8 @@ export function configPayload(form: HighlightForm) {
     length_mode: form.social_short ? "range" : form.length_mode,
     use_speech: form.use_speech,
     style: form.style,
-    custom_focus: form.custom_focus,
+    // The focus text box only shows for the custom style; a hidden focus must not steer the AI.
+    custom_focus: form.style === "custom" ? form.custom_focus : "",
     preserve_context: form.preserve_context,
     remove_repetition: form.remove_repetition,
     allow_repeated_content: form.allow_repeated_content,
@@ -107,7 +111,15 @@ export function configPayload(form: HighlightForm) {
     min_sequence_duration: form.min_sequence_duration,
     sequence_duration_mode: form.sequence_duration_mode,
     content_priorities: form.content_priorities,
-    priority_weights: form.priority_weights,
+    // Sliders go from 1 (less) to 5 (more) and show 3 until moved; the server takes a share
+    // from 0.2 to 1.
+    priority_weights: Object.fromEntries(
+      form.content_priorities.map((key) => [key, Math.min(5, Math.max(1, form.priority_weights[key] ?? 3)) / 5])
+    ),
+    // Speech kinds need a transcript; the server drops them too when speech is off.
+    avoid: form.use_speech ? form.avoid : form.avoid.filter((key) => !SPEECH_AVOID.includes(key)),
+    avoid_custom: form.avoid_custom,
+    avoid_mode: form.avoid_mode,
     max_repeated_duration: form.max_repeated_duration,
     repetition_mode: form.repetition_mode,
     order_mode: form.order_mode,
@@ -117,7 +129,8 @@ export function configPayload(form: HighlightForm) {
     transition: form.transition,
     audio_focus: form.audio_focus,
     frame_rate: form.frame_rate,
-    smooth_motion: form.smooth_motion,
+    // The smoothing option only shows when a frame rate is chosen.
+    smooth_motion: form.frame_rate !== "source" && form.smooth_motion,
     codec: form.codec,
     quality: form.quality,
     resolution: form.resolution,

@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { fill, messages } from "../i18n";
 import type { HighlightForm } from "../types";
+import { SPEECH_AVOID } from "../services/api";
 
 const PRESETS = [
   [10, 10],
@@ -13,9 +14,41 @@ const PRESETS = [
   [90, 90],
 ];
 
-const STYLES = ["auto", "informative", "exciting", "social", "educational", "custom"] as const;
-const PRIORITIES = ["balanced", "action", "speech", "magic", "visual", "information", "connection"] as const;
+const STYLES = [
+  "auto",
+  "informative",
+  "exciting",
+  "social",
+  "educational",
+  "cinematic",
+  "funny",
+  "story",
+  "trailer",
+  "calm",
+  "custom",
+] as const;
+const PRIORITIES = [
+  "balanced",
+  "action",
+  "speech",
+  "magic",
+  "visual",
+  "information",
+  "connection",
+  "people",
+  "scenery",
+  "fun",
+  "pets",
+  "music",
+  "sports",
+] as const;
 const AUDIO_FOCUSES = ["balanced", "natural", "dialogue"] as const;
+// What to leave out, grouped as in the UI (keys match app/analysis/avoid.py AVOID_ITEMS).
+const AVOID_GROUPS = [
+  ["speech", ["filler", "sponsor", "swearing", "talking_heads"]],
+  ["picture", ["dark", "text", "screens", "empty"]],
+  ["timing", ["intro_outro", "silence"]],
+] as const;
 const CONNECTION_PRESETS: Record<"highlight" | "moments", Partial<HighlightForm>> = {
   highlight: {
     min_duration: 30,
@@ -24,7 +57,7 @@ const CONNECTION_PRESETS: Record<"highlight" | "moments", Partial<HighlightForm>
     content_priorities: ["connection"],
     priority_weights: { connection: 5 },
     audio_focus: "natural",
-    sequence_duration_mode: "auto",
+    sequence_duration_mode: "custom",
     min_sequence_duration: 2.5,
     max_sequence_duration: 12,
     preserve_context: "high",
@@ -42,7 +75,7 @@ const CONNECTION_PRESETS: Record<"highlight" | "moments", Partial<HighlightForm>
     content_priorities: ["connection"],
     priority_weights: { connection: 5 },
     audio_focus: "natural",
-    sequence_duration_mode: "auto",
+    sequence_duration_mode: "custom",
     min_sequence_duration: 1.5,
     max_sequence_duration: 8,
     preserve_context: "balanced",
@@ -112,6 +145,9 @@ export function HighlightConfigPanel({
   const autoLength = form.length_mode === "auto" && !form.social_short;
   const isPreset = !autoLength && PRESETS.some(([a, b]) => a === form.min_duration && b === form.max_duration);
   const [customOpen, setCustomOpen] = useState(false);
+  // The priorities chosen before "Visuals and sound only" replaced them, restored when it is
+  // turned off again.
+  const [prioritiesBeforeVisuals, setPrioritiesBeforeVisuals] = useState<string[] | null>(null);
   const showCustom = customOpen || !isPreset;
   const swapped = !autoLength && form.min_duration > form.max_duration;
   const autoClipLength = form.sequence_duration_mode === "auto";
@@ -241,13 +277,21 @@ export function HighlightConfigPanel({
             type="checkbox"
             checked={!form.use_speech}
             aria-describedby="visuals-only-hint"
-            onChange={(e) =>
-              update(
-                e.target.checked
-                  ? { use_speech: false, content_priorities: ["action", "visual"], subtitles: "none" }
-                  : { use_speech: true }
-              )
-            }
+            onChange={(e) => {
+              if (e.target.checked) {
+                setPrioritiesBeforeVisuals(form.content_priorities);
+                update({ use_speech: false, content_priorities: ["action", "visual"], subtitles: "none" });
+              } else {
+                // Only when the user has not picked other priorities in the meantime.
+                const untouched = form.content_priorities.join() === "action,visual";
+                update(
+                  prioritiesBeforeVisuals && untouched
+                    ? { use_speech: true, content_priorities: prioritiesBeforeVisuals }
+                    : { use_speech: true }
+                );
+                setPrioritiesBeforeVisuals(null);
+              }
+            }}
           />
           <span>
             <strong>{copy.visualsOnly}</strong>
@@ -283,6 +327,13 @@ export function HighlightConfigPanel({
         {form.content_priorities.includes("connection") && (
           <p className="field-hint">{copy.connectionPriorityHint}</p>
         )}
+        {form.content_priorities
+          .filter((key): key is keyof typeof copy.priorityHints => key in copy.priorityHints)
+          .map((key) => (
+            <p key={key} className="field-hint">
+              {copy.priorityHints[key]}
+            </p>
+          ))}
         <div className="field">
           <label htmlFor="audioFocus">{copy.audioFocus}</label>
           <select
@@ -336,6 +387,86 @@ export function HighlightConfigPanel({
               );
             })}
           </div>
+        )}
+      </fieldset>
+
+      <fieldset className="config-section">
+        <legend>{copy.avoid}</legend>
+        <p className="field-hint top">{copy.avoidHint}</p>
+        {AVOID_GROUPS.map(([group, keys]) => (
+          <div key={group} className="avoid-group">
+            <span className="avoid-group-title" id={`avoid-${group}`}>
+              {copy.avoidGroups[group]}
+            </span>
+            <div className="chips" role="group" aria-labelledby={`avoid-${group}`}>
+              {keys.map((key) => {
+                const needsSpeech = SPEECH_AVOID.includes(key) && !form.use_speech;
+                const active = form.avoid.includes(key) && !needsSpeech;
+                return (
+                  <button
+                    key={key}
+                    type="button"
+                    className={`chip ${active ? "active" : ""}`}
+                    aria-pressed={active}
+                    disabled={needsSpeech}
+                    title={copy.avoidItems[key].hint}
+                    onClick={() =>
+                      update({
+                        avoid: form.avoid.includes(key)
+                          ? form.avoid.filter((item) => item !== key)
+                          : [...form.avoid, key],
+                      })
+                    }
+                  >
+                    {copy.avoidItems[key].label}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        ))}
+        {!form.use_speech && <p className="field-hint">{copy.avoidNeedsSpeech}</p>}
+        {form.avoid.includes("talking_heads") &&
+          (form.content_priorities.includes("people") || form.content_priorities.includes("speech")) && (
+            <p className="field-hint warn">{copy.avoidConflict}</p>
+          )}
+        <div className="field">
+          <label htmlFor="avoidCustom">{copy.avoidCustom}</label>
+          <input
+            id="avoidCustom"
+            type="text"
+            maxLength={300}
+            value={form.avoid_custom}
+            aria-describedby="avoid-custom-hint"
+            placeholder={copy.avoidCustomPlaceholder}
+            onChange={(e) => update({ avoid_custom: e.target.value })}
+          />
+          <p className="field-hint" id="avoid-custom-hint">
+            {copy.avoidCustomHint}
+          </p>
+        </div>
+        {(form.avoid.length > 0 || form.avoid_custom.trim() !== "") && (
+          <fieldset className="choice-group reveal">
+            <legend>{copy.avoidMode}</legend>
+            {(["avoid", "never"] as const).map((mode) => (
+              <label key={mode} className="check">
+                <input
+                  type="radio"
+                  name="avoid-mode"
+                  value={mode}
+                  checked={form.avoid_mode === mode}
+                  aria-describedby={`avoid-mode-${mode}-hint`}
+                  onChange={() => update({ avoid_mode: mode })}
+                />
+                <span>
+                  {mode === "avoid" ? copy.avoidModeAvoid : copy.avoidModeNever}
+                  <span className="field-hint block" id={`avoid-mode-${mode}-hint`}>
+                    {mode === "avoid" ? copy.avoidModeAvoidHint : copy.avoidModeNeverHint}
+                  </span>
+                </span>
+              </label>
+            ))}
+          </fieldset>
         )}
       </fieldset>
 
@@ -620,7 +751,23 @@ export const defaultForm = (): HighlightForm => ({
   min_sequence_duration: null,
   sequence_duration_mode: "auto",
   content_priorities: ["balanced"],
-  priority_weights: { action: 3, speech: 3, magic: 3, visual: 3, information: 3, connection: 3 },
+  priority_weights: {
+    action: 3,
+    speech: 3,
+    magic: 3,
+    visual: 3,
+    information: 3,
+    connection: 3,
+    people: 3,
+    scenery: 3,
+    fun: 3,
+    pets: 3,
+    music: 3,
+    sports: 3,
+  },
+  avoid: [],
+  avoid_custom: "",
+  avoid_mode: "avoid",
   max_repeated_duration: 15,
   repetition_mode: "balanced",
   order_mode: "chronological",

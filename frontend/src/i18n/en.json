@@ -108,6 +108,11 @@
       "exciting": "Prefers action, reactions, and energy.",
       "social": "Strong opening hook, made for social media.",
       "educational": "Keeps lessons and explanations easy to follow.",
+      "cinematic": "Beautiful, well-shot moments with room to breathe; less talking.",
+      "funny": "Reactions, surprises, and punchlines in quick cuts.",
+      "story": "Follows what happened, with enough context to understand each moment.",
+      "trailer": "Strong peaks and openings in short, fast cuts.",
+      "calm": "Gentle, good-looking moments at a relaxed pace.",
       "custom": "Describe in your own words what to look for."
     },
     "customFocus": "What should the highlight focus on?",
@@ -118,6 +123,73 @@
     "priorities": "What matters most",
     "prioritiesHint": "Pick one or more. When you pick several, use the sliders to say how much each one matters.",
     "connectionPriorityHint": "Favors meaningful affectionate interactions, lets strong moments breathe, and keeps the original scene audio intact.",
+    "avoid": "What to leave out",
+    "avoidHint": "Pick anything you do not want in the highlight. Hover a choice for what it looks for.",
+    "avoidGroups": {
+      "speech": "Speech",
+      "picture": "Picture",
+      "timing": "Timing"
+    },
+    "avoidItems": {
+      "filler": {
+        "label": "Filler & greetings",
+        "hint": "\"Um\", \"hey guys\", \"welcome back\" and other talk with nothing in it."
+      },
+      "sponsor": {
+        "label": "Sponsor & ad talk",
+        "hint": "\"Sponsored by\", \"use code\", \"link in the description\" and similar."
+      },
+      "swearing": {
+        "label": "Swearing",
+        "hint": "Moments where common swear words are said."
+      },
+      "talking_heads": {
+        "label": "Long talking heads",
+        "hint": "A person talking to the camera while little else happens."
+      },
+      "dark": {
+        "label": "Dark or blurry shots",
+        "hint": "Shots that are too dark, blurry, or black."
+      },
+      "text": {
+        "label": "Text, titles & slides",
+        "hint": "Title cards, slides, and screens full of text."
+      },
+      "screens": {
+        "label": "Screens & phones",
+        "hint": "Phone, computer, and TV screens, and screen recordings."
+      },
+      "empty": {
+        "label": "Empty scenes",
+        "hint": "Scenes where nobody is there and nothing happens."
+      },
+      "intro_outro": {
+        "label": "Intros & outros",
+        "hint": "The opening and closing seconds, especially greetings, title cards, and sign-offs."
+      },
+      "silence": {
+        "label": "Silence & dead air",
+        "hint": "Stretches where nothing is said or heard."
+      }
+    },
+    "avoidNeedsSpeech": "Speech choices need speech, which is turned off.",
+    "avoidConflict": "You asked for people or speech and also to leave out talking heads; close-ups of people talking will be ranked lower.",
+    "avoidCustom": "Also leave out (your own words)",
+    "avoidCustomPlaceholder": "For example: the car, my boss, prices",
+    "avoidCustomHint": "Separate with commas. Checked against what is said and, when picture matching is installed, what is shown.",
+    "avoidMode": "How strictly",
+    "avoidModeAvoid": "Avoid when possible",
+    "avoidModeAvoidHint": "Matching moments rank much lower but can still fill a gap.",
+    "avoidModeNever": "Always remove",
+    "avoidModeNeverHint": "Clear matches are removed. The highlight can come out shorter.",
+    "priorityHints": {
+      "people": "People: favors clear faces, expressions, and people together.",
+      "scenery": "Scenery: favors landscapes, views, and well-composed shots of places.",
+      "fun": "Fun: favors laughing, playing, and celebrating.",
+      "pets": "Pets: favors scenes with animals, especially when they move or play.",
+      "music": "Music: favors singing, dancing, and performances, and their sound.",
+      "sports": "Sports: favors plays, goals, tricks, and the reactions to them."
+    },
     "quickPresets": "Quick presets",
     "quickPresetHint": "Choose a starting point, then adjust any setting below.",
     "connectionHighlightPreset": "Connection highlight · 30–60s",
@@ -210,6 +282,11 @@
     "exciting": "Exciting",
     "social": "Social media",
     "educational": "Educational",
+    "cinematic": "Cinematic",
+    "funny": "Funny",
+    "story": "Story / vlog",
+    "trailer": "Trailer",
+    "calm": "Calm",
     "custom": "Custom"
   },
   "priorities": {
@@ -219,7 +296,13 @@
     "magic": "Surprising moments",
     "visual": "Visuals",
     "information": "Information",
-    "connection": "Connection"
+    "connection": "Connection",
+    "people": "People",
+    "scenery": "Scenery",
+    "fun": "Fun & laughter",
+    "pets": "Pets & animals",
+    "music": "Music & dance",
+    "sports": "Sports"
   },
   "progress": {
     "title": "Analyzing",

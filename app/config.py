@@ -35,7 +35,8 @@ def default_ollama_base_url() -> str:
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
-        env_file=".env",
+        # Next to the project, not the folder the app is started from.
+        env_file=str(_project_root() / ".env"),
         env_file_encoding="utf-8",
         extra="ignore",
         case_sensitive=False,

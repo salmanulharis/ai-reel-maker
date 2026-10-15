@@ -124,6 +124,9 @@ export interface HighlightForm {
   sequence_duration_mode: "auto" | "custom";
   content_priorities: string[];
   priority_weights: Record<string, number>;
+  avoid: string[];
+  avoid_custom: string;
+  avoid_mode: "avoid" | "never";
   max_repeated_duration: number;
   repetition_mode: string;
   order_mode: string;

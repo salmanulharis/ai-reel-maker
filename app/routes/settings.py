@@ -5,7 +5,7 @@ from flask import Blueprint, jsonify, request
 from app.config import get_settings
 from app.models.db_models import get_session
 from app.services.job_manager import get_job_manager
-from app.services.settings_store import apply_values, effective_settings
+from app.services.settings_store import apply_values, effective_settings, validate_values
 from app.services.storage import clear_cache, clear_tmp, delete_job_files, storage_report
 
 settings_bp = Blueprint("settings", __name__)
@@ -72,6 +72,10 @@ def save_settings():
     values = {key: value for key, value in payload.items() if key in EDITABLE}
     if "vision_scope" in values and values["vision_scope"] not in {"shortlist", "all"}:
         return jsonify({"error": "vision_scope must be shortlist or all"}), 400
+    try:
+        values = validate_values(values, get_settings())
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
     apply_values(values, get_settings())
     return jsonify({"settings": _current()})
 

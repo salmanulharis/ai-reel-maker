@@ -70,6 +70,8 @@ class VisualAnalysis(BaseModel):
     appears_ending: bool = False
     surprising: bool = False
     focus_region: tuple[float, float, float, float] | None = None
+    # How clearly the scene shows content the user wants left out (only when asked).
+    avoid: float | None = None
 
     @field_validator(
         "visual_importance",
@@ -206,7 +208,19 @@ class HighlightConfig(BaseModel):
     # False: ignore what is said and choose moments from pictures and sound only (no
     # transcription, no speech scoring, no subtitles).
     use_speech: bool = True
-    style: Literal["auto", "informative", "exciting", "social", "educational", "custom"] = "auto"
+    style: Literal[
+        "auto",
+        "informative",
+        "exciting",
+        "social",
+        "educational",
+        "cinematic",
+        "funny",
+        "story",
+        "trailer",
+        "calm",
+        "custom",
+    ] = "auto"
     custom_focus: str = ""
     preserve_context: Literal["low", "balanced", "high"] = "balanced"
     remove_repetition: bool = True
@@ -235,6 +249,11 @@ class HighlightConfig(BaseModel):
     crop: CropRegion | None = None
     content_priorities: list[str] = Field(default_factory=lambda: ["balanced"])
     priority_weights: dict[str, float] = Field(default_factory=dict)
+    # What to leave out (app.analysis.avoid.AVOID_ITEMS), the user's own words, and whether
+    # matching moments are only ranked lower ("avoid") or removed ("never").
+    avoid: list[str] = Field(default_factory=list)
+    avoid_custom: str = ""
+    avoid_mode: Literal["avoid", "never"] = "avoid"
 
     @model_validator(mode="after")
     def _range(self) -> "HighlightConfig":
@@ -247,7 +266,12 @@ class HighlightConfig(BaseModel):
             # Subtitles come from the transcript, which is not made without speech.
             self.subtitles = "none"
         if self.min_duration > self.max_duration:
-            self.min_duration, self.max_duration = self.max_duration, self.min_duration
+            if self.length_mode == "auto":
+                # Automatic length has no maximum to respect (the field is hidden), so the
+                # minimum the user typed is kept and the stored maximum follows it.
+                self.max_duration = self.min_duration
+            else:
+                self.min_duration, self.max_duration = self.max_duration, self.min_duration
         if self.allow_repeated_content is None:
             self.allow_repeated_content = not self.remove_repetition
         else:
@@ -263,7 +287,21 @@ class HighlightConfig(BaseModel):
         if self.sequence_duration_mode not in {"auto", "custom"}:
             self.sequence_duration_mode = "auto"
         self.max_repeated_duration = max(0.0, float(self.max_repeated_duration))
-        allowed = {"balanced", "action", "speech", "magic", "visual", "information", "connection"}
+        allowed = {
+            "balanced",
+            "action",
+            "speech",
+            "magic",
+            "visual",
+            "information",
+            "connection",
+            "people",
+            "scenery",
+            "fun",
+            "pets",
+            "music",
+            "sports",
+        }
         selected = []
         for item in self.content_priorities or []:
             key = str(item).strip().lower()
@@ -288,6 +326,11 @@ class HighlightConfig(BaseModel):
             if name != "balanced" and name not in weights:
                 weights[name] = 1.0
         self.priority_weights = weights
+        from app.analysis.avoid import clean_items
+
+        # Speech kinds need a transcript, which is not made without speech.
+        self.avoid = clean_items(self.avoid, use_speech=self.use_speech)
+        self.avoid_custom = (self.avoid_custom or "").strip()[:300]
         return self
 
 

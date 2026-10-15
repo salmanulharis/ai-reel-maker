@@ -52,7 +52,26 @@ class JobManager:
     def __init__(self, settings: Settings | None = None):
         self.settings = settings or get_settings()
         self._cancel_events: dict[str, threading.Event] = {}
+        # FFmpeg runners working on a job, so a cancel can stop the command that is running.
+        self._runners: dict[str, list[FFmpegRunner]] = {}
         self._lock = threading.Lock()
+
+    def register_runner(self, job_id: str, runner: FFmpegRunner) -> None:
+        with self._lock:
+            self._runners.setdefault(job_id, []).append(runner)
+
+    def has_runners(self, job_id: str) -> bool:
+        """Whether a run of this job is still working (or still stopping after a cancel)."""
+        with self._lock:
+            return bool(self._runners.get(job_id))
+
+    def unregister_runner(self, job_id: str, runner: FFmpegRunner) -> None:
+        with self._lock:
+            runners = self._runners.get(job_id) or []
+            if runner in runners:
+                runners.remove(runner)
+            if not runners:
+                self._runners.pop(job_id, None)
 
     def cancel_event(self, job_id: str) -> threading.Event:
         with self._lock:
@@ -316,6 +335,11 @@ class JobManager:
     def add_output(self, job_id: str, **fields) -> None:
         session = get_session()
         try:
+            # A new render replaces the file at the same path, so it replaces its record too.
+            if fields.get("path"):
+                session.query(OutputRow).filter(
+                    OutputRow.job_id == job_id, OutputRow.path == fields["path"]
+                ).delete()
             session.add(OutputRow(job_id=job_id, **fields))
             session.commit()
         finally:
@@ -323,6 +347,11 @@ class JobManager:
 
     def cancel(self, job_id: str) -> Job | None:
         self.cancel_event(job_id).set()
+        with self._lock:
+            runners = list(self._runners.get(job_id) or [])
+        for runner in runners:
+            # Stopping a process can take a few seconds; the request does not wait for it.
+            threading.Thread(target=runner.cancel, daemon=True, name=f"cancel-{job_id}").start()
         return self.update(job_id, status="cancelled", cancelled=True)
 
     def retry(self, job_id: str) -> Job | None:
@@ -369,7 +398,12 @@ class JobManager:
         config = json.loads(job.config_json or "{}")
         session = get_session()
         try:
-            outputs = session.query(OutputRow).filter(OutputRow.job_id == job.id).all()
+            outputs = (
+                session.query(OutputRow)
+                .filter(OutputRow.job_id == job.id)
+                .order_by(OutputRow.id.desc())
+                .all()
+            )
             clips = (
                 session.query(SelectedClip)
                 .filter(SelectedClip.job_id == job.id)

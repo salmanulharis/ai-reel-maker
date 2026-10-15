@@ -142,10 +142,10 @@ export const DOC_ARTICLES = {
         kind: "table",
         head: ["Your computer", "Video model", "Speech model", "Speech to text"],
         rows: [
-          ["No graphics card, under 16 GB memory", "qwen3-vl:2b-instruct", "qwen3:4b", "tiny or base"],
-          ["No graphics card, 16 GB or more", "qwen3-vl:4b-instruct", "qwen3:4b", "base"],
-          ["Graphics card with under 6 GB free", "qwen3-vl:2b-instruct or :4b-instruct", "qwen3:4b", "base on the processor"],
-          ["Graphics card with about 6-10 GB", "qwen3-vl:4b-instruct", "qwen3:4b", "small"],
+          ["No graphics card, under 16 GB memory", "qwen3-vl:2b-instruct", "qwen3:4b-instruct-2507-q4_K_M", "tiny or base"],
+          ["No graphics card, 16 GB or more", "qwen3-vl:4b-instruct", "qwen3:4b-instruct-2507-q4_K_M", "base"],
+          ["Graphics card with under 6 GB free", "qwen3-vl:2b-instruct or :4b-instruct", "qwen3:4b-instruct-2507-q4_K_M", "base on the processor"],
+          ["Graphics card with about 6-10 GB", "qwen3-vl:4b-instruct", "qwen3:4b-instruct-2507-q4_K_M", "small"],
           ["Graphics card with 10 GB or more", "qwen3-vl:8b-instruct", "qwen3:8b", "small or large-v3-turbo"],
           ["Graphics card with 24 GB or more", "qwen3-vl:30b-a3b-instruct", "qwen3:8b", "large-v3-turbo"],
         ],
@@ -205,7 +205,7 @@ export const DOC_ARTICLES = {
         ],
       },
       { kind: "p", text: "You can also install models from a terminal:" },
-      { kind: "code", label: "Example for a computer with 16 GB and no graphics card", text: "ollama pull qwen3-vl:4b-instruct\nollama pull qwen3:4b" },
+      { kind: "code", label: "Example for a computer with 16 GB and no graphics card", text: "ollama pull qwen3-vl:4b-instruct\nollama pull qwen3:4b-instruct-2507-q4_K_M" },
       { kind: "tip", text: "Expected result: the header shows **AI ready**. If it says **AI offline**, Ollama is not running." },
       { kind: "settings", section: "ai", label: "Open AI models" },
     ],
@@ -266,6 +266,30 @@ export const DOC_ARTICLES = {
       { kind: "steps", items: ["Open **Settings → AI models → Meaning matching** and click **Install**, or run the command below.", "Nothing else to set: the next highlight uses it automatically."] },
       { kind: "code", text: "ollama pull nomic-embed-text" },
       { kind: "note", text: "Without it, the app compares words instead. Everything still works." },
+    ],
+  },
+
+  "leave-out": {
+    title: "Leaving things out",
+    summary: "Keep sponsor talk, title cards, dark shots, intros, and your own words out of the highlight.",
+    keywords: "exclude avoid never remove skip unwanted what to leave out sponsor swearing filler screens",
+    blocks: [
+      { kind: "p", text: "Under **What to leave out**, pick the kinds of moments you do not want. You can also type your own words, separated by commas." },
+      {
+        kind: "table",
+        head: ["Choice", "How it is found"],
+        rows: [
+          ["Filler & greetings, Sponsor & ad talk, Swearing", "From what is said (needs speech)."],
+          ["Long talking heads", "Continuous speech while little happens in the picture; picture matching confirms a close-up face."],
+          ["Dark or blurry shots, Silence & dead air", "From picture quality and quiet stretches. No AI needed."],
+          ["Text, titles & slides, Screens & phones, Empty scenes", "Picture matching, and the video model when it is installed."],
+          ["Intros & outros", "The first and last seconds; full strength with a greeting, title card, or sign-off."],
+          ["Your own words", "Exact words in what is said, similar meaning with meaning matching, and the pictures with picture matching."],
+        ],
+      },
+      { kind: "p", text: "**Avoid when possible** ranks matching moments much lower, so they are used only when nothing else fits. **Always remove** removes clear matches; the highlight can then come out shorter. If every moment matches, they are ranked lower instead, so you still get a highlight." },
+      { kind: "note", text: "Exact time ranges to skip are under **More options → Never include**. An **Always include** range is always kept, even when it matches something to leave out." },
+      { kind: "see", article: "setup-image-matching", label: "Picture matching" },
     ],
   },
 
@@ -401,7 +425,7 @@ export const DOC_ARTICLES = {
 export type DocArticleId = keyof typeof DOC_ARTICLES;
 
 export const DOC_CATEGORIES: Array<{ title: string; articles: DocArticleId[] }> = [
-  { title: "Getting started", articles: ["how-it-works", "requirements", "setup-ollama"] },
+  { title: "Getting started", articles: ["how-it-works", "requirements", "setup-ollama", "leave-out"] },
   { title: "Speed without a graphics card", articles: ["cpu-speed", "where-time-goes", "choose-models", "threads-memory", "ollama-tuning"] },
   { title: "Lightweight AI models", articles: ["setup-whisper", "setup-image-matching", "setup-embeddings"] },
   { title: "Graphics cards", articles: ["hardware-detection", "gpu-setup", "fallbacks", "remote-gpu"] },

@@ -615,6 +615,9 @@ section:first-of-type > .step-title,
 }
 .chip:hover { border-color: var(--border-hover); background: var(--surface-2); }
 .chip.active { border-color: var(--accent); background: var(--accent-soft); color: var(--chip-active-text); }
+.chip:disabled { opacity: 0.5; cursor: not-allowed; }
+.avoid-group + .avoid-group { margin-top: 10px; }
+.avoid-group-title { display: block; margin-bottom: 6px; color: var(--muted); font-size: 12px; }
 .priority-weights {
   display: grid;
   gap: 8px;
