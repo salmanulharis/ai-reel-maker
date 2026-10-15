@@ -30,7 +30,8 @@
   "nav": {
     "dashboard": "Create",
     "history": "My highlights",
-    "settings": "Settings"
+    "settings": "Settings",
+    "help": "Help"
   },
   "pages": {
     "createTitle": "Create a highlight",
@@ -38,6 +39,8 @@
     "historyTitle": "My highlights",
     "historySubtitle": "Every highlight you have started or finished.",
     "settingsTitle": "Settings",
+    "helpTitle": "Help",
+    "helpSubtitle": "Set up the AI, make it faster, and fix problems.",
     "settingsSubtitle": "AI models, video quality, and storage.",
     "analysisTitle": "Working on your highlight",
     "analysisSubtitle": "You can leave this page. Progress is saved.",
@@ -45,6 +48,16 @@
     "reviewSubtitle": "Keep, remove, or adjust clips, then create the video.",
     "resultTitle": "Your highlight",
     "resultSubtitle": "Watch, download, or make changes."
+  },
+  "docs": {
+    "navLabel": "Help topics",
+    "search": "Search help",
+    "searchPlaceholder": "Search help…",
+    "results": "{n} matching topics",
+    "noResults": "No matching topics",
+    "noResultsHint": "Try fewer or simpler words, for example \"slow\", \"memory\", or \"graphics card\".",
+    "learnMore": "Learn more",
+    "callouts": { "tip": "Tip:", "note": "Note:", "warning": "Warning:" }
   },
   "aiStatus": {
     "checking": "Checking AI…",
@@ -99,6 +112,9 @@
     },
     "customFocus": "What should the highlight focus on?",
     "customFocusPlaceholder": "For example: focus on the product demo, skip the introduction.",
+    "visualsOnly": "Visuals and sound only",
+    "visualsOnlyHint": "Ignore what is said: no transcription and no subtitles. Moments are chosen from pictures, motion, and sound, with action and visuals preferred. Faster, and good for music, sports, gaming, and travel videos.",
+    "subtitlesNeedSpeech": "Subtitles need speech, which is turned off for this highlight.",
     "priorities": "What matters most",
     "prioritiesHint": "Pick one or more. When you pick several, use the sliders to say how much each one matters.",
     "connectionPriorityHint": "Favors meaningful affectionate interactions, lets strong moments breathe, and keeps the original scene audio intact.",
@@ -217,6 +233,7 @@
     "cancel": "Stop",
     "confirmCancel": "Stop working on this highlight? You can start again later, and finished steps are kept.",
     "logs": "Detailed log",
+    "slowHelp": "Why does this take long?",
     "logsHint": "Technical details, useful if something goes wrong.",
     "failed": "Something went wrong",
     "failedHint": "Finished steps are kept, so trying again continues where it stopped.",
@@ -413,6 +430,14 @@
     "visionScopeShortlistHint": "Speech is scored first, then the video model checks the promising scenes and every scene without speech. Much faster, especially without a graphics card.",
     "visionScopeAll": "Every scene",
     "visionScopeAllHint": "Slowest. Useful when important moments are purely visual and quiet.",
+    "useSpeech": "Use speech",
+    "useSpeechHint": "Turn speech into text and use what is said to choose moments. Turn off to choose from pictures and sound only: faster, and no subtitles. You can also turn speech off for one highlight on the Create page.",
+    "imageMatching": "Fast picture matching",
+    "imageMatchingHint": "A small picture model (SigLIP) that ranks scenes in a fraction of a second each, so the slower video model only looks at the best ones. It also spots repeated-looking scenes and matches your focus to pictures. It cannot judge what happens in a scene by itself.",
+    "imageModelReady": "Downloaded",
+    "imageModelMissing": "Not downloaded ({size} MB)",
+    "imageModelDownloading": "Downloading… file {done} of {total}",
+    "imageModelNoRuntime": "Needs onnxruntime and tokenizers. Install the app requirements.",
     "embedTitle": "Meaning matching",
     "embedHint": "A small model that compares meaning, to find repeated ideas said in different words and to match your focus. Optional: without it, word matching is used.",
     "embedReady": "{model} is installed",

@@ -97,6 +97,7 @@ export function configPayload(form: HighlightForm) {
     min_duration: finiteOr(form.min_duration, Math.min(20, max)),
     max_duration: max,
     length_mode: form.social_short ? "range" : form.length_mode,
+    use_speech: form.use_speech,
     style: form.style,
     custom_focus: form.custom_focus,
     preserve_context: form.preserve_context,
@@ -198,6 +199,7 @@ export const api = {
     }),
   undoOptimization: () => http<OptimizationPlan>("/api/system/ai/optimization/undo", { method: "POST" }),
   startAiTest: () => http("/api/system/ai/test", { method: "POST" }),
+  downloadImageModel: () => http("/api/system/image-model/download", { method: "POST" }),
   downloadWhisper: (model: string) =>
     http("/api/system/whisper/download", {
       method: "POST",

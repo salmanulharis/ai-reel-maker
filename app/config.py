@@ -75,6 +75,9 @@ class Settings(BaseSettings):
     # "shortlist": run the vision model only on scenes that could make the highlight.
     # "all": every scene (slowest, the previous behaviour).
     vision_scope: str = "shortlist"
+    # Fast picture matching (SigLIP) to rank scenes before the vision model. Used only once its
+    # model is downloaded from Settings; without it, ranking uses speech, motion, and sound.
+    image_matching: bool = True
 
     whisper_cpu_threads: int = 6
     whisper_num_workers: int = 1

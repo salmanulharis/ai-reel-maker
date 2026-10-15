@@ -5,6 +5,7 @@ import { api, formatElapsed } from "../services/api";
 import { useElapsed } from "../hooks/useElapsed";
 import { fill, messages } from "../i18n";
 import { Alert, CheckIcon, PageLoader, Spinner } from "../components/Feedback";
+import { DocLink } from "./Docs";
 import type { Job, JobSource } from "../types";
 
 const copy = messages.progress;
@@ -153,6 +154,7 @@ export default function Analysis() {
               <span>
                 {copy.elapsed}: <span className="tabular">{formatElapsed(elapsed.attempt, elapsed.running)}</span>
               </span>
+              {elapsed.running && <DocLink article="where-time-goes">{copy.slowHelp}</DocLink>}
               {elapsed.total - elapsed.attempt >= 1 && (
                 <span>
                   {copy.totalElapsed}: <span className="tabular">{formatElapsed(elapsed.total, elapsed.running)}</span>

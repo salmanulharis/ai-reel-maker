@@ -203,6 +203,9 @@ class HighlightConfig(BaseModel):
     length_mode: Literal["range", "auto"] = "range"
     # Set by "Shorter" on an automatic-length plan: only keep moments closer to the very best.
     auto_length_strict: bool = False
+    # False: ignore what is said and choose moments from pictures and sound only (no
+    # transcription, no speech scoring, no subtitles).
+    use_speech: bool = True
     style: Literal["auto", "informative", "exciting", "social", "educational", "custom"] = "auto"
     custom_focus: str = ""
     preserve_context: Literal["low", "balanced", "high"] = "balanced"
@@ -240,6 +243,9 @@ class HighlightConfig(BaseModel):
         if self.social_short:
             # Social platforms limit the length, so a short always uses its range.
             self.length_mode = "range"
+        if not self.use_speech:
+            # Subtitles come from the transcript, which is not made without speech.
+            self.subtitles = "none"
         if self.min_duration > self.max_duration:
             self.min_duration, self.max_duration = self.max_duration, self.min_duration
         if self.allow_repeated_content is None:

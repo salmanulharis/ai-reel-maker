@@ -111,6 +111,7 @@ export interface HighlightForm {
   min_duration: number;
   max_duration: number;
   length_mode: "range" | "auto";
+  use_speech: boolean;
   style: string;
   cropEnabled: boolean;
   crop: CropBox;
@@ -226,6 +227,17 @@ export interface OllamaStatus {
   runtime?: RuntimeStatus;
   test?: { state?: string; result?: AiTestResult | null };
   whisper_download?: { state?: string; model?: string | null; error?: string | null };
+  image_model?: ImageModelStatus;
+}
+
+export interface ImageModelStatus {
+  state: string;
+  files_done: number;
+  files_total: number;
+  error?: string | null;
+  installed: boolean;
+  size_mb: number;
+  runtime: boolean;
 }
 
 export interface OptimizationItem {

@@ -303,22 +303,35 @@ def shortlist_scenes(
     segment_scores: list[dict],
     highlight_seconds: float,
     scene_quality: dict[int, dict] | None = None,
+    visual_signal: dict[int, float] | None = None,
+    match: dict[int, dict] | None = None,
 ) -> set[int] | None:
     """Scenes worth the vision model's time, or None to analyze every scene.
 
-    Always kept: scenes with little speech, whose content is visual. Then scenes behind the
-    best-scored speech, until about three times the highlight length is covered. Black scenes
-    are left to the cheap scoring. Without a transcript, every scene is analyzed as before."""
-    if not segment_scores or len(scenes) <= _SHORTLIST_MIN_SCENES:
+    With speech: every scene with little speech (its content is visual), then the scenes behind
+    the best-scored speech, until about three times the highlight length is covered. Without
+    speech: the scenes with the strongest quick picture, motion, and sound signal, to the same
+    budget. Black scenes and scenes that look like an earlier one are left to quick scoring.
+    Without speech or quick signals, every scene is analyzed."""
+    if len(scenes) <= _SHORTLIST_MIN_SCENES:
+        return None
+    if not segment_scores and not visual_signal:
         return None
     quality = {int(k): v for k, v in (scene_quality or {}).items() if isinstance(v, dict)}
+    match = match or {}
+    signal = visual_signal or {}
     picked: set[int] = set()
+    excluded: set[int] = set()
     ranked: list[tuple[float, int, float]] = []
     for scene in scenes:
         scene_id = int(scene["scene_id"])
         start, end = float(scene["start"]), float(scene["end"])
         duration = max(end - start, 0.01)
-        if quality.get(scene_id, {}).get("black"):
+        if quality.get(scene_id, {}).get("black") or (match.get(scene_id) or {}).get("duplicate_of") is not None:
+            excluded.add(scene_id)
+            continue
+        if not segment_scores:
+            ranked.append((float(signal.get(scene_id, 0.0)), scene_id, duration))
             continue
         spoken = 0.0
         best = 0.0
@@ -331,8 +344,11 @@ def shortlist_scenes(
             best = max(best, float(score.get("importance") or 0) * 0.6 + float(score.get("information_density") or 0) * 0.4)
         if spoken / duration < _VISUAL_ONLY_SPEECH:
             picked.add(scene_id)
-        else:
-            ranked.append((best, scene_id, duration))
+            continue
+        interest = (match.get(scene_id) or {}).get("interest")
+        if interest is not None:
+            best = 0.75 * best + 0.25 * float(interest)
+        ranked.append((best, scene_id, duration))
     budget = max(1.0, highlight_seconds) * _SHORTLIST_COVERAGE
     covered = 0.0
     for best, scene_id, duration in sorted(ranked, reverse=True):
@@ -341,5 +357,6 @@ def shortlist_scenes(
         picked.add(scene_id)
         covered += duration
     if len(picked) >= len(scenes) * _SHORTLIST_ALL_SHARE:
-        return None
+        # Nearly everything qualifies: analyze every scene, except black and lookalike ones.
+        return {int(scene["scene_id"]) for scene in scenes} - excluded if excluded else None
     return picked

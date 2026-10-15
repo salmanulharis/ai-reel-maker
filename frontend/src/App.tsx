@@ -3,13 +3,14 @@ import { Navigate, NavLink, Route, Routes, useLocation } from "react-router-dom"
 import { messages } from "./i18n";
 import { OllamaStatus } from "./components/OllamaStatus";
 import { ThemeToggle } from "./components/ThemeToggle";
-import { FilmIcon, HistoryIcon, PlusIcon, SettingsIcon } from "./components/Feedback";
+import { BookIcon, FilmIcon, HistoryIcon, PlusIcon, SettingsIcon } from "./components/Feedback";
 import Dashboard from "./pages/Dashboard";
 import Analysis from "./pages/Analysis";
 import Review from "./pages/Review";
 import Result from "./pages/Result";
 import Settings from "./pages/Settings";
 import History from "./pages/JobHistory";
+import Docs from "./pages/Docs";
 
 const pages = messages.pages;
 
@@ -17,6 +18,7 @@ const pages = messages.pages;
 function pageHeading(pathname: string): [string, string] {
   if (pathname === "/history") return [pages.historyTitle, pages.historySubtitle];
   if (pathname === "/settings") return [pages.settingsTitle, pages.settingsSubtitle];
+  if (pathname === "/help") return [pages.helpTitle, pages.helpSubtitle];
   if (pathname.endsWith("/analysis")) return [pages.analysisTitle, pages.analysisSubtitle];
   if (pathname.endsWith("/review")) return [pages.reviewTitle, pages.reviewSubtitle];
   if (pathname.endsWith("/result")) return [pages.resultTitle, pages.resultSubtitle];
@@ -72,6 +74,10 @@ export default function App() {
             <SettingsIcon />
             {messages.nav.settings}
           </NavLink>
+          <NavLink to="/help">
+            <BookIcon />
+            {messages.nav.help}
+          </NavLink>
         </nav>
         <p className="privacy">{messages.privacy}</p>
       </aside>
@@ -95,6 +101,7 @@ export default function App() {
               <Route path="/jobs/:id/result" element={<Result />} />
               <Route path="/history" element={<History />} />
               <Route path="/settings" element={<Settings />} />
+              <Route path="/help" element={<Docs />} />
               <Route path="*" element={<Navigate to="/" replace />} />
             </Routes>
           </div>
