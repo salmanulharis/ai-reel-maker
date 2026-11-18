@@ -11,7 +11,6 @@ from flask import Flask
 
 from app.ai.ollama import OllamaError
 from app.analysis.pipeline import PipelineProgress, VideoAnalyzer
-from app.analysis.sequence_limits import clamp_plan_clips, sequence_cap
 from app.analysis.tighten import tighten_clips
 from app.config import get_settings
 from app.services.ollama_runtime import get_ollama_client
@@ -233,26 +232,11 @@ def _run_render(app: Flask, job_id: str) -> None:
         return
     plan = ClipPlan.model_validate(json.loads(plan_path.read_text(encoding="utf-8")))
     kept = [c for c in (manager.serialize(job).get("clips") or []) if c.get("kept", True)]
+    skipped_clips = 0
     if kept:
-        plan.clips = [
-            ClipPlanItem(
-                start=c["start"],
-                end=c["end"],
-                reason=c.get("reason") or "Selected moment",
-                score=c.get("score") or 0,
-                transcript=c.get("transcript") or "",
-                duration_reason=c.get("duration_reason") or "",
-                source_id=c.get("source_id") or "",
-                source_name=c.get("source_name") or "",
-                source_path=c.get("source_path")
-                or str(source_lookup.get(c.get("source_id") or "") or source),
-                short_index=int(c.get("short_index") or 0),
-            )
-            for c in kept
-        ]
-        plan.estimated_duration = sum(c.duration for c in plan.clips)
-
-    clamp_plan_clips(plan.clips, sequence_cap(config))
+        # The clips exactly as kept on the Review page: the planner already kept each one
+        # within the longest-clip setting, so anything longer was made longer on purpose.
+        plan.clips, skipped_clips = plan_items_from_clips(kept, source_lookup, source)
     plan.estimated_duration = sum(c.duration for c in plan.clips)
 
     render_settings = RenderSettings(
@@ -307,6 +291,11 @@ def _run_render(app: Flask, job_id: str) -> None:
         _emit(app, job_id, "job_log", payload)
 
     emit_log("Rendering highlight" if len(groups) == 1 else f"Rendering {len(groups)} shorts")
+    if skipped_clips:
+        emit_log(
+            f"Left out {skipped_clips} clip(s) whose end is not after the start. Check their times on the Review page.",
+            "WARNING",
+        )
     if tighten_note:
         emit_log(tighten_note)
     encoder = None
@@ -415,6 +404,40 @@ def _run_render(app: Flask, job_id: str) -> None:
         emit_log(str(exc), "ERROR")
         emit_log(f"Creating the video failed after {format_elapsed(took)}", "WARNING")
         _emit(app, job_id, "job_failed", {"error": str(exc)})
+
+
+def plan_items_from_clips(clips: list[dict], source_lookup: dict, source: Path) -> tuple[list[ClipPlanItem], int]:
+    """
+    Plan items for the kept clips, with their times exactly as saved (manual changes on the
+    Review page are kept, also when a clip is longer than the longest-clip setting). Clips whose
+    times are missing or whose end is not after the start are left out; returns how many.
+    """
+    items: list[ClipPlanItem] = []
+    skipped = 0
+    for c in clips:
+        try:
+            start, end = float(c["start"]), float(c["end"])
+        except (KeyError, TypeError, ValueError):
+            skipped += 1
+            continue
+        if not (end > start >= 0):
+            skipped += 1
+            continue
+        items.append(
+            ClipPlanItem(
+                start=start,
+                end=end,
+                reason=c.get("reason") or "Selected moment",
+                score=c.get("score") or 0,
+                transcript=c.get("transcript") or "",
+                duration_reason=c.get("duration_reason") or "",
+                source_id=c.get("source_id") or "",
+                source_name=c.get("source_name") or "",
+                source_path=c.get("source_path") or str(source_lookup.get(c.get("source_id") or "") or source),
+                short_index=int(c.get("short_index") or 0),
+            )
+        )
+    return items, skipped
 
 
 def render_groups(plan: ClipPlan, config: HighlightConfig, outputs: Path, ext: str) -> list[dict]:

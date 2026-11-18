@@ -9,7 +9,6 @@ import zipfile
 from pathlib import Path
 from typing import Callable
 
-from app.analysis.sequence_limits import clamp_plan_clips, sequence_cap
 from app.analysis.tighten import tighten_clips
 from app.video.captions import load_transcript
 from app.config import resolve_project_path
@@ -141,8 +140,8 @@ def build_editor_package(job: Job, job_dir: Path, clips: list[dict], probe: Prob
     A zip with the kept clips as timelines (FCPXML, Final Cut Pro 7 XML, EDL), subtitles when
     there is speech, and a README. Returns the zip bytes and a download file name.
 
-    Clips are limited to the longest-clip setting exactly as when the video is created, so the
-    timeline matches the rendered highlight (apart from fades, crop and aspect ratio).
+    Clips keep their times exactly as on the Review page and are tightened like the rendered
+    video, so the timeline matches it (apart from fades, crop and aspect ratio).
     """
     probe = probe or _default_probe
     config = HighlightConfig.model_validate(json.loads(job.config_json or "{}"))
@@ -158,9 +157,8 @@ def build_editor_package(job: Job, job_dir: Path, clips: list[dict], probe: Prob
             short_index=int(c.get("short_index") or 0),
         )
         for c in kept
-        if float(c["end"]) > float(c["start"])
+        if float(c["end"]) > float(c["start"]) >= 0
     ]
-    clamp_plan_clips(items, sequence_cap(config))
 
     sources = load_sources(job_dir) or [fallback_source(job.input_path, job.original_filename)]
     multi = len(sources) > 1
