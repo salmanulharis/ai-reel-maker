@@ -3,6 +3,7 @@ import { Navigate, NavLink, Route, Routes, useLocation } from "react-router-dom"
 import { messages } from "./i18n";
 import { OllamaStatus } from "./components/OllamaStatus";
 import { ThemeToggle } from "./components/ThemeToggle";
+import { useJobNotifications } from "./hooks/useJobNotifications";
 import { BookIcon, FilmIcon, HistoryIcon, PlusIcon, SettingsIcon } from "./components/Feedback";
 import Dashboard from "./pages/Dashboard";
 import Analysis from "./pages/Analysis";
@@ -29,10 +30,12 @@ export default function App() {
   const location = useLocation();
   const mainRef = useRef<HTMLElement>(null);
   const [title, subtitle] = pageHeading(location.pathname);
+  // "✓ " or "⚠ " while a job finished in the background and the app is not in front yet.
+  const badge = useJobNotifications();
 
   useEffect(() => {
-    document.title = `${title} · ${messages.appName}`;
-  }, [title]);
+    document.title = `${badge}${title} · ${messages.appName}`;
+  }, [title, badge]);
 
   // A new page starts at the top, like a full page load would.
   useEffect(() => {
