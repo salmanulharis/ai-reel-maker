@@ -393,6 +393,25 @@ export function HighlightConfigPanel({
               </p>
             )}
           </div>
+          {form.use_speech && form.subtitles === "burned" && (
+            <div className="field">
+              <label htmlFor="captionStyle">{copy.captionStyle}</label>
+              <select
+                id="captionStyle"
+                aria-describedby="captionStyle-hint"
+                value={form.caption_style}
+                onChange={(e) => update({ caption_style: e.target.value as HighlightForm["caption_style"] })}
+              >
+                <option value="plain">{copy.captionPlain}</option>
+                <option value="clean">{copy.captionClean}</option>
+                <option value="bold">{copy.captionBold}</option>
+                <option value="boxed">{copy.captionBoxed}</option>
+              </select>
+              <p className="field-hint" id="captionStyle-hint">
+                {form.caption_style === "plain" ? copy.captionPlainHint : copy.captionStyledHint}
+              </p>
+            </div>
+          )}
           <div className="field">
             <label htmlFor="transition">{copy.transition}</label>
             <select id="transition" value={form.transition} onChange={(e) => update({ transition: e.target.value })}>
@@ -627,6 +646,7 @@ export const defaultForm = (): HighlightForm => ({
   social_short: false,
   aspect_ratio: "original",
   subtitles: "none",
+  caption_style: "plain",
   transition: "cut",
   audio_focus: "balanced",
   frame_rate: "source",

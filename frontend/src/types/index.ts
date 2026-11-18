@@ -143,6 +143,7 @@ export interface HighlightForm {
   social_short: boolean;
   aspect_ratio: string;
   subtitles: string;
+  caption_style: "plain" | "clean" | "bold" | "boxed";
   transition: string;
   audio_focus: "balanced" | "natural" | "dialogue";
   frame_rate: string;
