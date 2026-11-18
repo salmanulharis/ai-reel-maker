@@ -6,7 +6,36 @@ const SERVER_MESSAGES: Record<string, string> = {
   "file is required": "Choose a video file first.",
   "no output": "This highlight has no finished video yet.",
   "invalid model name": "That model name is not valid.",
+  "no clips to export": "Keep at least one clip to download a timeline.",
+  "source video missing": "The original video file is missing, so a timeline can't be made.",
 };
+
+/** Download a file from the API, with a readable error instead of a JSON page when it fails. */
+async function download(path: string, fallbackName: string): Promise<string> {
+  let response: Response;
+  try {
+    response = await fetch(path);
+  } catch {
+    throw new Error(messages.errors.offline);
+  }
+  if (!response.ok) {
+    const data = await response.json().catch(() => ({}));
+    throw new Error(friendlyError(response.status, (data as { error?: string }).error));
+  }
+  const disposition = response.headers.get("Content-Disposition") || "";
+  const match = /filename\*?=(?:UTF-8'')?"?([^";]+)"?/i.exec(disposition);
+  const name = match ? decodeURIComponent(match[1]) : fallbackName;
+  const url = URL.createObjectURL(await response.blob());
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = name;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  // Give the browser time to start saving before the address is released.
+  setTimeout(() => URL.revokeObjectURL(url), 30_000);
+  return name;
+}
 
 /** A message people can act on, instead of an HTTP status or a raw server error. */
 export function friendlyError(status: number, message?: string): string {
@@ -166,6 +195,9 @@ export const api = {
   logs: (id: string) => http<{ logs: Array<{ level: string; message: string; ts?: number }> }>(`/api/jobs/${id}/logs`),
   analysis: (id: string) => http<Record<string, unknown>>(`/api/jobs/${id}/analysis`),
   timeline: (id: string) => http<Record<string, unknown>>(`/api/jobs/${id}/timeline`),
+  /** Save the kept clips as timelines for video editors (zip). Returns the saved file name. */
+  exportForEditors: (id: string) =>
+    download(`/api/jobs/${encodeURIComponent(id)}/export/editor`, "highlight-for-editors.zip"),
   /** Strong moments the current clips leave out, best first. */
   moments: (id: string, limit?: number) =>
     http<{ moments: Moment[]; available: boolean }>(

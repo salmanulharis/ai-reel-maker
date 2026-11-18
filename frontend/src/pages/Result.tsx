@@ -3,6 +3,7 @@ import { useNavigate, useParams } from "react-router-dom";
 import { api, formatBytes, formatElapsed, formatTime } from "../services/api";
 import { fill, messages } from "../i18n";
 import { Alert, CheckIcon, InlineStatus, PageLoader, Spinner } from "../components/Feedback";
+import { EditorExport } from "../components/EditorExport";
 import type { Job } from "../types";
 
 const copy = messages.result;
@@ -59,6 +60,7 @@ export default function Result() {
         <a className="btn primary lg" href={`/api/jobs/${id}/download`} download>
           {copy.download}
         </a>
+        <EditorExport jobId={id} disabled={clips.every((c) => c.kept === false)} />
         <button className="btn" disabled={folder === "busy"} aria-busy={folder === "busy"} onClick={openFolder}>
           {folder === "busy" && <Spinner />}
           {copy.openFolder}
