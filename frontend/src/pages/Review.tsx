@@ -1,8 +1,9 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { api, formatElapsed, formatTime } from "../services/api";
 import { fill, messages } from "../i18n";
-import { Alert, FilmIcon, InlineStatus, PageLoader, Spinner } from "../components/Feedback";
+import { Alert, FilmIcon, InlineStatus, PageLoader, PlayIcon, Spinner } from "../components/Feedback";
+import { ClipPreviewPanel, useClipPreview } from "../components/ClipPreview";
 import type { Clip, Job, JobSource } from "../types";
 
 const copy = messages.review;
@@ -20,6 +21,12 @@ export default function Review() {
   const [duration, setDuration] = useState(0);
   const [pending, setPending] = useState("");
   const [error, setError] = useState("");
+  const sources: JobSource[] =
+    job?.sources && job.sources.length
+      ? job.sources
+      : [{ id: "v0", filename: job?.original_filename || "", duration }];
+  const preview = useClipPreview(id || "", clips, sources);
+  const previewPanel = useRef<HTMLElement>(null);
 
   async function refresh() {
     if (!id) return;
@@ -51,16 +58,36 @@ export default function Review() {
     save(clips.map((c, i) => (i === index ? { ...c, ...next } : c)));
   }
 
+  /** Change a start or end, and show the new cut point in the preview when it is paused there. */
+  function setEdge(index: number, edge: "start" | "end", value: number) {
+    patch(index, { [edge]: value });
+    preview.showEdge(index, edge, value);
+  }
+
   function move(index: number, direction: -1 | 1) {
     const next = index + direction;
     if (next < 0 || next >= clips.length) return;
     const copyOfClips = [...clips];
     [copyOfClips[index], copyOfClips[next]] = [copyOfClips[next], copyOfClips[index]];
+    // The preview follows the clip it was showing to its new place.
+    if (preview.selected === index) preview.retarget(next);
+    else if (preview.selected === next) preview.retarget(index);
     save(copyOfClips);
+  }
+
+  function previewClip(index: number) {
+    preview.playClip(index);
+    const panel = previewPanel.current;
+    if (!panel) return;
+    const box = panel.getBoundingClientRect();
+    if (box.top >= 0 && box.bottom <= window.innerHeight) return;
+    const reduce = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+    panel.scrollIntoView({ block: "nearest", behavior: reduce ? "auto" : "smooth" });
   }
 
   async function generate() {
     if (!id) return;
+    preview.pause();
     setPending("render");
     setError("");
     try {
@@ -74,6 +101,7 @@ export default function Review() {
 
   async function regenerate(preset: string) {
     if (!id) return;
+    preview.clear();
     setPending(preset);
     setError("");
     try {
@@ -92,10 +120,6 @@ export default function Review() {
   const estimated = kept.reduce((s, c) => s + (c.end - c.start), 0);
   const autoLength = (job.config as { length_mode?: string } | undefined)?.length_mode === "auto";
   const over = !autoLength && estimated > job.max_duration;
-  const sources: JobSource[] =
-    job.sources && job.sources.length
-      ? job.sources
-      : [{ id: "v0", filename: job.original_filename, duration }];
   const multi = sources.length > 1;
 
   const adjust = (
@@ -189,6 +213,12 @@ export default function Review() {
                   }}
                 />
               ))}
+              {preview.selected >= 0 && preview.loadedSource === source.id && sourceDuration > 0 && (
+                <div
+                  className="playhead"
+                  style={{ left: `${Math.min(100, Math.max(0, (preview.time / sourceDuration) * 100))}%` }}
+                />
+              )}
             </div>
           </div>
         );
@@ -211,17 +241,32 @@ export default function Review() {
         })}
       </div>
 
+      <div className="review-body">
+      <ClipPreviewPanel
+        ref={previewPanel}
+        preview={preview}
+        clips={clips}
+        sources={sources}
+        onTrim={setEdge}
+      />
       <div className="clip-grid">
       {clips.map((clip, i) => {
         const removed = clip.kept === false;
         const label = fill(copy.clipNumber, { n: i + 1 });
+        const inPreview = preview.selected === i;
         return (
-          <article className={`clip-card ${removed ? "removed" : ""}`} key={i} aria-label={label}>
+          <article
+            className={`clip-card ${removed ? "removed" : ""} ${inPreview ? "selected" : ""}`}
+            key={i}
+            aria-label={label}
+            aria-current={inPreview ? "true" : undefined}
+          >
             <header>
               <strong>
                 {label} · {formatTime(clip.start)}–{formatTime(clip.end)} · {(clip.end - clip.start).toFixed(1)}s
               </strong>
               <span className="tag-row">
+                {inPreview && <span className="tag accent">{copy.previewing}</span>}
                 {removed && <span className="tag">{copy.removed}</span>}
                 <span className="score" title={copy.scoreHint}>
                   {fill(copy.score, { n: Math.round((clip.score || 0) * 100) })}
@@ -250,7 +295,7 @@ export default function Review() {
                   step="0.1"
                   min={0}
                   value={clip.start}
-                  onChange={(e) => patch(i, { start: Number(e.target.value) })}
+                  onChange={(e) => setEdge(i, "start", Number(e.target.value))}
                 />
               </div>
               <div className="field">
@@ -261,11 +306,20 @@ export default function Review() {
                   step="0.1"
                   min={0}
                   value={clip.end}
-                  onChange={(e) => patch(i, { end: Number(e.target.value) })}
+                  onChange={(e) => setEdge(i, "end", Number(e.target.value))}
                 />
               </div>
             </div>
             <div className="btn-row clip-actions">
+              <button
+                type="button"
+                className="btn sm"
+                aria-label={fill(copy.previewClipLabel, { clip: label })}
+                onClick={() => previewClip(i)}
+              >
+                <PlayIcon size={14} />
+                {copy.previewClip}
+              </button>
               <button
                 className={`btn sm ${removed ? "primary" : ""}`}
                 aria-label={`${removed ? copy.keep : copy.remove} ${label}`}
@@ -273,13 +327,13 @@ export default function Review() {
               >
                 {removed ? copy.keep : copy.remove}
               </button>
-              <button className="btn sm" disabled={removed} onClick={() => patch(i, { start: Math.max(0, clip.start - 0.5) })}>
+              <button className="btn sm" disabled={removed} onClick={() => setEdge(i, "start", Math.max(0, clip.start - 0.5))}>
                 {copy.extend}
               </button>
               <button
                 className="btn sm"
                 disabled={removed}
-                onClick={() => patch(i, { end: Math.max(clip.start + 0.4, clip.end - 0.4) })}
+                onClick={() => setEdge(i, "end", Math.max(clip.start + 0.4, clip.end - 0.4))}
               >
                 {copy.trim}
               </button>
@@ -305,6 +359,7 @@ export default function Review() {
           </article>
         );
       })}
+      </div>
       </div>
 
       {adjust}
