@@ -174,7 +174,7 @@ def test_renderer_burns_each_clips_own_subtitles(tmp_path: Path):
         clip_subtitles=subtitles,
     )
     assert asked == [(0, 0, 1280, 720), (1, 5, 1280, 720), (2, 9, 1280, 720)]
-    cuts = [cmd for cmd in commands if any(str(part).endswith(".mp4") and "clip_" in str(part) for part in cmd[-1:])]
+    cuts = [cmd for cmd in commands if Path(cmd[-1]).name.startswith("clip_")]
     filters = [cmd[cmd.index("-vf") + 1] for cmd in cuts]
     assert "sub_0.ass" in filters[0] and "subtitles=" in filters[0]
     assert "subtitles=" not in filters[1]
