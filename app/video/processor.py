@@ -47,7 +47,10 @@ class VideoProcessor:
         input_path: str | Path,
         output_path: str | Path,
         timestamp: float,
+        width: int | None = None,
     ) -> list[str]:
+        """One frame as a JPEG; `width` scales it down (keeping the shape) for previews."""
+        scale = ["-vf", f"scale={int(width)}:-2:flags=lanczos"] if width else []
         return [
             "ffmpeg",
             "-hide_banner",
@@ -57,6 +60,7 @@ class VideoProcessor:
             "-i",
             safe_path_argument(input_path),
             "-an",
+            *scale,
             "-frames:v",
             "1",
             "-update",

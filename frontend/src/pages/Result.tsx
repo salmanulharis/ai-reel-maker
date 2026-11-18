@@ -1,9 +1,10 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { api, formatBytes, formatElapsed, formatTime } from "../services/api";
 import { fill, messages } from "../i18n";
 import { Alert, CheckIcon, InlineStatus, PageLoader, Spinner } from "../components/Feedback";
 import { EditorExport } from "../components/EditorExport";
+import { CoverPicker } from "../components/CoverPicker";
 import type { Job } from "../types";
 
 const copy = messages.result;
@@ -15,6 +16,7 @@ export default function Result() {
   const [details, setDetails] = useState(false);
   const [folder, setFolder] = useState<"" | "busy" | "done">("");
   const [error, setError] = useState("");
+  const player = useRef<HTMLVideoElement>(null);
 
   useEffect(() => {
     if (!id) return;
@@ -55,7 +57,7 @@ export default function Result() {
         </span>
         {copy.ready}
       </h3>
-      <video className="preview" src={`/api/media/${id}/output`} controls />
+      <video ref={player} className="preview" src={`/api/media/${id}/output`} controls />
       <div className="btn-row result-actions">
         <a className="btn primary lg" href={`/api/jobs/${id}/download`} download>
           {copy.download}
@@ -74,6 +76,10 @@ export default function Result() {
         {folder === "done" && <InlineStatus ok>{copy.openedFolder}</InlineStatus>}
       </div>
       {error && <Alert>{error}</Alert>}
+
+      {output && (
+        <CoverPicker jobId={id} clips={clips} getPlayerTime={() => player.current?.currentTime} />
+      )}
 
       <div className="meta-grid">
         <div>

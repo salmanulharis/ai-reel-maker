@@ -1,6 +1,7 @@
 import { messages } from "../i18n";
 import type { HighlightForm, Job, Moment, OllamaStatus, OptimizationPlan } from "../types";
 import type { Preset } from "./presets";
+import { coverUrl } from "./cover";
 
 // Short server messages that are worth rewording for people.
 const SERVER_MESSAGES: Record<string, string> = {
@@ -11,6 +12,7 @@ const SERVER_MESSAGES: Record<string, string> = {
   "source video missing": "The original video file is missing, so a timeline can't be made.",
   "preset name is required": "Give the preset a name.",
   "preset not found": "That preset no longer exists.",
+  "could not read a frame": "That frame couldn't be read from the video. Try another moment.",
 };
 
 /** Download a file from the API, with a readable error instead of a JSON page when it fails. */
@@ -199,6 +201,9 @@ export const api = {
   logs: (id: string) => http<{ logs: Array<{ level: string; message: string; ts?: number }> }>(`/api/jobs/${id}/logs`),
   analysis: (id: string) => http<Record<string, unknown>>(`/api/jobs/${id}/analysis`),
   timeline: (id: string) => http<Record<string, unknown>>(`/api/jobs/${id}/timeline`),
+  /** Save a full-size frame of the finished highlight as a JPEG. Returns the saved file name. */
+  downloadCover: (id: string, seconds: number) =>
+    download(`${coverUrl(id, seconds)}&download=1`, "highlight-cover.jpg"),
   presets: () => http<{ presets: Preset[] }>("/api/presets"),
   savePreset: (name: string, form: Partial<HighlightForm>) =>
     http<{ presets: Preset[] }>("/api/presets", {

@@ -375,6 +375,17 @@
     "clipReason": "Why it was chosen",
     "clipScore": "Score"
   },
+  "cover": {
+    "title": "Cover image",
+    "hint": "A still to use as the thumbnail when you post the video. Pick a suggested frame, or pause the video above where you like and use that frame.",
+    "frames": "Frames to choose from",
+    "frameAt": "Frame at {time}",
+    "fromPlayer": "{time} (from the player)",
+    "empty": "Pause the video above where you like, then use that frame.",
+    "usePlayer": "Use the frame in the player",
+    "download": "Download cover",
+    "saved": "Saved {name}."
+  },
   "presets": {
     "label": "My presets",
     "choose": "Choose a preset…",

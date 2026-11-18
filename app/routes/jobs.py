@@ -4,12 +4,15 @@ import io
 import json
 import subprocess
 import sys
+from pathlib import Path
 
 from flask import Blueprint, jsonify, request, send_file
 
 from app.analysis.pipeline import alternative_moments, plan_from_cache
 from app.config import get_settings
 from app.models.schemas import HighlightConfig
+from app.services.cover import CoverError, cover_image
+from app.services.cover import parse_request as parse_cover_request
 from app.services.editor_export import ExportError, build_editor_package
 from app.services.job_manager import get_job_manager
 from app.services.storage import delete_job_files
@@ -229,6 +232,29 @@ def export_for_editors(job_id: str):
     except ExportError as exc:
         return jsonify({"error": str(exc)}), exc.status
     return send_file(io.BytesIO(data), mimetype="application/zip", as_attachment=True, download_name=filename)
+
+
+@jobs_bp.get("/jobs/<job_id>/cover")
+def job_cover(job_id: str):
+    """A frame of the finished highlight: ?t=seconds, &width= for a small preview, &download=1 to save."""
+    manager = get_job_manager()
+    job = manager.get(job_id)
+    if not job:
+        return jsonify({"error": "not found"}), 404
+    try:
+        seconds, width = parse_cover_request(request.args.get("t"), request.args.get("width"))
+        path = cover_image(manager.job_dir(job_id), seconds, width)
+    except CoverError as exc:
+        return jsonify({"error": str(exc)}), exc.status
+    download = request.args.get("download") == "1"
+    stem = Path(job.original_filename or "highlight").stem or "highlight"
+    return send_file(
+        path,
+        mimetype="image/jpeg",
+        as_attachment=download,
+        download_name=f"{stem}-cover.jpg",
+        max_age=0 if download else 3600,
+    )
 
 
 @jobs_bp.post("/jobs/<job_id>/clips")
