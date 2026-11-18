@@ -252,13 +252,14 @@ def test_export_zip_contents(client):
     assert "2 clips" in readme and "25 fps" in readme
 
 
-def test_export_follows_the_longest_clip_setting_like_the_render(client):
+def test_export_keeps_clips_made_longer_by_hand(client):
+    # The longest-clip setting is 2 s, but the clip was made 10 s long on the Review page.
     job_id = _job(client, {"min_duration": 20, "max_duration": 30, "sequence_duration_mode": "custom", "max_sequence_duration": 2})
     client.post(f"/api/jobs/{job_id}/clips", json={"clips": [{"start": 10, "end": 20, "reason": "r"}]})
     archive = zipfile.ZipFile(io.BytesIO(client.get(f"/api/jobs/{job_id}/export/editor").data))
     xml = ET.fromstring(archive.read("highlight.xml").decode("utf-8").split("\n", 2)[2])
     clip = xml.find("sequence/media/video/track/clipitem")
-    assert int(clip.find("out").text) - int(clip.find("in").text) == 50  # 2 s at 25 fps
+    assert (clip.find("in").text, clip.find("out").text) == ("250", "500")  # all 10 s at 25 fps
 
 
 def test_export_without_speech_has_no_subtitles(client):
