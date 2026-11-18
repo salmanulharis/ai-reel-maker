@@ -1,9 +1,10 @@
 import type { Clip } from "../types";
 
 /** Address of a frame of the finished highlight; `width` asks for a small preview. */
-export function coverUrl(jobId: string, seconds: number, width?: number): string {
+export function coverUrl(jobId: string, seconds: number, width?: number, short?: number): string {
   const params = new URLSearchParams({ t: seconds.toFixed(2) });
   if (width) params.set("width", String(width));
+  if (short) params.set("short", String(short));
   return `/api/jobs/${encodeURIComponent(jobId)}/cover?${params}`;
 }
 

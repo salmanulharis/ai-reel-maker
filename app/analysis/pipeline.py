@@ -404,24 +404,12 @@ class VideoAnalyzer:
         progress.stage("repetition", "done")
 
         progress.stage("planning", "running")
-        plan = self.optimizer.select(
+        plan = self.optimizer.plan(
             candidates,
-            min_duration=config.min_duration,
-            max_duration=config.max_duration,
-            must_include=config.must_include,
-            must_exclude=config.must_exclude,
-            order_mode=config.order_mode,
+            config,
             source_duration=source_duration,
             similarity_fn=similarity_fn,
-            max_sequence_duration=config.max_sequence_duration,
-            min_sequence_duration=config.min_sequence_duration,
-            sequence_duration_mode=config.sequence_duration_mode,
-            allow_repeated_content=bool(config.allow_repeated_content),
-            max_repeated_duration=config.max_repeated_duration,
             repeat_threshold=self.repetition.threshold_for(config.repetition_mode),
-            content_priorities=config.content_priorities,
-            length_mode=config.length_mode,
-            auto_length_strict=config.auto_length_strict,
         )
         plan_data = plan.model_dump()
         _write(job_dir / "clip_plan.json", plan_data)
@@ -501,24 +489,12 @@ class VideoAnalyzer:
         progress.stage("repetition", "done")
 
         progress.stage("planning", "running")
-        plan = self.optimizer.select(
+        plan = self.optimizer.plan(
             candidates,
-            min_duration=config.min_duration,
-            max_duration=config.max_duration,
-            must_include=config.must_include,
-            must_exclude=config.must_exclude,
-            order_mode=config.order_mode,
+            config,
             source_duration=total_duration,
             similarity_fn=similarity_fn,
-            max_sequence_duration=config.max_sequence_duration,
-            min_sequence_duration=config.min_sequence_duration,
-            sequence_duration_mode=config.sequence_duration_mode,
-            allow_repeated_content=bool(config.allow_repeated_content),
-            max_repeated_duration=config.max_repeated_duration,
             repeat_threshold=self.repetition.threshold_for(config.repetition_mode),
-            content_priorities=config.content_priorities,
-            length_mode=config.length_mode,
-            auto_length_strict=config.auto_length_strict,
         )
         used = {c.source_id for c in plan.clips if c.source_id}
         if used and len(sources) > 1:
@@ -874,24 +850,12 @@ def plan_from_cache(cache: dict, config: HighlightConfig, settings: Settings) ->
     similarity_fn = analyzer.as_similarity_fn(candidates) if candidates else None
     optimizer = ClipOptimizer()
     meta = cache.get("metadata") or {}
-    plan = optimizer.select(
+    plan = optimizer.plan(
         candidates,
-        min_duration=config.min_duration,
-        max_duration=config.max_duration,
-        must_include=config.must_include,
-        must_exclude=config.must_exclude,
-        order_mode=config.order_mode,
+        config,
         source_duration=float(meta.get("duration") or 0),
         similarity_fn=similarity_fn,
-        max_sequence_duration=config.max_sequence_duration,
-        min_sequence_duration=config.min_sequence_duration,
-        sequence_duration_mode=config.sequence_duration_mode,
-        allow_repeated_content=bool(config.allow_repeated_content),
-        max_repeated_duration=config.max_repeated_duration,
         repeat_threshold=analyzer.threshold_for(config.repetition_mode),
-        content_priorities=config.content_priorities,
-        length_mode=config.length_mode,
-        auto_length_strict=config.auto_length_strict,
     )
     return plan.model_dump()
 

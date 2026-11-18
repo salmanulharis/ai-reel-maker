@@ -2,10 +2,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from flask import Blueprint, abort, send_file
+from flask import Blueprint, abort, request, send_file
 
 from app.config import get_settings
 from app.services.job_manager import get_job_manager
+from app.services.outputs import ShortParamError, find_output, parse_short
 from app.utils.security import is_relative_to
 from app.video.sources import load_sources, lookup_path
 
@@ -65,13 +66,16 @@ def source_media_by_id(job_id: str, source_id: str):
 
 @media_bp.get("/media/<job_id>/output")
 def output_media(job_id: str):
+    """The finished highlight, or ?short=N for one of several shorts."""
     manager = get_job_manager()
     job = manager.get(job_id)
     if not job:
         abort(404)
-    outputs = manager.job_dir(job_id) / "outputs"
-    files = sorted(outputs.glob("highlight.*"))
-    video = next((f for f in files if f.suffix.lower() in {".mp4", ".webm"}), None)
+    try:
+        short = parse_short(request.args.get("short"))
+    except ShortParamError:
+        abort(400)
+    video = find_output(manager.job_dir(job_id), short)
     if not video or not is_relative_to(video, manager.job_dir(job_id)):
         abort(404)
     return send_file(video)

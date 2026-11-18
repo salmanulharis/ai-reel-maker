@@ -89,8 +89,42 @@ export function insertIndex(clips: Clip[], moment: Moment, sources: JobSource[],
   return after < 0 ? clips.length : after;
 }
 
+/** The short a clip belongs to (0 for a single highlight). */
+export function shortIndex(item: Clip | Moment): number {
+  const value = Number((item as Clip).short_index || 0);
+  return Number.isFinite(value) && value > 0 ? Math.trunc(value) : 0;
+}
+
+/** The short whose clips are closest in time to a moment, in the same video (0 when none). */
+export function nearestShort(clips: Clip[], moment: Moment, sources: JobSource[]): number {
+  const middle = (moment.start + moment.end) / 2;
+  const source = clipSourceId(moment, sources);
+  let best = clips.length ? shortIndex(clips[0]) : 0;
+  let bestDistance = Infinity;
+  for (const clip of clips) {
+    if (clipSourceId(clip, sources) !== source) continue;
+    const distance = Math.abs((clip.start + clip.end) / 2 - middle);
+    if (distance < bestDistance) {
+      bestDistance = distance;
+      best = shortIndex(clip);
+    }
+  }
+  return best;
+}
+
+/** Where a moment goes in a short: among that short's clips by time, or after the last one. */
+export function insertIndexInShort(clips: Clip[], moment: Moment, short: number): number {
+  let last = -1;
+  for (let i = 0; i < clips.length; i += 1) {
+    if (shortIndex(clips[i]) !== short) continue;
+    if (clips[i].start > moment.start) return i;
+    last = i;
+  }
+  return last >= 0 ? last + 1 : clips.length;
+}
+
 /** A kept clip made from a suggested moment. */
-export function momentToClip(moment: Moment): Clip {
+export function momentToClip(moment: Moment, short = 0): Clip {
   return {
     start: moment.start,
     end: moment.end,
@@ -101,5 +135,6 @@ export function momentToClip(moment: Moment): Clip {
     source_id: moment.source_id,
     source_name: moment.source_name,
     kept: true,
+    ...(short > 0 ? { short_index: short } : {}),
   };
 }

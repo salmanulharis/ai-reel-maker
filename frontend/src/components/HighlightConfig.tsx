@@ -109,7 +109,8 @@ export function HighlightConfigPanel({
   sourceFps?: number;
 }) {
   const update = (patch: Partial<HighlightForm>) => setForm({ ...form, ...patch });
-  const autoLength = form.length_mode === "auto" && !form.social_short;
+  const shortsMode = form.shorts_count >= 2;
+  const autoLength = form.length_mode === "auto" && !form.social_short && !shortsMode;
   const isPreset = !autoLength && PRESETS.some(([a, b]) => a === form.min_duration && b === form.max_duration);
   const [customOpen, setCustomOpen] = useState(false);
   const showCustom = customOpen || !isPreset;
@@ -180,7 +181,7 @@ export function HighlightConfigPanel({
                 <input
                   type="checkbox"
                   checked={autoLength}
-                  disabled={form.social_short}
+                  disabled={form.social_short || shortsMode}
                   onChange={(e) => update({ length_mode: e.target.checked ? "auto" : "range" })}
                 />
                 <span>{copy.noLimit}</span>
@@ -192,6 +193,25 @@ export function HighlightConfigPanel({
             {swapped && <p className="field-hint warn span-2">{copy.rangeSwap}</p>}
           </div>
         )}
+        <div className="field shorts-field">
+          <label htmlFor="shorts">{copy.make}</label>
+          <select
+            id="shorts"
+            aria-describedby="shorts-hint"
+            value={String(shortsMode ? form.shorts_count : 0)}
+            onChange={(e) => update({ shorts_count: Number(e.target.value) })}
+          >
+            <option value="0">{copy.makeOne}</option>
+            {[2, 3, 4, 5, 6, 8, 10].map((n) => (
+              <option key={n} value={n}>
+                {fill(copy.makeShorts, { n })}
+              </option>
+            ))}
+          </select>
+          <p className="field-hint" id="shorts-hint">
+            {shortsMode ? copy.makeShortsHint : copy.makeOneHint}
+          </p>
+        </div>
       </fieldset>
 
       <fieldset className="config-section">
@@ -683,6 +703,7 @@ export const defaultForm = (): HighlightForm => ({
   caption_style: "plain",
   tighten: "off",
   reframe: "subject",
+  shorts_count: 0,
   transition: "cut",
   audio_focus: "balanced",
   frame_rate: "source",

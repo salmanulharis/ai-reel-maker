@@ -14,10 +14,12 @@ interface Props {
   clips: Clip[];
   /** Where the highlight player is, in seconds (undefined when unknown). */
   getPlayerTime: () => number | undefined;
+  /** Short number (1-based) when the job makes several shorts. */
+  short?: number;
 }
 
 /** Choose a frame of the finished highlight and save it as a cover (thumbnail) image. */
-export function CoverPicker({ jobId, clips, getPlayerTime }: Props) {
+export function CoverPicker({ jobId, clips, getPlayerTime, short }: Props) {
   const suggestions = useMemo(() => coverSuggestions(clips), [clips]);
   const [fromPlayer, setFromPlayer] = useState<number | null>(null);
   const [selected, setSelected] = useState<number | null>(suggestions[0] ?? null);
@@ -51,7 +53,7 @@ export function CoverPicker({ jobId, clips, getPlayerTime }: Props) {
     setBusy(true);
     setError("");
     try {
-      setSaved(await api.downloadCover(jobId, selected));
+      setSaved(await api.downloadCover(jobId, selected, short));
     } catch (err) {
       setError((err as Error).message);
     } finally {
@@ -80,7 +82,7 @@ export function CoverPicker({ jobId, clips, getPlayerTime }: Props) {
                 onClick={() => choose(time)}
               >
                 <img
-                  src={coverUrl(jobId, time, PREVIEW_WIDTH)}
+                  src={coverUrl(jobId, time, PREVIEW_WIDTH, short)}
                   alt=""
                   loading="lazy"
                   onError={() => setBroken((list) => [...list, time])}

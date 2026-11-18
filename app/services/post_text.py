@@ -173,8 +173,15 @@ def _prompt(spoken: list[str], seen: list[str], config: HighlightConfig, name: s
     )
 
 
-def suggest(job, job_dir: Path, clips: list[dict], settings, client=None) -> dict:
-    """Suggestions for posting this highlight; saved in the job's outputs folder."""
+def _result_path(job_dir: Path, short: int | None) -> Path:
+    name = RESULT_FILE if short is None else f"post_text_short_{short:02d}.json"
+    return job_dir / "outputs" / name
+
+
+def suggest(job, job_dir: Path, clips: list[dict], settings, client=None, short: int | None = None) -> dict:
+    """Suggestions for posting this highlight (or short number `short`); saved with the job."""
+    if short is not None:
+        clips = [c for c in clips if int(c.get("short_index") or 0) == short - 1]
     if not any(c.get("kept") is not False for c in clips):
         raise PostTextError("no clips to describe")
     config = HighlightConfig.model_validate(json.loads(job.config_json or "{}"))
@@ -202,14 +209,14 @@ def suggest(job, job_dir: Path, clips: list[dict], settings, client=None) -> dic
         note = "There is no speech or scene description to work from."
     if result is None:
         result = {**simple_suggestion(spoken, seen, name), "source": "simple", "note": note}
-    outputs = job_dir / "outputs"
-    outputs.mkdir(parents=True, exist_ok=True)
-    (outputs / RESULT_FILE).write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
+    path = _result_path(job_dir, short)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
     return result
 
 
-def saved(job_dir: Path) -> dict | None:
-    path = job_dir / "outputs" / RESULT_FILE
+def saved(job_dir: Path, short: int | None = None) -> dict | None:
+    path = _result_path(job_dir, short)
     if not path.is_file():
         return None
     try:

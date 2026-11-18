@@ -18,6 +18,9 @@ export default function Result() {
   const [folder, setFolder] = useState<"" | "busy" | "done">("");
   const [error, setError] = useState("");
   const player = useRef<HTMLVideoElement>(null);
+  // With several shorts: one player per short, and which short the cover and text are for.
+  const shortPlayers = useRef<Record<number, HTMLVideoElement | null>>({});
+  const [activeShort, setActiveShort] = useState(0);
 
   useEffect(() => {
     if (!id) return;
@@ -43,8 +46,15 @@ export default function Result() {
 
   if (!job || !id) return error ? <Alert>{error}</Alert> : <PageLoader />;
   const original = job.metadata?.duration || 0;
-  const output = job.outputs?.[0];
-  const highlight = output?.duration || 0;
+  const shorts = (job.outputs || [])
+    .filter((item) => item.kind === "short")
+    .map((item) => ({ ...item, number: Number(String(item.version_label).replace(/\D/g, "")) || 0 }))
+    .filter((item) => item.number > 0)
+    .sort((a, b) => a.number - b.number);
+  const shortsMode = shorts.length > 0;
+  const output = shortsMode ? undefined : job.outputs?.find((item) => item.kind !== "short") || job.outputs?.[0];
+  const highlight = shortsMode ? shorts.reduce((sum, item) => sum + (item.duration || 0), 0) : output?.duration || 0;
+  const current = shorts.find((item) => item.number === activeShort) || shorts[0];
   const reduction = original && highlight ? `${Math.round((1 - highlight / original) * 100)}%` : "—";
   const clips = job.clips || [];
   const timing = job.timing;
@@ -56,13 +66,47 @@ export default function Result() {
         <span className="check-icon">
           <CheckIcon size={16} />
         </span>
-        {copy.ready}
+        {shortsMode ? fill(copy.readyShorts, { n: shorts.length }) : copy.ready}
       </h3>
-      <video ref={player} className="preview" src={`/api/media/${id}/output`} controls />
+      {shortsMode ? (
+        <div className="shorts-grid">
+          {shorts.map((item) => (
+            <article key={item.number} className="short-card" aria-label={fill(copy.shortLabel, { n: item.number })}>
+              <video
+                ref={(el) => {
+                  shortPlayers.current[item.number] = el;
+                }}
+                className="preview"
+                src={`/api/media/${id}/output?short=${item.number}`}
+                preload="metadata"
+                controls
+              />
+              <div className="short-card-foot">
+                <strong>{fill(copy.shortLabel, { n: item.number })}</strong>
+                <span className="muted">
+                  {formatTime(item.duration)} · {formatBytes(item.size_bytes)}
+                </span>
+                <a
+                  className="btn sm primary"
+                  href={`/api/jobs/${id}/download?short=${item.number}`}
+                  download
+                  aria-label={fill(copy.downloadShort, { n: item.number })}
+                >
+                  {copy.downloadOne}
+                </a>
+              </div>
+            </article>
+          ))}
+        </div>
+      ) : (
+        <video ref={player} className="preview" src={`/api/media/${id}/output`} controls />
+      )}
       <div className="btn-row result-actions">
-        <a className="btn primary lg" href={`/api/jobs/${id}/download`} download>
-          {copy.download}
-        </a>
+        {!shortsMode && (
+          <a className="btn primary lg" href={`/api/jobs/${id}/download`} download>
+            {copy.download}
+          </a>
+        )}
         <EditorExport jobId={id} disabled={clips.every((c) => c.kept === false)} />
         <button className="btn" disabled={folder === "busy"} aria-busy={folder === "busy"} onClick={openFolder}>
           {folder === "busy" && <Spinner />}
@@ -78,10 +122,30 @@ export default function Result() {
       </div>
       {error && <Alert>{error}</Alert>}
 
-      {output && (
-        <CoverPicker jobId={id} clips={clips} getPlayerTime={() => player.current?.currentTime} />
+      {shortsMode && current && (
+        <div className="field short-picker">
+          <label htmlFor="active-short">{copy.toolsFor}</label>
+          <select id="active-short" value={current.number} onChange={(e) => setActiveShort(Number(e.target.value))}>
+            {shorts.map((item) => (
+              <option key={item.number} value={item.number}>
+                {fill(copy.shortLabel, { n: item.number })}
+              </option>
+            ))}
+          </select>
+        </div>
       )}
-      <PostTextPanel jobId={id} />
+      {shortsMode && current ? (
+        <CoverPicker
+          key={`cover-${current.number}`}
+          jobId={id}
+          short={current.number}
+          clips={clips.filter((clip) => (clip.short_index || 0) === current.number - 1)}
+          getPlayerTime={() => shortPlayers.current[current.number]?.currentTime}
+        />
+      ) : (
+        output && <CoverPicker jobId={id} clips={clips} getPlayerTime={() => player.current?.currentTime} />
+      )}
+      <PostTextPanel jobId={id} short={shortsMode ? current?.number : undefined} />
 
       <div className="meta-grid">
         <div>

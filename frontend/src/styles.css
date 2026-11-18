@@ -890,6 +890,19 @@ details.help p { color: var(--muted); font-size: 13px; }
 .preview-time { margin: 4px 0 0; font-size: 13px; font-variant-numeric: tabular-nums; }
 .preview-time > span:first-child { color: var(--muted); }
 .preview-controls { margin-top: 10px; }
+/* Several shorts on the Result page. */
+.shorts-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(260px, 100%), 1fr));
+  gap: 12px;
+  margin-top: 12px;
+}
+.short-card { border: 1px solid var(--border); border-radius: var(--radius-lg); padding: 10px; background: var(--surface); }
+.short-card .preview { margin-top: 0; width: 100%; max-height: 420px; }
+.short-card-foot { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; margin-top: 8px; }
+.short-card-foot .btn { margin-left: auto; }
+.short-picker { margin-top: 16px; max-width: 320px; }
+
 /* Cover image picker on the Result page. */
 .cover-grid {
   display: grid;
@@ -935,6 +948,13 @@ details.help p { color: var(--muted); font-size: 13px; }
 /* A message from a button in a row (such as Download for video editors) takes a full line. */
 .btn-row > .alert { flex-basis: 100%; margin: 4px 0 0; }
 
+/* Review with several shorts: one group of clips per short. */
+.clip-groups { display: grid; gap: 16px; min-width: 0; }
+.clip-group { border-left: 3px solid var(--accent); padding-left: 12px; }
+.short-title { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 12px; margin: 0 0 8px; font-size: 15px; }
+.short-title .muted { font-size: 13px; font-weight: 400; }
+.short-title .over { color: var(--warn); }
+
 /* More moments: strong moments left out of the clips. */
 .more-moments-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; flex-wrap: wrap; }
 .more-moments-head .sub-title { margin-bottom: 0; }
@@ -956,7 +976,8 @@ details.help p { color: var(--muted); font-size: 13px; }
 .playhead { position: absolute; top: 0; bottom: 0; width: 2px; margin-left: -1px; background: var(--text); pointer-events: none; }
 @media (min-width: 1200px) {
   .review-body { grid-template-columns: minmax(0, 1fr) minmax(340px, 38%); }
-  .review-body > .clip-grid { grid-column: 1; grid-row: 1; }
+  .review-body > .clip-grid,
+  .review-body > .clip-groups { grid-column: 1; grid-row: 1; }
   .review-body > .preview-panel {
     grid-column: 2;
     grid-row: 1;

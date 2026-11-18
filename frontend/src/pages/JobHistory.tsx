@@ -25,6 +25,13 @@ function styleLabel(style: string) {
   return messages.styles[style as keyof typeof messages.styles] || style || "—";
 }
 
+/** The finished length, or how many shorts were made. */
+function highlightCell(job: Job) {
+  const shorts = (job.outputs || []).filter((item) => item.kind === "short").length;
+  if (shorts) return fill(copy.shortsMade, { n: shorts });
+  return job.outputs?.[0]?.duration ? formatTime(job.outputs[0].duration) : "—";
+}
+
 function formatDate(value?: string) {
   if (!value) return "—";
   const date = new Date(value);
@@ -134,7 +141,7 @@ export default function JobHistory() {
                 </td>
                 <td className="hide-sm nowrap">{formatDate(job.created_at)}</td>
                 <td>{job.metadata?.duration ? formatTime(job.metadata.duration) : "—"}</td>
-                <td>{job.outputs?.[0]?.duration ? formatTime(job.outputs[0].duration) : "—"}</td>
+                <td>{highlightCell(job)}</td>
                 <td className="hide-sm">{styleLabel(job.style)}</td>
                 <td className="hide-sm nowrap">
                   {job.timing?.attempt_started_at

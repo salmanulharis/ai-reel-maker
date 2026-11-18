@@ -6,7 +6,7 @@ import { Alert, FilmIcon, InlineStatus, PageLoader, PlayIcon, Spinner } from "..
 import { ClipPreviewPanel, useClipPreview } from "../components/ClipPreview";
 import { MoreMoments } from "../components/MoreMoments";
 import { EditorExport } from "../components/EditorExport";
-import { insertIndex, momentToClip } from "../services/clipPreview";
+import { insertIndex, insertIndexInShort, momentToClip, nearestShort, shortIndex } from "../services/clipPreview";
 import type { Clip, Job, JobSource, Moment } from "../types";
 
 const copy = messages.review;
@@ -72,6 +72,7 @@ export default function Review() {
   function move(index: number, direction: -1 | 1) {
     const next = index + direction;
     if (next < 0 || next >= clips.length) return;
+    if (shortIndex(clips[next]) !== shortIndex(clips[index])) return;
     const copyOfClips = [...clips];
     [copyOfClips[index], copyOfClips[next]] = [copyOfClips[next], copyOfClips[index]];
     // The preview follows the clip it was showing to its new place.
@@ -93,11 +94,20 @@ export default function Review() {
   /** Add a suggested moment as a kept clip. Returns its clip number. */
   function addMoment(moment: Moment): number {
     const order = (job?.config as { order_mode?: string } | undefined)?.order_mode;
-    const index = insertIndex(clips, moment, sources, !order || order === "chronological");
+    const short = isShorts() ? nearestShort(clips, moment, sources) : 0;
+    const index = isShorts()
+      ? insertIndexInShort(clips, moment, short)
+      : insertIndex(clips, moment, sources, !order || order === "chronological");
     // Clips after the new one move down a place; the preview stays on the clip it showed.
     if (preview.selected >= index) preview.retarget(preview.selected + 1);
-    save([...clips.slice(0, index), momentToClip(moment), ...clips.slice(index)]);
+    save([...clips.slice(0, index), momentToClip(moment, short), ...clips.slice(index)]);
     return index + 1;
+  }
+
+  /** The job makes several separate shorts (clips are grouped by short). */
+  function isShorts() {
+    const count = Number((job?.config as { shorts_count?: number } | undefined)?.shorts_count || 0);
+    return count >= 2 || clips.some((clip) => shortIndex(clip) > 0);
   }
 
   /** Bring the player into view when it is off screen (it is above the clips on narrow screens). */
@@ -145,8 +155,11 @@ export default function Review() {
   const kept = clips.filter((c) => c.kept !== false);
   const estimated = kept.reduce((s, c) => s + (c.end - c.start), 0);
   const autoLength = (job.config as { length_mode?: string } | undefined)?.length_mode === "auto";
-  const over = !autoLength && estimated > job.max_duration;
+  const shortsMode = isShorts();
+  // Each short has its own length goal; one highlight is checked as a whole.
+  const over = !shortsMode && !autoLength && estimated > job.max_duration;
   const multi = sources.length > 1;
+  const shortNumbers = shortsMode ? [...new Set(clips.map(shortIndex))].sort((a, b) => a - b) : [0];
 
   const adjust = (
     <div className="panel">
@@ -212,6 +225,11 @@ export default function Review() {
             {copy.sources} <strong>{sources.length}</strong>
           </span>
         )}
+        {shortsMode && (
+          <span>
+            {copy.shorts} <strong>{shortNumbers.length}</strong>
+          </span>
+        )}
         {(job.timing?.analysis_seconds ?? 0) > 0 && (
           <span>
             {copy.analysisTook} <strong>{formatElapsed(job.timing?.analysis_seconds)}</strong>
@@ -249,8 +267,8 @@ export default function Review() {
           </div>
         );
       })}
-      <p className="section-label">{copy.highlightOrder}</p>
-      <div className="sequence-timeline" aria-hidden="true">
+      {!shortsMode && <p className="section-label">{copy.highlightOrder}</p>}
+      {!shortsMode && <div className="sequence-timeline" aria-hidden="true">
         {kept.map((clip, i) => {
           const len = Math.max(0, clip.end - clip.start);
           return (
@@ -265,7 +283,7 @@ export default function Review() {
             </div>
           );
         })}
-      </div>
+      </div>}
 
       <div className="review-body">
       <ClipPreviewPanel
@@ -275,8 +293,29 @@ export default function Review() {
         sources={sources}
         onTrim={setEdge}
       />
-      <div className="clip-grid">
-      {clips.map((clip, i) => {
+      <div className="clip-groups">
+      {shortNumbers.map((short) => {
+        const items = clips.map((clip, i) => ({ clip, i })).filter(({ clip }) => !shortsMode || shortIndex(clip) === short);
+        const keptItems = items.filter(({ clip }) => clip.kept !== false);
+        const length = keptItems.reduce((sum, { clip }) => sum + (clip.end - clip.start), 0);
+        const shortOver = shortsMode && length > job.max_duration;
+        return (
+          <section
+            key={short}
+            className={shortsMode ? "clip-group" : undefined}
+            aria-label={shortsMode ? fill(copy.shortLabel, { n: short + 1 }) : undefined}
+          >
+            {shortsMode && (
+              <h3 className="short-title">
+                {fill(copy.shortTitle, { n: short + 1 })}
+                <span className={`muted ${shortOver ? "over" : ""}`}>
+                  {fill(copy.shortSummary, { length: length.toFixed(1), kept: keptItems.length, total: items.length })}
+                </span>
+              </h3>
+            )}
+            {shortOver && <p className="field-hint warn">{copy.shortOver}</p>}
+            <div className="clip-grid">
+      {items.map(({ clip, i }) => {
         const removed = clip.kept === false;
         const label = fill(copy.clipNumber, { n: i + 1 });
         const inPreview = preview.selected === i;
@@ -366,7 +405,7 @@ export default function Review() {
               <span className="btn-row push-right">
                 <button
                   className="btn sm ghost"
-                  disabled={i === 0}
+                  disabled={i === 0 || shortIndex(clips[i - 1]) !== shortIndex(clip)}
                   aria-label={`${copy.moveUp}: ${label}`}
                   onClick={() => move(i, -1)}
                 >
@@ -374,7 +413,7 @@ export default function Review() {
                 </button>
                 <button
                   className="btn sm ghost"
-                  disabled={i === clips.length - 1}
+                  disabled={i === clips.length - 1 || shortIndex(clips[i + 1]) !== shortIndex(clip)}
                   aria-label={`${copy.moveDown}: ${label}`}
                   onClick={() => move(i, 1)}
                 >
@@ -383,6 +422,10 @@ export default function Review() {
               </span>
             </div>
           </article>
+        );
+      })}
+            </div>
+          </section>
         );
       })}
       </div>

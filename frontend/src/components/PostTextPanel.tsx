@@ -6,25 +6,26 @@ import { Alert, InlineStatus, Spinner } from "./Feedback";
 const copy = messages.postText;
 
 /** Suggested titles, description and hashtags for posting the highlight, with copy buttons. */
-export function PostTextPanel({ jobId }: { jobId: string }) {
+export function PostTextPanel({ jobId, short }: { jobId: string; /** Short number when the job makes shorts. */ short?: number }) {
   const [suggestion, setSuggestion] = useState<PostText | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [copied, setCopied] = useState("");
 
   useEffect(() => {
+    setSuggestion(null);
     api
-      .postText(jobId)
+      .postText(jobId, short)
       .then((data) => setSuggestion(data.suggestion))
       .catch(() => undefined);
-  }, [jobId]);
+  }, [jobId, short]);
 
   async function make() {
     setBusy(true);
     setError("");
     setCopied("");
     try {
-      setSuggestion((await api.makePostText(jobId)).suggestion);
+      setSuggestion((await api.makePostText(jobId, short)).suggestion);
     } catch (err) {
       setError((err as Error).message);
     } finally {

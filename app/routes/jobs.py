@@ -15,6 +15,7 @@ from app.services.cover import CoverError, cover_image
 from app.services.cover import parse_request as parse_cover_request
 from app.services.editor_export import ExportError, build_editor_package
 from app.services.job_manager import get_job_manager
+from app.services.outputs import ShortParamError, find_output, parse_short
 from app.services.post_text import PostTextError
 from app.services.post_text import saved as saved_post_text
 from app.services.post_text import suggest as suggest_post_text
@@ -265,17 +266,21 @@ def job_cover(job_id: str):
     if not job:
         return jsonify({"error": "not found"}), 404
     try:
+        short = parse_short(request.args.get("short"))
         seconds, width = parse_cover_request(request.args.get("t"), request.args.get("width"))
-        path = cover_image(manager.job_dir(job_id), seconds, width)
+        path = cover_image(manager.job_dir(job_id), seconds, width, short=short)
+    except ShortParamError as exc:
+        return jsonify({"error": str(exc)}), 400
     except CoverError as exc:
         return jsonify({"error": str(exc)}), exc.status
     download = request.args.get("download") == "1"
     stem = Path(job.original_filename or "highlight").stem or "highlight"
+    part = "" if short is None else f"-short-{short}"
     return send_file(
         path,
         mimetype="image/jpeg",
         as_attachment=download,
-        download_name=f"{stem}-cover.jpg",
+        download_name=f"{stem}{part}-cover.jpg",
         max_age=0 if download else 3600,
     )
 
@@ -286,7 +291,11 @@ def get_post_text(job_id: str):
     manager = get_job_manager()
     if not manager.get(job_id):
         return jsonify({"error": "not found"}), 404
-    return jsonify({"suggestion": saved_post_text(manager.job_dir(job_id))})
+    try:
+        short = parse_short(request.args.get("short"))
+    except ShortParamError as exc:
+        return jsonify({"error": str(exc)}), 400
+    return jsonify({"suggestion": saved_post_text(manager.job_dir(job_id), short)})
 
 
 @jobs_bp.post("/jobs/<job_id>/post-text")
@@ -298,9 +307,12 @@ def make_post_text(job_id: str):
     if not job:
         return jsonify({"error": "not found"}), 404
     try:
+        short = parse_short(request.args.get("short"))
         result = suggest_post_text(
-            job, manager.job_dir(job_id), manager.serialize(job).get("clips") or [], get_settings()
+            job, manager.job_dir(job_id), manager.serialize(job).get("clips") or [], get_settings(), short=short
         )
+    except ShortParamError as exc:
+        return jsonify({"error": str(exc)}), 400
     except PostTextError as exc:
         return jsonify({"error": str(exc)}), exc.status
     return jsonify({"suggestion": result})
@@ -372,10 +384,12 @@ def download_job(job_id: str):
     job = manager.get(job_id)
     if not job:
         return jsonify({"error": "not found"}), 404
-    outputs = manager.job_dir(job_id) / "outputs"
-    files = sorted(outputs.glob("highlight.*"))
-    video = next((f for f in files if f.suffix.lower() in {".mp4", ".webm"}), None)
-    if not video or not video.is_file():
+    try:
+        short = parse_short(request.args.get("short"))
+    except ShortParamError as exc:
+        return jsonify({"error": str(exc)}), 400
+    video = find_output(manager.job_dir(job_id), short)
+    if not video:
         return jsonify({"error": "no output"}), 404
     video = video.resolve()
     return send_file(video, as_attachment=True, download_name=video.name)

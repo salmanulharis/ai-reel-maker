@@ -155,6 +155,7 @@ def build_editor_package(job: Job, job_dir: Path, clips: list[dict], probe: Prob
             end=float(c["end"]),
             reason="",
             source_id=str(c.get("source_id") or ""),
+            short_index=int(c.get("short_index") or 0),
         )
         for c in kept
         if float(c["end"]) > float(c["start"])
@@ -178,23 +179,47 @@ def build_editor_package(job: Job, job_dir: Path, clips: list[dict], probe: Prob
         source_id: _timeline_source(known[source_id], job_dir, multi, config.use_speech, probe)
         for source_id in dict.fromkeys(item.source_id for item in items)
     }
-    timeline_clips = [
-        TimelineClip(source=by_id[item.source_id], start=item.start, end=item.end) for item in items
-    ]
-
     stem = Path(sources[0].get("filename") or job.original_filename or "video").stem
-    name = f"{stem} highlight" if not multi else "Highlight"
-    timeline = build_timeline(name, timeline_clips)
-    if not timeline.clips:
-        raise ExportError("no clips to export")
+    base_name = f"{stem} highlight" if not multi else "Highlight"
+    shorts = int(config.shorts_count or 0) >= 2 or any(item.short_index for item in items)
+    # One timeline for a highlight; one per short (in its own folder) when the job makes shorts.
+    groups: list[tuple[str, str, list]] = []
+    if shorts:
+        for index in sorted({item.short_index for item in items}):
+            groups.append(
+                (
+                    f"short_{index + 1:02d}/",
+                    f"{stem if not multi else 'Highlight'} short {index + 1}",
+                    [item for item in items if item.short_index == index],
+                )
+            )
+    else:
+        groups.append(("", base_name, items))
 
-    subtitles = srt(timeline)
     buffer = io.BytesIO()
+    written = 0
     with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as archive:
-        archive.writestr("highlight.xml", xmeml(timeline))
-        archive.writestr("highlight.fcpxml", fcpxml(timeline))
-        archive.writestr("highlight.edl", edl(timeline))
-        if subtitles:
-            archive.writestr("highlight.srt", subtitles)
-        archive.writestr("README.txt", _readme(timeline, bool(subtitles)))
+        for folder, name, group in groups:
+            timeline = build_timeline(
+                name, [TimelineClip(source=by_id[item.source_id], start=item.start, end=item.end) for item in group]
+            )
+            if not timeline.clips:
+                continue
+            subtitles = srt(timeline)
+            archive.writestr(f"{folder}highlight.xml", xmeml(timeline))
+            archive.writestr(f"{folder}highlight.fcpxml", fcpxml(timeline))
+            archive.writestr(f"{folder}highlight.edl", edl(timeline))
+            if subtitles:
+                archive.writestr(f"{folder}highlight.srt", subtitles)
+            archive.writestr(f"{folder}README.txt", _readme(timeline, bool(subtitles)))
+            written += 1
+        if shorts and written:
+            archive.writestr(
+                "README.txt",
+                "AI Video Highlights - timelines for video editors\n\n"
+                f"This highlight is made of {written} shorts. Each folder (short_01, short_02, ...) holds the\n"
+                "timeline of one short, with its own README.txt on how to open it in your editor.\n",
+            )
+    if not written:
+        raise ExportError("no clips to export")
     return buffer.getvalue(), f"{_slug(stem if not multi else 'highlight')}-for-editors.zip"

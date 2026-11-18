@@ -154,6 +154,8 @@ class ClipPlanItem(BaseModel):
     # A piece of the same moment as the clip before it (after pauses were cut out): no fade
     # between the two.
     join_previous: bool = False
+    # Which short the clip belongs to when a job makes several shorts (0 for a single highlight).
+    short_index: int = 0
 
     @property
     def duration(self) -> float:
@@ -227,6 +229,8 @@ class HighlightConfig(BaseModel):
     # Framing when the shape changes (9:16, 1:1, 4:5): "subject" follows faces in each clip,
     # "center" keeps the middle (the behaviour of earlier versions, kept for existing jobs).
     reframe: Literal["center", "subject"] = "center"
+    # 0: one highlight. 2-10: that many separate shorts, each aiming for min..max_duration.
+    shorts_count: int = 0
     transition: Literal["cut", "fade"] = "cut"
     audio_focus: Literal["balanced", "natural", "dialogue"] = "balanced"
     # "source" keeps the original frame rate; a number converts the output to that rate.
@@ -259,6 +263,11 @@ class HighlightConfig(BaseModel):
             # Subtitles come from the transcript, which is not made without speech.
             self.subtitles = "none"
             self.tighten = "off"
+        self.shorts_count = int(self.shorts_count or 0)
+        self.shorts_count = 0 if self.shorts_count < 2 else min(10, self.shorts_count)
+        if self.shorts_count:
+            # Each short has its own length range; "no maximum" does not apply to shorts.
+            self.length_mode = "range"
         if self.min_duration > self.max_duration:
             self.min_duration, self.max_duration = self.max_duration, self.min_duration
         if self.allow_repeated_content is None:

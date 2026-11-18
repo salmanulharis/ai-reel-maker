@@ -246,6 +246,7 @@ def _run_render(app: Flask, job_id: str) -> None:
                 source_name=c.get("source_name") or "",
                 source_path=c.get("source_path")
                 or str(source_lookup.get(c.get("source_id") or "") or source),
+                short_index=int(c.get("short_index") or 0),
             )
             for c in kept
         ]
@@ -271,7 +272,6 @@ def _run_render(app: Flask, job_id: str) -> None:
     outputs = job_dir / "outputs"
     outputs.mkdir(parents=True, exist_ok=True)
     ext = render_settings.format if render_settings.format in {"mp4", "webm"} else "mp4"
-    output = outputs / f"highlight.{ext}"
     # Each video has its own transcript (multi-video jobs keep one per video under work/).
     multi_source = len(sources) > 1
     first_source_id = str(sources[0].get("id") or "v0")
@@ -296,28 +296,7 @@ def _run_render(app: Flask, job_id: str) -> None:
             else f"Tighten clips: no {what} to cut (or no word timings)"
         )
 
-    if config.subtitles in {"auto", "burned", "srt"}:
-        srt_path = outputs / "highlight.srt"
-        srt_path.write_text(
-            sequence_srt([(transcript_for(c), c.start, c.end) for c in plan.clips if c.end > c.start]),
-            encoding="utf-8",
-        )
-
-    clip_subtitles = None
-    if config.subtitles == "burned":
-        subtitle_dir = job_dir / "tmp_render" / "subtitles"
-
-        def clip_subtitles(index: int, clip: ClipPlanItem, canvas) -> Path | None:
-            return write_clip_subtitles(
-                subtitle_dir,
-                index,
-                transcript_for(clip),
-                clip.start,
-                clip.end,
-                config.caption_style,
-                canvas.width,
-                canvas.height,
-            )
+    groups = render_groups(plan, config, outputs, ext)
 
     meta = VideoMetadata.model_validate(json.loads(job.metadata_json or "{}"))
     renderer = Renderer(runner)
@@ -327,7 +306,7 @@ def _run_render(app: Flask, job_id: str) -> None:
         append_log(job_dir, payload)
         _emit(app, job_id, "job_log", payload)
 
-    emit_log("Rendering highlight")
+    emit_log("Rendering highlight" if len(groups) == 1 else f"Rendering {len(groups)} shorts")
     if tighten_note:
         emit_log(tighten_note)
     encoder = None
@@ -339,58 +318,87 @@ def _run_render(app: Flask, job_id: str) -> None:
         emit_log("Using high-quality CPU encoder libx264 to preserve source detail")
     manager.set_stage(job_id, "rendering", "running")
     try:
-        result = renderer.render(
-            source,
-            plan,
-            output,
-            render_settings,
-            job_dir / "tmp_render",
-            metadata=meta,
-            clip_subtitles=clip_subtitles,
-            hardware_encoder=encoder,
-            source_lookup=source_lookup,
-        )
-        out_meta = result["metadata"]
-        canvas = result.get("canvas") or {}
-        encoder_info = result.get("encoder") or {}
-        if result.get("frame_rate"):
-            emit_log(str(result["frame_rate"]))
-        if result.get("reframe"):
-            followed = result["reframe"]
-            emit_log(
-                f"Framing followed faces in {followed['followed']} of {followed['clips']} clips"
-                " (the others keep the middle of the picture)"
+        if not groups:
+            raise ValueError("No clips to render")
+        made: list[dict] = []
+        for number, group in enumerate(groups, 1):
+            prefix = "" if len(groups) == 1 else f"Short {group['short'] + 1}: "
+            if len(groups) > 1:
+                emit_log(f"Creating short {group['short'] + 1} ({number} of {len(groups)})")
+                manager.update(job_id, progress=round(100 * (number - 1) / len(groups), 1))
+            work_dir = job_dir / "tmp_render" / group["label"]
+            group_plan = plan.model_copy(
+                update={"clips": group["clips"], "estimated_duration": sum(c.duration for c in group["clips"])}
             )
-        emit_log(
-            "Target output "
-            f"{canvas.get('width') or out_meta.get('width')}×{canvas.get('height') or out_meta.get('height')} "
-            f"@ {float(canvas.get('fps') or out_meta.get('fps') or 0):.3f} fps, "
-            f"{encoder_info.get('codec') or out_meta.get('video_codec')} "
-            f"{encoder_info.get('preset') or ''} CRF {encoder_info.get('crf') or ''}".strip()
-        )
-        emit_log(
-            "Verified output "
-            f"{out_meta.get('width')}×{out_meta.get('height')}, "
-            f"{float(out_meta.get('avg_fps') or out_meta.get('fps') or 0):.3f} fps, "
-            f"{out_meta.get('video_codec') or 'h264'}, "
-            f"{int(out_meta.get('bitrate') or 0) or out_meta.get('size_bytes')} bitrate/size"
-        )
-        manager.add_output(
-            job_id,
-            path=str(output),
-            kind="highlight",
-            duration=out_meta.get("duration") or 0,
-            size_bytes=out_meta.get("size_bytes") or output.stat().st_size,
-            codec=out_meta.get("video_codec") or "",
-            width=out_meta.get("width") or 0,
-            height=out_meta.get("height") or 0,
-            version_label=config.style,
-        )
+            if config.subtitles in {"auto", "burned", "srt"}:
+                group["srt"].write_text(
+                    sequence_srt([(transcript_for(c), c.start, c.end) for c in group["clips"]]),
+                    encoding="utf-8",
+                )
+            result = renderer.render(
+                source,
+                group_plan,
+                group["output"],
+                render_settings,
+                work_dir,
+                metadata=meta,
+                clip_subtitles=_clip_subtitle_writer(work_dir / "subtitles", transcript_for, config)
+                if config.subtitles == "burned"
+                else None,
+                hardware_encoder=encoder,
+                source_lookup=source_lookup,
+            )
+            out_meta = result["metadata"]
+            canvas = result.get("canvas") or {}
+            encoder_info = result.get("encoder") or {}
+            if result.get("frame_rate") and number == 1:
+                emit_log(str(result["frame_rate"]))
+            if result.get("reframe"):
+                followed = result["reframe"]
+                emit_log(
+                    f"{prefix}Framing followed faces in {followed['followed']} of {followed['clips']} clips"
+                    " (the others keep the middle of the picture)"
+                )
+            emit_log(
+                f"{prefix}Target output "
+                f"{canvas.get('width') or out_meta.get('width')}×{canvas.get('height') or out_meta.get('height')} "
+                f"@ {float(canvas.get('fps') or out_meta.get('fps') or 0):.3f} fps, "
+                f"{encoder_info.get('codec') or out_meta.get('video_codec')} "
+                f"{encoder_info.get('preset') or ''} CRF {encoder_info.get('crf') or ''}".strip()
+            )
+            emit_log(
+                f"{prefix}Verified output "
+                f"{out_meta.get('width')}×{out_meta.get('height')}, "
+                f"{float(out_meta.get('avg_fps') or out_meta.get('fps') or 0):.3f} fps, "
+                f"{out_meta.get('video_codec') or 'h264'}, "
+                f"{int(out_meta.get('bitrate') or 0) or out_meta.get('size_bytes')} bitrate/size"
+            )
+            made.append(
+                {
+                    "path": str(group["output"]),
+                    "kind": group["kind"],
+                    "duration": out_meta.get("duration") or 0,
+                    "size_bytes": out_meta.get("size_bytes") or group["output"].stat().st_size,
+                    "codec": out_meta.get("video_codec") or "",
+                    "width": out_meta.get("width") or 0,
+                    "height": out_meta.get("height") or 0,
+                    "version_label": config.style if group["kind"] == "highlight" else group["label"],
+                }
+            )
+        # Only now that every video is made: replace the earlier render's outputs.
+        keep = {Path(item["path"]).name for item in made}
+        if config.subtitles in {"auto", "burned", "srt"}:
+            keep |= {group["srt"].name for group in groups}
+        remove_stale_outputs(outputs, keep)
+        manager.clear_outputs(job_id)
+        for item in made:
+            manager.add_output(job_id, **item)
         manager.set_stage(job_id, "rendering", "done")
         took = manager.finish_attempt(job_id, "completed")
         manager.update(job_id, status="completed", render_status="completed", progress=100)
-        emit_log(f"Highlight ready. Creating the video took {format_elapsed(took)}")
-        _emit(app, job_id, "job_complete", {"phase": "render", "output": str(output)})
+        what = "Highlight" if len(groups) == 1 else f"{len(groups)} shorts"
+        emit_log(f"{what} ready. Creating the video took {format_elapsed(took)}")
+        _emit(app, job_id, "job_complete", {"phase": "render", "output": made[0]["path"]})
         if not settings.debug_analysis:
             tmp = job_dir / "tmp_render"
             if tmp.exists():
@@ -408,6 +416,65 @@ def _run_render(app: Flask, job_id: str) -> None:
         emit_log(f"Creating the video failed after {format_elapsed(took)}", "WARNING")
         _emit(app, job_id, "job_failed", {"error": str(exc)})
 
+
+def render_groups(plan: ClipPlan, config: HighlightConfig, outputs: Path, ext: str) -> list[dict]:
+    """
+    What to render: one highlight, or one video per short. A short keeps its number from the
+    plan (so "Short 3" stays short_03 even when every clip of short 2 was removed).
+    """
+    clips = [c for c in plan.clips if c.end > c.start]
+    if int(config.shorts_count or 0) < 2 and not any(c.short_index for c in clips):
+        if not clips:
+            return []
+        return [
+            {
+                "label": "highlight",
+                "kind": "highlight",
+                "short": 0,
+                "clips": clips,
+                "output": outputs / f"highlight.{ext}",
+                "srt": outputs / "highlight.srt",
+            }
+        ]
+    groups = []
+    for index in sorted({c.short_index for c in clips}):
+        name = f"short_{index + 1:02d}"
+        groups.append(
+            {
+                "label": name,
+                "kind": "short",
+                "short": index,
+                "clips": [c for c in clips if c.short_index == index],
+                "output": outputs / f"{name}.{ext}",
+                "srt": outputs / f"{name}.srt",
+            }
+        )
+    return groups
+
+
+def remove_stale_outputs(outputs: Path, keep: set[str]) -> None:
+    """Delete videos and subtitles of an earlier render that this render did not replace."""
+    for path in list(outputs.glob("highlight.*")) + list(outputs.glob("short_*.*")):
+        if path.is_file() and path.name not in keep:
+            path.unlink(missing_ok=True)
+
+
+def _clip_subtitle_writer(subtitle_dir: Path, transcript_for, config: HighlightConfig):
+    """Writes the subtitle file burned into one clip, timed from that clip's start."""
+
+    def write(index: int, clip: ClipPlanItem, canvas) -> Path | None:
+        return write_clip_subtitles(
+            subtitle_dir,
+            index,
+            transcript_for(clip),
+            clip.start,
+            clip.end,
+            config.caption_style,
+            canvas.width,
+            canvas.height,
+        )
+
+    return write
 
 ANALYSIS_VIDEO = "analysis.mp4"
 _CACHE_FILES = (
