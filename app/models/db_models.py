@@ -129,6 +129,7 @@ class SelectedClip(Base):
     kept: Mapped[bool] = mapped_column(Boolean, default=True)
     source_id: Mapped[str] = mapped_column(String(32), default="")
     source_name: Mapped[str] = mapped_column(String(255), default="")
+    short_index: Mapped[int] = mapped_column(Integer, default=0)
 
 
 class OutputRow(Base):
@@ -195,6 +196,8 @@ def _ensure_columns() -> None:
             conn.execute(text("ALTER TABLE selected_clips ADD COLUMN source_id VARCHAR(32) DEFAULT ''"))
         if "source_name" not in names:
             conn.execute(text("ALTER TABLE selected_clips ADD COLUMN source_name VARCHAR(255) DEFAULT ''"))
+        if "short_index" not in names:
+            conn.execute(text("ALTER TABLE selected_clips ADD COLUMN short_index INTEGER DEFAULT 0"))
 
         jobs = {row[1] for row in conn.execute(text("PRAGMA table_info(jobs)")).fetchall()}
         for column, ddl in (

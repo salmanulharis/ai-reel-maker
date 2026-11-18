@@ -5,7 +5,7 @@ from typing import Callable
 
 from app.analysis.repetition import _structural_similarity
 from app.analysis.sequence_limits import auto_cap, fit_candidate, is_low_value, split_span
-from app.models.schemas import ClipPlan, ClipPlanItem
+from app.models.schemas import ClipPlan, ClipPlanItem, HighlightConfig
 
 
 SimilarityFn = Callable[[dict, dict], float]
@@ -15,6 +15,8 @@ REPEAT_THRESHOLD = 0.48
 AUTO_LENGTH_KEEP_RATIO = 0.65
 AUTO_LENGTH_STRICT_RATIO = 0.8
 AUTO_LENGTH_SOURCE_SHARE = 0.25
+# A short must reach this share of the shortest length asked for, or it is not made.
+SHORT_MIN_SHARE = 0.75
 
 
 def _duration(item: dict) -> float:
@@ -440,6 +442,108 @@ class ClipOptimizer:
             pool = forward or remaining
             take(max(pool, key=lambda c: float(c.get("score") or 0)))
         return ordered
+
+    def plan(
+        self,
+        candidates: list[dict],
+        config: HighlightConfig,
+        *,
+        source_duration: float | None = None,
+        similarity_fn: SimilarityFn | None = None,
+        repeat_threshold: float = REPEAT_THRESHOLD,
+    ) -> ClipPlan:
+        """The clip plan for a highlight config: one highlight, or several separate shorts."""
+        options = dict(
+            min_duration=config.min_duration,
+            max_duration=config.max_duration,
+            must_include=config.must_include,
+            must_exclude=config.must_exclude,
+            order_mode=config.order_mode,
+            source_duration=source_duration,
+            similarity_fn=similarity_fn,
+            max_sequence_duration=config.max_sequence_duration,
+            min_sequence_duration=config.min_sequence_duration,
+            sequence_duration_mode=config.sequence_duration_mode,
+            allow_repeated_content=bool(config.allow_repeated_content),
+            max_repeated_duration=config.max_repeated_duration,
+            repeat_threshold=repeat_threshold,
+            content_priorities=config.content_priorities,
+            length_mode=config.length_mode,
+            auto_length_strict=config.auto_length_strict,
+        )
+        if int(config.shorts_count or 0) >= 2:
+            return self.select_shorts(candidates, int(config.shorts_count), **options)
+        return self.select(candidates, **options)
+
+    def select_shorts(self, candidates: list[dict], count: int, **options) -> ClipPlan:
+        """
+        Several separate shorts, best first. Each short is built around the strongest moment not
+        used yet, from moments near it in the same video (so it holds together), aiming for the
+        same length range as a single highlight. Shorts never share footage. A short that comes
+        out shorter than SHORT_MIN_SHARE of the minimum is dropped and its area is skipped.
+        """
+        min_duration = float(options["min_duration"])
+        max_duration = float(options["max_duration"])
+        window = max(90.0, 3 * max_duration)
+        # Each short is a story of its own: time order, its own length range, no forced ranges.
+        local_options = {
+            **options,
+            "must_include": [],
+            "order_mode": "chronological",
+            "length_mode": "range",
+            "auto_length_strict": False,
+            "source_duration": None,
+        }
+        must_exclude = options.get("must_exclude") or []
+        pool = [
+            c
+            for c in candidates
+            if not any(_overlaps((float(c["start"]), float(c["end"])), excluded) for excluded in must_exclude)
+        ]
+        used: list[tuple[str, float, float]] = []
+        skipped: list[tuple[str, float, float]] = []
+        shorts: list[list[ClipPlanItem]] = []
+        attempts = 0
+        while len(shorts) < count and attempts < count * 3:
+            attempts += 1
+            available = [c for c in pool if not _range_overlaps(c, used) and not _range_overlaps(c, skipped)]
+            if not available:
+                break
+            seed = max(available, key=lambda c: float(c.get("score") or 0))
+            key = _source_key(seed)
+            middle = (float(seed["start"]) + float(seed["end"])) / 2
+            local = [
+                c
+                for c in available
+                if _source_key(c) == key and abs((float(c["start"]) + float(c["end"])) / 2 - middle) <= window / 2
+            ]
+            plan = self.select(local, **local_options)
+            clips = [
+                clip
+                for clip in plan.clips
+                if clip.candidate_id != "source-span"
+                and not _range_overlaps({"start": clip.start, "end": clip.end, "source_id": clip.source_id}, used)
+            ]
+            length = sum(c.duration for c in clips)
+            if not clips or length < min_duration * SHORT_MIN_SHARE:
+                skipped.append((key, middle - window / 2, middle + window / 2))
+                continue
+            index = len(shorts)
+            for clip in clips:
+                clip.short_index = index
+                used.append((_source_key({"source_id": clip.source_id}), clip.start, clip.end))
+            shorts.append(clips)
+        all_clips = [clip for short in shorts for clip in short]
+        notes = f"{len(shorts)} shorts"
+        if len(shorts) < count:
+            notes += f" (asked for {count}; there were not enough separate strong moments for more)"
+        return ClipPlan(
+            target_duration=max_duration,
+            estimated_duration=sum(c.duration for c in all_clips),
+            clips=all_clips,
+            notes=notes,
+            order_mode="chronological",
+        )
 
     def alternatives(
         self,

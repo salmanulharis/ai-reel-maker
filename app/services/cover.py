@@ -6,6 +6,7 @@ import math
 from pathlib import Path
 
 from app.video.ffmpeg_runner import FFmpegError, FFmpegRunner
+from app.services.outputs import find_output, output_stem
 from app.video.processor import VideoProcessor
 
 MIN_WIDTH = 64
@@ -19,10 +20,8 @@ class CoverError(Exception):
         self.status = status
 
 
-def output_video(job_dir: Path) -> Path | None:
-    outputs = job_dir / "outputs"
-    files = sorted(outputs.glob("highlight.*")) if outputs.is_dir() else []
-    return next((f for f in files if f.suffix.lower() in {".mp4", ".webm"} and f.is_file()), None)
+def output_video(job_dir: Path, short: int | None = None) -> Path | None:
+    return find_output(job_dir, short)
 
 
 def parse_request(time_text: str | None, width_text: str | None) -> tuple[float, int | None]:
@@ -45,13 +44,19 @@ def parse_request(time_text: str | None, width_text: str | None) -> tuple[float,
     return seconds, width
 
 
-def cover_image(job_dir: Path, seconds: float, width: int | None = None, runner: FFmpegRunner | None = None) -> Path:
+def cover_image(
+    job_dir: Path,
+    seconds: float,
+    width: int | None = None,
+    runner: FFmpegRunner | None = None,
+    short: int | None = None,
+) -> Path:
     """
-    The frame `seconds` into the finished highlight (clamped to its length), full size or
-    `width` pixels wide. Frames are kept per video version: covers from an earlier render of the
-    highlight are removed the first time a frame of the new one is asked for.
+    The frame `seconds` into the finished highlight, or into short number `short` (clamped to
+    its length), full size or `width` pixels wide. Frames are kept per video version: covers
+    from an earlier render are removed the first time a frame of the new one is asked for.
     """
-    video = output_video(job_dir)
+    video = output_video(job_dir, short)
     if video is None:
         raise CoverError("no output", status=404)
     runner = runner or FFmpegRunner()
@@ -62,10 +67,10 @@ def cover_image(job_dir: Path, seconds: float, width: int | None = None, runner:
     if duration > 0:
         # The very last frame can be missing in a cut file; stay a little before the end.
         seconds = min(seconds, max(0.0, duration - 0.1))
-    version = str(video.stat().st_mtime_ns)
+    version = f"{output_stem(short)}-{video.stat().st_mtime_ns}"
     folder = job_dir / "outputs" / COVER_DIR
     folder.mkdir(parents=True, exist_ok=True)
-    for old in folder.glob("*.jpg"):
+    for old in folder.glob(f"{output_stem(short)}-*.jpg"):
         if not old.name.startswith(f"{version}-"):
             old.unlink(missing_ok=True)
     dest = folder / f"{version}-{int(round(seconds * 1000))}-{width or 'full'}.jpg"

@@ -30,6 +30,13 @@ from app.video.ffmpeg_runner import FFmpegRunner
 from app.video.quality import source_frame_rate
 from app.video.sources import load_sources, save_sources, source_id_for
 
+def _short_index(value) -> int:
+    try:
+        return max(0, min(9, int(value or 0)))
+    except (TypeError, ValueError):
+        return 0
+
+
 # Stage states that end a run of the stage.
 _STAGE_FINISHED = {"done", "error", "skipped", "cancelled"}
 # How a stage left running ends when its attempt ends.
@@ -392,10 +399,20 @@ class JobManager:
                         duration_reason=clip.get("duration_reason") or "",
                         source_id=clip.get("source_id") or "",
                         source_name=clip.get("source_name") or "",
+                        short_index=_short_index(clip.get("short_index")),
                         sort_order=i,
                         kept=clip.get("kept", True),
                     )
                 )
+            session.commit()
+        finally:
+            session.close()
+
+    def clear_outputs(self, job_id: str) -> None:
+        """Forget the outputs of an earlier render (a new render replaces them)."""
+        session = get_session()
+        try:
+            session.query(OutputRow).filter(OutputRow.job_id == job_id).delete()
             session.commit()
         finally:
             session.close()
@@ -495,6 +512,7 @@ class JobManager:
                     "duration_reason": getattr(c, "duration_reason", "") or "",
                     "source_id": getattr(c, "source_id", "") or "",
                     "source_name": getattr(c, "source_name", "") or "",
+                    "short_index": int(getattr(c, "short_index", 0) or 0),
                     "transcript": c.transcript,
                     "kept": c.kept,
                 }

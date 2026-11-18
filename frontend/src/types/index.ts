@@ -32,6 +32,8 @@ export interface Clip {
   kept?: boolean;
   source_id?: string;
   source_name?: string;
+  /** Which short the clip belongs to when the job makes several shorts (0-based). */
+  short_index?: number;
 }
 
 /** A strong moment the current clips leave out (from GET /jobs/:id/moments). */
@@ -103,6 +105,7 @@ export interface Job {
   sources?: JobSource[];
   outputs: Array<{
     id: number;
+    kind?: string;
     duration: number;
     size_bytes: number;
     codec: string;
@@ -146,6 +149,8 @@ export interface HighlightForm {
   caption_style: "plain" | "clean" | "bold" | "boxed";
   tighten: "off" | "pauses" | "fillers";
   reframe: "center" | "subject";
+  /** 0: one highlight; 2-10: that many separate shorts. */
+  shorts_count: number;
   transition: string;
   audio_focus: "balanced" | "natural" | "dialogue";
   frame_rate: string;

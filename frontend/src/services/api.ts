@@ -161,6 +161,7 @@ export function configPayload(form: HighlightForm) {
     caption_style: form.caption_style,
     tighten: form.use_speech ? form.tighten : "off",
     reframe: form.reframe,
+    shorts_count: form.shorts_count >= 2 ? form.shorts_count : 0,
     transition: form.transition,
     audio_focus: form.audio_focus,
     frame_rate: form.frame_rate,
@@ -221,11 +222,14 @@ export const api = {
   analysis: (id: string) => http<Record<string, unknown>>(`/api/jobs/${id}/analysis`),
   timeline: (id: string) => http<Record<string, unknown>>(`/api/jobs/${id}/timeline`),
   /** Save a full-size frame of the finished highlight as a JPEG. Returns the saved file name. */
-  downloadCover: (id: string, seconds: number) =>
-    download(`${coverUrl(id, seconds)}&download=1`, "highlight-cover.jpg"),
-  postText: (id: string) => http<{ suggestion: PostText | null }>(`/api/jobs/${encodeURIComponent(id)}/post-text`),
-  makePostText: (id: string) =>
-    http<{ suggestion: PostText }>(`/api/jobs/${encodeURIComponent(id)}/post-text`, { method: "POST" }),
+  downloadCover: (id: string, seconds: number, short?: number) =>
+    download(`${coverUrl(id, seconds, undefined, short)}&download=1`, "highlight-cover.jpg"),
+  postText: (id: string, short?: number) =>
+    http<{ suggestion: PostText | null }>(`/api/jobs/${encodeURIComponent(id)}/post-text${short ? `?short=${short}` : ""}`),
+  makePostText: (id: string, short?: number) =>
+    http<{ suggestion: PostText }>(`/api/jobs/${encodeURIComponent(id)}/post-text${short ? `?short=${short}` : ""}`, {
+      method: "POST",
+    }),
   presets: () => http<{ presets: Preset[] }>("/api/presets"),
   savePreset: (name: string, form: Partial<HighlightForm>) =>
     http<{ presets: Preset[] }>("/api/presets", {
