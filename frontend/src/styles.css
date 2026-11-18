@@ -856,6 +856,43 @@ details.help p { color: var(--muted); font-size: 13px; }
 .clip-actions { margin-top: 10px; }
 .push-right { margin-left: auto; }
 .clip-transcript { color: var(--muted); font-size: 13px; }
+.clip-card.selected { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+
+/* Clip preview on the Review page: above the clips, or beside them on wide screens. */
+.review-body { display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px; align-items: start; }
+.review-body > .preview-panel { margin-top: 0; }
+.preview-frame {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 120px;
+  background: var(--preview-bg);
+  border-radius: var(--radius-lg);
+}
+.preview-frame.empty { background: var(--bg); border: 1px dashed var(--border); }
+.preview-panel .preview { width: 100%; max-height: min(360px, 45vh); margin: 0 auto; }
+.preview-panel .preview[hidden] { display: none; }
+.preview-placeholder { margin: 0; padding: 16px; max-width: 42ch; color: var(--muted); font-size: 13px; text-align: center; }
+.preview-loading { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; pointer-events: none; }
+.preview-status { margin: 10px 0 0; font-size: 13px; }
+.preview-time { margin: 4px 0 0; font-size: 13px; font-variant-numeric: tabular-nums; }
+.preview-time > span:first-child { color: var(--muted); }
+.preview-controls { margin-top: 10px; }
+.playhead { position: absolute; top: 0; bottom: 0; width: 2px; margin-left: -1px; background: var(--text); pointer-events: none; }
+@media (min-width: 1200px) {
+  .review-body { grid-template-columns: minmax(0, 1fr) minmax(340px, 38%); }
+  .review-body > .clip-grid { grid-column: 1; grid-row: 1; }
+  .review-body > .preview-panel {
+    grid-column: 2;
+    grid-row: 1;
+    position: sticky;
+    top: calc(var(--header-h) + 12px);
+    /* Leave room for the sticky Create video bar at the bottom. */
+    max-height: calc(100vh - var(--header-h) - 96px);
+    overflow-y: auto;
+  }
+}
 .score {
   font-family: var(--mono);
   color: var(--muted);
