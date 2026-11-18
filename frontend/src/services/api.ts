@@ -1,5 +1,6 @@
 import { messages } from "../i18n";
 import type { HighlightForm, Job, Moment, OllamaStatus, OptimizationPlan } from "../types";
+import type { Preset } from "./presets";
 
 // Short server messages that are worth rewording for people.
 const SERVER_MESSAGES: Record<string, string> = {
@@ -8,6 +9,8 @@ const SERVER_MESSAGES: Record<string, string> = {
   "invalid model name": "That model name is not valid.",
   "no clips to export": "Keep at least one clip to download a timeline.",
   "source video missing": "The original video file is missing, so a timeline can't be made.",
+  "preset name is required": "Give the preset a name.",
+  "preset not found": "That preset no longer exists.",
 };
 
 /** Download a file from the API, with a readable error instead of a JSON page when it fails. */
@@ -195,6 +198,15 @@ export const api = {
   logs: (id: string) => http<{ logs: Array<{ level: string; message: string; ts?: number }> }>(`/api/jobs/${id}/logs`),
   analysis: (id: string) => http<Record<string, unknown>>(`/api/jobs/${id}/analysis`),
   timeline: (id: string) => http<Record<string, unknown>>(`/api/jobs/${id}/timeline`),
+  presets: () => http<{ presets: Preset[] }>("/api/presets"),
+  savePreset: (name: string, form: Partial<HighlightForm>) =>
+    http<{ presets: Preset[] }>("/api/presets", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name, form }),
+    }),
+  deletePreset: (name: string) =>
+    http<{ presets: Preset[] }>(`/api/presets?name=${encodeURIComponent(name)}`, { method: "DELETE" }),
   /** Save the kept clips as timelines for video editors (zip). Returns the saved file name. */
   exportForEditors: (id: string) =>
     download(`/api/jobs/${encodeURIComponent(id)}/export/editor`, "highlight-for-editors.zip"),

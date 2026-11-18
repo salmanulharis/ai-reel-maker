@@ -368,6 +368,24 @@
     "clipReason": "Why it was chosen",
     "clipScore": "Score"
   },
+  "presets": {
+    "label": "My presets",
+    "choose": "Choose a preset…",
+    "empty": "Save these choices as a preset to reuse them for your next video.",
+    "save": "Save as preset",
+    "delete": "Delete preset",
+    "nameLabel": "Preset name",
+    "namePlaceholder": "For example: Weekly vlog short",
+    "nameHint": "Keeps the choices below. The crop and time ranges belong to this video and are not saved.",
+    "nameMissing": "Give the preset a name.",
+    "confirmSave": "Save preset",
+    "cancel": "Cancel",
+    "confirmReplace": "A preset named “{name}” already exists. Replace it?",
+    "confirmDelete": "Delete the preset “{name}”?",
+    "applied": "Applied “{name}”. You can still change any choice.",
+    "saved": "Saved “{name}”.",
+    "deleted": "Deleted “{name}”."
+  },
   "notify": {
     "legend": "When it's done",
     "notify": "Show a notification",

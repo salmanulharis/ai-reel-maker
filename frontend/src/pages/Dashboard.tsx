@@ -3,6 +3,7 @@ import { Link, useNavigate } from "react-router-dom";
 import { UploadZone } from "../components/UploadZone";
 import { HighlightConfigPanel, defaultForm, formProblem } from "../components/HighlightConfig";
 import { VideoCropPreview } from "../components/VideoCrop";
+import { PresetBar } from "../components/PresetBar";
 import { Alert, InlineStatus, Spinner } from "../components/Feedback";
 import { api, formatBytes, formatTime } from "../services/api";
 import { fill, messages } from "../i18n";
@@ -205,6 +206,7 @@ export default function Dashboard() {
         <h3 className="step-title" id="step-2">
           {copy.step2}
         </h3>
+        <PresetBar form={form} setForm={setForm} />
         <HighlightConfigPanel
           form={form}
           setForm={setForm}
