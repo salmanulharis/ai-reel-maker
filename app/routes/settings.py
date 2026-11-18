@@ -5,6 +5,7 @@ from flask import Blueprint, jsonify, request
 from app.config import get_settings
 from app.models.db_models import get_session
 from app.services.job_manager import get_job_manager
+from app.services.presets import PresetError, delete_preset, list_presets, save_preset
 from app.services.settings_store import apply_values, effective_settings
 from app.services.storage import clear_cache, clear_tmp, delete_job_files, storage_report
 
@@ -74,6 +75,32 @@ def save_settings():
         return jsonify({"error": "vision_scope must be shortlist or all"}), 400
     apply_values(values, get_settings())
     return jsonify({"settings": _current()})
+
+
+@settings_bp.get("/presets")
+def get_presets():
+    return jsonify({"presets": list_presets()})
+
+
+@settings_bp.post("/presets")
+def post_preset():
+    """Save the Create-page choices under a name (an existing preset with that name is replaced)."""
+    data = request.get_json(silent=True) or {}
+    try:
+        presets = save_preset(data.get("name"), data.get("form"))
+    except PresetError as exc:
+        return jsonify({"error": str(exc)}), 400
+    return jsonify({"presets": presets})
+
+
+@settings_bp.delete("/presets")
+def remove_preset():
+    try:
+        presets = delete_preset(request.args.get("name"))
+    except PresetError as exc:
+        status = 404 if str(exc) == "preset not found" else 400
+        return jsonify({"error": str(exc)}), status
+    return jsonify({"presets": presets})
 
 
 @settings_bp.post("/settings/storage/clear-tmp")

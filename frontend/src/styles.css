@@ -532,6 +532,14 @@ a.btn:hover { text-decoration: none; }
 .panel > .check { margin-top: 14px; }
 .panel-intro { margin: -4px 0 14px; color: var(--muted); font-size: 13px; max-width: 70ch; }
 .panel-actions { margin-top: 16px; }
+.preset-bar { margin-bottom: 12px; }
+.preset-row { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 8px 12px; }
+.preset-row .field { margin-bottom: 0; min-width: min(280px, 100%); }
+.preset-row > .field-hint { margin: 0; flex: 1 1 240px; }
+.preset-save { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 8px 12px; margin-top: 10px; }
+.preset-save .field { margin-bottom: 0; flex: 1 1 260px; max-width: 420px; }
+.preset-save .btn-row { margin-top: 22px; }
+.preset-bar > .inline-status { margin-top: 8px; }
 .notify-settings { margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--border); }
 .notify-settings legend { float: left; width: 100%; margin-bottom: 8px; }
 .notify-options { clear: both; display: flex; flex-wrap: wrap; gap: 8px 20px; }
