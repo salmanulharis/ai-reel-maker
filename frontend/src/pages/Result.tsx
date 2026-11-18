@@ -5,6 +5,7 @@ import { fill, messages } from "../i18n";
 import { Alert, CheckIcon, InlineStatus, PageLoader, Spinner } from "../components/Feedback";
 import { EditorExport } from "../components/EditorExport";
 import { CoverPicker } from "../components/CoverPicker";
+import { PostTextPanel } from "../components/PostTextPanel";
 import type { Job } from "../types";
 
 const copy = messages.result;
@@ -80,6 +81,7 @@ export default function Result() {
       {output && (
         <CoverPicker jobId={id} clips={clips} getPlayerTime={() => player.current?.currentTime} />
       )}
+      <PostTextPanel jobId={id} />
 
       <div className="meta-grid">
         <div>

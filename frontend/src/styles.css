@@ -924,6 +924,14 @@ details.help p { color: var(--muted); font-size: 13px; }
 .cover-option span { font-variant-numeric: tabular-nums; }
 .cover-actions { margin-top: 12px; }
 
+/* Text for posting on the Result page. */
+.post-text-body { margin-top: 12px; }
+.post-text-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+.post-text-list li,
+.post-text-item { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.post-text-item p { margin: 0; }
+.post-text-list span, .post-text-item p { overflow-wrap: anywhere; }
+
 /* A message from a button in a row (such as Download for video editors) takes a full line. */
 .btn-row > .alert { flex-basis: 100%; margin: 4px 0 0; }
 

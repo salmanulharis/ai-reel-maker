@@ -13,7 +13,17 @@ const SERVER_MESSAGES: Record<string, string> = {
   "preset name is required": "Give the preset a name.",
   "preset not found": "That preset no longer exists.",
   "could not read a frame": "That frame couldn't be read from the video. Try another moment.",
+  "no clips to describe": "Keep at least one clip to get suggestions.",
 };
+
+/** Suggested text for posting the highlight. "simple" when made without the AI model. */
+export interface PostText {
+  titles: string[];
+  description: string;
+  hashtags: string[];
+  source: "ai" | "simple";
+  note?: string;
+}
 
 /** Download a file from the API, with a readable error instead of a JSON page when it fails. */
 async function download(path: string, fallbackName: string): Promise<string> {
@@ -213,6 +223,9 @@ export const api = {
   /** Save a full-size frame of the finished highlight as a JPEG. Returns the saved file name. */
   downloadCover: (id: string, seconds: number) =>
     download(`${coverUrl(id, seconds)}&download=1`, "highlight-cover.jpg"),
+  postText: (id: string) => http<{ suggestion: PostText | null }>(`/api/jobs/${encodeURIComponent(id)}/post-text`),
+  makePostText: (id: string) =>
+    http<{ suggestion: PostText }>(`/api/jobs/${encodeURIComponent(id)}/post-text`, { method: "POST" }),
   presets: () => http<{ presets: Preset[] }>("/api/presets"),
   savePreset: (name: string, form: Partial<HighlightForm>) =>
     http<{ presets: Preset[] }>("/api/presets", {

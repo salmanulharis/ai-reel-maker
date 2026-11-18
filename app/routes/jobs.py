@@ -15,6 +15,9 @@ from app.services.cover import CoverError, cover_image
 from app.services.cover import parse_request as parse_cover_request
 from app.services.editor_export import ExportError, build_editor_package
 from app.services.job_manager import get_job_manager
+from app.services.post_text import PostTextError
+from app.services.post_text import saved as saved_post_text
+from app.services.post_text import suggest as suggest_post_text
 from app.services.storage import delete_job_files
 from app.workers.worker import load_cache
 
@@ -275,6 +278,32 @@ def job_cover(job_id: str):
         download_name=f"{stem}-cover.jpg",
         max_age=0 if download else 3600,
     )
+
+
+@jobs_bp.get("/jobs/<job_id>/post-text")
+def get_post_text(job_id: str):
+    """The last suggested titles, description and hashtags, if any were made."""
+    manager = get_job_manager()
+    if not manager.get(job_id):
+        return jsonify({"error": "not found"}), 404
+    return jsonify({"suggestion": saved_post_text(manager.job_dir(job_id))})
+
+
+@jobs_bp.post("/jobs/<job_id>/post-text")
+def make_post_text(job_id: str):
+    """Suggest titles, a description and hashtags for posting the highlight (local AI, with a
+    simple fallback when the model is not available)."""
+    manager = get_job_manager()
+    job = manager.get(job_id)
+    if not job:
+        return jsonify({"error": "not found"}), 404
+    try:
+        result = suggest_post_text(
+            job, manager.job_dir(job_id), manager.serialize(job).get("clips") or [], get_settings()
+        )
+    except PostTextError as exc:
+        return jsonify({"error": str(exc)}), exc.status
+    return jsonify({"suggestion": result})
 
 
 @jobs_bp.post("/jobs/<job_id>/clips")
