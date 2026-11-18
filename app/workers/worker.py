@@ -263,6 +263,7 @@ def _run_render(app: Flask, job_id: str) -> None:
         aspect_ratio=config.aspect_ratio,
         subtitles=config.subtitles,
         transition=config.transition,
+        reframe=config.reframe,
         frame_rate=config.frame_rate,
         smooth_motion=config.smooth_motion,
         audio_bitrate=settings.output_audio_bitrate,
@@ -354,6 +355,12 @@ def _run_render(app: Flask, job_id: str) -> None:
         encoder_info = result.get("encoder") or {}
         if result.get("frame_rate"):
             emit_log(str(result["frame_rate"]))
+        if result.get("reframe"):
+            followed = result["reframe"]
+            emit_log(
+                f"Framing followed faces in {followed['followed']} of {followed['clips']} clips"
+                " (the others keep the middle of the picture)"
+            )
         emit_log(
             "Target output "
             f"{canvas.get('width') or out_meta.get('width')}×{canvas.get('height') or out_meta.get('height')} "

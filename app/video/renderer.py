@@ -6,6 +6,7 @@ from typing import Callable
 from app.models.schemas import ClipPlan, ClipPlanItem, RenderSettings, VideoMetadata
 from app.video.ffmpeg_runner import FFmpegError, FFmpegRunner
 from app.video.processor import VideoProcessor
+from app.video.reframe import aspect_crop_filter, clip_frames, subject_center, to_canvas
 from app.video.quality import (
     OutputCanvas,
     choose_canvas,
@@ -71,6 +72,7 @@ class Renderer:
         video_codec = self._codec(settings, hardware_encoder)
         crf = encode_crf(settings.quality, settings.crf)
         aspect = self._aspect_filter(settings)
+        reframed = 0
         probes: dict[str, VideoMetadata] = {}
 
         clip_files = []
@@ -78,8 +80,14 @@ class Renderer:
             clip_path = work_dir / f"clip_{i:03d}.mp4"
             clip_source = clip_sources[i]
             src_meta = self._cached_probe(probes, clip_source, metadata)
+            clip_aspect = aspect
+            if aspect and settings.reframe == "subject":
+                center = self._subject_center(clip_source, clip, src_meta, canvas, work_dir, i)
+                if center is not None:
+                    clip_aspect = aspect_crop_filter(settings.aspect_ratio, center)
+                    reframed += 1
             filters = clip_normalize_filters(
-                src_meta, canvas, extra=[aspect] if aspect else None, smooth_motion=settings.smooth_motion
+                src_meta, canvas, extra=[clip_aspect] if clip_aspect else None, smooth_motion=settings.smooth_motion
             )
             audio_filters = ["asetpts=PTS-STARTPTS", "aresample=48000:async=1"]
             if settings.transition == "fade":
@@ -162,6 +170,7 @@ class Renderer:
             "validation": validation,
             "canvas": {"width": canvas.width, "height": canvas.height, "fps": canvas.fps},
             "frame_rate": describe_frame_rate(source_metas, canvas.fps, settings.smooth_motion),
+            "reframe": {"followed": reframed, "clips": len(clips)} if aspect and settings.reframe == "subject" else None,
             "encoder": {
                 "codec": video_codec,
                 "preset": encode_preset(video_codec, settings.quality),
@@ -179,13 +188,21 @@ class Renderer:
         return CODEC_MAP.get(requested, "libx264")
 
     def _aspect_filter(self, settings: RenderSettings) -> str | None:
-        if settings.aspect_ratio in {"", "original"}:
+        return aspect_crop_filter(settings.aspect_ratio)
+
+    def _subject_center(self, source: Path, clip, meta: VideoMetadata, canvas: OutputCanvas, work_dir: Path, index: int):
+        """Where the people in a clip are, in the output canvas, or None (keep the middle)."""
+        try:
+            center = subject_center(clip_frames(self.runner, source, clip.start, clip.end, work_dir, index))
+        except Exception:  # noqa: BLE001 - framing must never fail a render
             return None
-        ratio = {"16:9": 16 / 9, "9:16": 9 / 16, "1:1": 1, "4:5": 4 / 5}[settings.aspect_ratio]
-        return (
-            f"crop='if(gte(iw/ih,{ratio}),ih*{ratio},iw)':"
-            f"'if(gte(iw/ih,{ratio}),ih,iw/{ratio})'"
-        )
+        if center is None:
+            return None
+        width, height = int(meta.width or 0), int(meta.height or 0)
+        if abs(int(meta.rotation or 0)) % 180 == 90:
+            # Frames come out turned upright; the stored size is before turning.
+            width, height = height, width
+        return to_canvas(center, width, height, canvas.width, canvas.height)
 
     def _clip_source(self, source: Path, clip, source_lookup: dict[str, Path]) -> Path:
         if source_lookup and clip.source_id and clip.source_id in source_lookup:

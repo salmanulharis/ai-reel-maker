@@ -374,6 +374,23 @@ export function HighlightConfigPanel({
               <option value="4:5">{copy.aspect45}</option>
             </select>
           </div>
+          {(form.aspect_ratio !== "original" || form.social_short) && (
+            <div className="field">
+              <label htmlFor="reframe">{copy.reframe}</label>
+              <select
+                id="reframe"
+                aria-describedby="reframe-hint"
+                value={form.reframe}
+                onChange={(e) => update({ reframe: e.target.value as HighlightForm["reframe"] })}
+              >
+                <option value="subject">{copy.reframeSubject}</option>
+                <option value="center">{copy.reframeCenter}</option>
+              </select>
+              <p className="field-hint" id="reframe-hint">
+                {form.reframe === "subject" ? copy.reframeSubjectHint : copy.reframeCenterHint}
+              </p>
+            </div>
+          )}
           <div className="field">
             <label htmlFor="subtitles">{copy.subtitles}</label>
             <select
@@ -665,6 +682,7 @@ export const defaultForm = (): HighlightForm => ({
   subtitles: "none",
   caption_style: "plain",
   tighten: "off",
+  reframe: "subject",
   transition: "cut",
   audio_focus: "balanced",
   frame_rate: "source",
