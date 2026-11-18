@@ -52,6 +52,15 @@ The `Connection` priority guides visual scoring toward affectionate gestures and
 
 **Video** (`app/video/`): `VideoProcessor` builds FFmpeg argv lists (never shell strings; paths go through `safe_path_argument`). `FFmpegRunner` executes them, can run several at once (parallel frame extraction), and `cancel()` kills all of them. `Renderer` cuts and concatenates the clip plan, with optional subtitles, 9:16 output and hardware encoders.
 
+## Where to look
+
+- New pipeline stage or cache file: `app/analysis/pipeline.py` and `load_cache` in `app/workers/worker.py`.
+- AI prompts / reply parsing: `app/ai/prompts.py`, `analyze_scenes_visual` in `app/analysis/visual.py`.
+- Clip selection and length: `app/analysis/optimizer.py`, `app/analysis/sequence_limits.py`; candidate windows in `candidates.py` / `boundaries.py`.
+- New setting: `app/config.py` → `EDITABLE` in `app/routes/settings.py` → `frontend/src/pages/Settings.tsx` + `frontend/src/types/index.ts` (+ `ai_profile.APPLIED_FIELDS` if model-related).
+- Render output: `app/video/renderer.py`, `app/video/quality.py` (canvas, frame rate, encoder args).
+- Frontend: pages in `frontend/src/pages/` (routes in `App.tsx`), API calls in `services/api.ts`, UI strings in `i18n/en.json`, Help page content in `docs/content.ts` (checked by `scripts/check-docs.mjs`).
+
 ## Gotchas
 
 - **Use `qwen3-vl:*-instruct` tags.** The bare `qwen3-vl:2b/4b/8b/30b/latest` tags are thinking models. They ignore `think: false`, spend the whole reply budget on reasoning, and return empty content, so every scene silently falls back to motion scoring. `health()` warns about this.
