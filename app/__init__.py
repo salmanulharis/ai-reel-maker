@@ -62,5 +62,8 @@ def create_app(settings: Settings | None = None, start_background: bool = True) 
 
         schedule_startup_ai(settings)
         start_worker(app)
+        from app.services.watch_folder import start_watcher
+
+        start_watcher(app)
 
     return app

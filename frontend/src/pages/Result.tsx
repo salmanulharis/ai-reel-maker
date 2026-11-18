@@ -6,6 +6,7 @@ import { Alert, CheckIcon, InlineStatus, PageLoader, Spinner } from "../componen
 import { EditorExport } from "../components/EditorExport";
 import { CoverPicker } from "../components/CoverPicker";
 import { PostTextPanel } from "../components/PostTextPanel";
+import { strength } from "../services/strength";
 import type { Job } from "../types";
 
 const copy = messages.result;
@@ -55,6 +56,8 @@ export default function Result() {
   const output = shortsMode ? undefined : job.outputs?.find((item) => item.kind !== "short") || job.outputs?.[0];
   const highlight = shortsMode ? shorts.reduce((sum, item) => sum + (item.duration || 0), 0) : output?.duration || 0;
   const current = shorts.find((item) => item.number === activeShort) || shorts[0];
+  const subtitleChoice = (job.config as { subtitles?: string } | undefined)?.subtitles || "none";
+  const hasSubtitles = subtitleChoice !== "none";
   const reduction = original && highlight ? `${Math.round((1 - highlight / original) * 100)}%` : "—";
   const clips = job.clips || [];
   const timing = job.timing;
@@ -86,6 +89,26 @@ export default function Result() {
                 <span className="muted">
                   {formatTime(item.duration)} · {formatBytes(item.size_bytes)}
                 </span>
+                {(() => {
+                  const value = strength(
+                    clips.filter((clip) => (clip.short_index || 0) === item.number - 1),
+                    job.min_duration,
+                    job.max_duration,
+                  );
+                  return value ? (
+                    <span
+                      className="tag accent"
+                      title={fill(messages.review.strengthHint, { opening: value.opening, moments: value.moments, length: value.length })}
+                    >
+                      {fill(messages.review.strengthTag, { n: value.score })}
+                    </span>
+                  ) : null;
+                })()}
+                {hasSubtitles && (
+                  <a className="btn sm ghost" href={`/api/media/${id}/srt?short=${item.number}`} download>
+                    {copy.subtitlesFile}
+                  </a>
+                )}
                 <a
                   className="btn sm primary"
                   href={`/api/jobs/${id}/download?short=${item.number}`}

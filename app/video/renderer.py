@@ -7,6 +7,8 @@ from app.models.schemas import ClipPlan, ClipPlanItem, RenderSettings, VideoMeta
 from app.video.ffmpeg_runner import FFmpegError, FFmpegRunner
 from app.video.processor import VideoProcessor
 from app.video.reframe import aspect_crop_filter, clip_frames, subject_center, to_canvas
+from app.video.audio_mix import leveling_filters, leveling_gain, measure_command, parse_loudness
+from app.video.overlays import Extras, build_graph, output_size, punch_in_filters
 from app.video.quality import (
     OutputCanvas,
     choose_canvas,
@@ -53,6 +55,7 @@ class Renderer:
         clip_subtitles: Callable[[int, ClipPlanItem, OutputCanvas], Path | None] | None = None,
         hardware_encoder: str | None = None,
         source_lookup: dict[str, Path] | None = None,
+        extras: Extras | None = None,
     ) -> dict:
         """
         Cut, normalize and join the clips. `clip_subtitles(index, clip, canvas)` returns a
@@ -73,6 +76,11 @@ class Renderer:
         crf = encode_crf(settings.quality, settings.crf)
         aspect = self._aspect_filter(settings)
         reframed = 0
+        leveled = 0
+        out_w, out_h = output_size(canvas.width, canvas.height, settings.aspect_ratio)
+        total = sum(max(0.0, c.end - c.start) for c in clips)
+        offset = 0.0
+        moment = -1
         probes: dict[str, VideoMetadata] = {}
 
         clip_files = []
@@ -90,6 +98,13 @@ class Renderer:
                 src_meta, canvas, extra=[clip_aspect] if clip_aspect else None, smooth_motion=settings.smooth_motion
             )
             audio_filters = ["asetpts=PTS-STARTPTS", "aresample=48000:async=1"]
+            if not getattr(clip, "join_previous", False):
+                moment += 1
+            if settings.level_audio:
+                gain = leveling_gain(self._measure(clip_source, clip))
+                if gain is not None:
+                    audio_filters.extend(leveling_filters(gain))
+                    leveled += 1
             if settings.transition == "fade":
                 dur = max(0.05, clip.end - clip.start)
                 fade = min(0.12, dur / 6)
@@ -105,7 +120,13 @@ class Renderer:
                     audio_filters.append(f"afade=t=out:st={dur - fade}:d={fade}")
                 if video_fades:
                     filters.append(",".join(video_fades))
-            extra = ["-vf", ",".join(filters), "-af", ",".join(audio_filters)]
+            if extras and extras.punch_in and moment % 2 == 1:
+                filters.extend(punch_in_filters(out_w, out_h))
+            video_graph = ",".join(filters)
+            if extras and extras.active:
+                video_graph = build_graph(video_graph, extras, out_w, out_h, canvas.fps, offset, total)
+            offset += max(0.0, clip.end - clip.start)
+            extra = ["-vf", video_graph, "-af", ",".join(audio_filters)]
             subtitle_path = clip_subtitles(i, clip, canvas) if clip_subtitles else None
             cmd = VideoProcessor.cut_clip_command(
                 clip_source,
@@ -171,6 +192,7 @@ class Renderer:
             "canvas": {"width": canvas.width, "height": canvas.height, "fps": canvas.fps},
             "frame_rate": describe_frame_rate(source_metas, canvas.fps, settings.smooth_motion),
             "reframe": {"followed": reframed, "clips": len(clips)} if aspect and settings.reframe == "subject" else None,
+            "leveled": {"clips": leveled, "of": len(clips)} if settings.level_audio else None,
             "encoder": {
                 "codec": video_codec,
                 "preset": encode_preset(video_codec, settings.quality),
@@ -186,6 +208,14 @@ class Renderer:
             if hardware_encoder:
                 return hardware_encoder
         return CODEC_MAP.get(requested, "libx264")
+
+    def _measure(self, source: Path, clip) -> float | None:
+        """A clip's loudness in LUFS, or None when it cannot be measured."""
+        try:
+            result = self.runner.run(measure_command(source, clip.start, clip.end))
+        except Exception:  # noqa: BLE001 - leveling is a nicety; the clip keeps its sound
+            return None
+        return parse_loudness(getattr(result, "stderr", "") or "")
 
     def _aspect_filter(self, settings: RenderSettings) -> str | None:
         return aspect_crop_filter(settings.aspect_ratio)

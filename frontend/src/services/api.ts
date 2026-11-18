@@ -14,6 +14,13 @@ const SERVER_MESSAGES: Record<string, string> = {
   "preset not found": "That preset no longer exists.",
   "could not read a frame": "That frame couldn't be read from the video. Try another moment.",
   "no clips to describe": "Keep at least one clip to get suggestions.",
+  "unsupported music format": "Choose an MP3, WAV, M4A, AAC, OGG, FLAC or Opus file.",
+  "music file is too large": "That music file is too large (at most 200 MB).",
+  "unsupported image format": "Choose a PNG, JPG or WebP image.",
+  "image is too large": "That image is too large (at most 5 MB).",
+  "choose a folder to watch": "Type the folder to watch.",
+  "that folder does not exist": "That folder doesn't exist on this computer.",
+  "that preset does not exist": "That preset no longer exists.",
 };
 
 /** Suggested text for posting the highlight. "simple" when made without the AI model. */
@@ -23,6 +30,13 @@ export interface PostText {
   hashtags: string[];
   source: "ai" | "simple";
   note?: string;
+}
+
+/** Send one file to the API as a form upload. */
+function upload<T>(path: string, file: File): Promise<T> {
+  const form = new FormData();
+  form.append("file", file);
+  return http<T>(path, { method: "POST", body: form });
 }
 
 /** Download a file from the API, with a readable error instead of a JSON page when it fails. */
@@ -162,6 +176,12 @@ export function configPayload(form: HighlightForm) {
     tighten: form.use_speech ? form.tighten : "off",
     reframe: form.reframe,
     shorts_count: form.shorts_count >= 2 ? form.shorts_count : 0,
+    level_audio: form.level_audio,
+    subtitle_language: form.use_speech ? form.subtitle_language : "",
+    punch_in: form.punch_in,
+    progress_bar: form.progress_bar,
+    logo_position: form.logo_position,
+    logo_size: form.logo_size,
     transition: form.transition,
     audio_focus: form.audio_focus,
     frame_rate: form.frame_rate,
@@ -229,6 +249,31 @@ export const api = {
   makePostText: (id: string, short?: number) =>
     http<{ suggestion: PostText }>(`/api/jobs/${encodeURIComponent(id)}/post-text${short ? `?short=${short}` : ""}`, {
       method: "POST",
+    }),
+  music: (id: string) => http<{ name: string | null }>(`/api/jobs/${encodeURIComponent(id)}/music`),
+  uploadMusic: (id: string, file: File) => upload<{ name: string }>(`/api/jobs/${encodeURIComponent(id)}/music`, file),
+  deleteMusic: (id: string) => http(`/api/jobs/${encodeURIComponent(id)}/music`, { method: "DELETE" }),
+  renderOptions: (id: string, options: { music_volume?: number; music_duck?: boolean }) =>
+    http(`/api/jobs/${encodeURIComponent(id)}/render-options`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(options),
+    }),
+  /** The parts of each clip kept after pauses are cut (for the Review preview). */
+  tightenSpans: (id: string, clips: Array<{ start: number; end: number; source_id?: string }>) =>
+    http<{ mode: string; spans: Array<Array<[number, number]>> }>(`/api/jobs/${encodeURIComponent(id)}/tighten-spans`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ clips }),
+    }),
+  uploadLogo: (file: File) => upload<{ logo: boolean }>("/api/brand/logo", file),
+  deleteLogo: () => http("/api/brand/logo", { method: "DELETE" }),
+  watchFolder: () => http<{ enabled: boolean; folder: string; preset: string }>("/api/watch-folder"),
+  saveWatchFolder: (config: { enabled: boolean; folder: string; preset: string }) =>
+    http<{ enabled: boolean; folder: string; preset: string }>("/api/watch-folder", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(config),
     }),
   presets: () => http<{ presets: Preset[] }>("/api/presets"),
   savePreset: (name: string, form: Partial<HighlightForm>) =>

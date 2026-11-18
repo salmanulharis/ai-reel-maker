@@ -903,6 +903,15 @@ details.help p { color: var(--muted); font-size: 13px; }
 .short-card-foot .btn { margin-left: auto; }
 .short-picker { margin-top: 16px; max-width: 320px; }
 
+/* Logo, music and watch folder. */
+.logo-picker { display: grid; gap: 8px; margin-top: 8px; }
+.logo-picker img { max-width: 160px; max-height: 80px; object-fit: contain; background: var(--preview-bg); border-radius: var(--radius); padding: 4px; }
+.extras-field { display: grid; gap: 6px; align-content: start; }
+.field-label { font-weight: 600; font-size: 13px; }
+.music-options { display: grid; gap: 8px; margin-top: 12px; max-width: 420px; }
+.watch-panel { margin-top: 16px; display: grid; gap: 10px; }
+.short-title .push-right { margin-left: auto; }
+
 /* Cover image picker on the Result page. */
 .cover-grid {
   display: grid;

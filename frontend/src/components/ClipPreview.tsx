@@ -5,8 +5,10 @@ import {
   FINE_STEP_SECONDS,
   clipSourceId,
   formatPrecise,
+  momentKey,
   nextKept,
   previewUrl,
+  shortIndex,
   reachedEnd,
   trimTo,
 } from "../services/clipPreview";
@@ -39,7 +41,8 @@ export interface ClipPreviewState {
   playClip: (index: number) => void;
   /** Play a suggested moment from "More moments"; `key` identifies it in that list. */
   playMoment: (moment: Moment, key: string) => void;
-  playAll: () => void;
+  /** Play the kept clips in order: all of them, or only those of one short. */
+  playAll: (short?: number) => void;
   pause: () => void;
   step: (seconds: number) => void;
   /** Seek to an edited start or end so the new cut point is visible (only while paused). */
@@ -54,7 +57,13 @@ export interface ClipPreviewState {
  * highlight. One player is shared by all clips; "play all" runs the kept clips in highlight
  * order. Nothing is rendered or uploaded.
  */
-export function useClipPreview(jobId: string, clips: Clip[], sources: JobSource[]): ClipPreviewState {
+export function useClipPreview(
+  jobId: string,
+  clips: Clip[],
+  sources: JobSource[],
+  /** Parts of clips kept after pauses are cut, by clip (momentKey); playback skips the rest. */
+  spans: Record<string, Array<[number, number]>> = {},
+): ClipPreviewState {
   const videoNode = useRef<HTMLVideoElement | null>(null);
   const [videoEl, setVideoEl] = useState<HTMLVideoElement | null>(null);
   const videoRef = useCallback((element: HTMLVideoElement | null) => {
@@ -82,6 +91,19 @@ export function useClipPreview(jobId: string, clips: Clip[], sources: JobSource[
   modeRef.current = mode;
   const momentRef = useRef<Moment | null>(moment?.value ?? null);
   momentRef.current = moment?.value ?? null;
+  const spansRef = useRef(spans);
+  spansRef.current = spans;
+  /** "Play all" for one short only (its index), or null for every kept clip. */
+  const onlyShort = useRef<number | null>(null);
+
+  const nextInPlay = useCallback((index: number) => {
+    const list = clipsRef.current;
+    for (let i = Math.max(-1, index) + 1; i < list.length; i += 1) {
+      if (list[i].kept === false) continue;
+      if (onlyShort.current === null || shortIndex(list[i]) === onlyShort.current) return i;
+    }
+    return -1;
+  }, []);
   /** Raised while the player switches clips itself, so its own pause is not read as the user's. */
   const switching = useRef(false);
   /** Each load gets a number; a slower, older load that finishes later is ignored. */
@@ -194,10 +216,14 @@ export function useClipPreview(jobId: string, clips: Clip[], sources: JobSource[
     [startPlayback],
   );
 
-  const playAll = useCallback(() => {
-    const first = nextKept(clipsRef.current, -1);
-    if (first >= 0) void startPlayback(first, "all");
-  }, [startPlayback]);
+  const playAll = useCallback(
+    (short?: number) => {
+      onlyShort.current = typeof short === "number" ? short : null;
+      const first = nextInPlay(-1);
+      if (first >= 0) void startPlayback(first, "all");
+    },
+    [nextInPlay, startPlayback],
+  );
 
   const pause = useCallback(() => {
     setModeNow("idle");
@@ -260,14 +286,26 @@ export function useClipPreview(jobId: string, clips: Clip[], sources: JobSource[
       const now = video.currentTime;
       const before = lastTime.current;
       lastTime.current = now;
+      // With "tighten speech", skip the pauses the finished video will not have.
+      let bound: Clip | Moment = clip;
+      const pieces = selectedRef.current >= 0 ? spansRef.current[momentKey(clip, sourcesRef.current)] : undefined;
+      if (pieces && pieces.length > 1) {
+        bound = { ...clip, end: pieces[pieces.length - 1][1] };
+        const piece = pieces.find(([, end]) => now < end - 0.02);
+        if (piece && now < piece[0] - 0.05 && now >= clip.start - 0.05) {
+          video.currentTime = piece[0];
+          lastTime.current = piece[0];
+          return;
+        }
+      }
       // Only playback that runs into the end counts; a jump with the seek bar does not.
-      const crossed = before < clip.end && reachedEnd(now, clip) && now - before < 1;
+      const crossed = before < bound.end && reachedEnd(now, bound) && now - before < 1;
       if (!crossed) return;
       if (modeRef.current === "clip" || selectedRef.current < 0) {
         pause();
         return;
       }
-      const next = nextKept(clipsRef.current, selectedRef.current);
+      const next = nextInPlay(selectedRef.current);
       if (next < 0) {
         pause();
         return;
@@ -283,7 +321,7 @@ export function useClipPreview(jobId: string, clips: Clip[], sources: JobSource[
     };
     frame = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(frame);
-  }, [mode, jobId, pause, selectNow, startPlayback, target]);
+  }, [mode, jobId, pause, selectNow, startPlayback, target, nextInPlay]);
 
   // Keep the shown time and state in step with the player, including its own controls.
   useEffect(() => {
@@ -447,7 +485,7 @@ export const ClipPreviewPanel = forwardRef<HTMLElement, PanelProps>(function Cli
             {shown ? fill(copy.playClip, { clip: label }) : copy.playSelected}
           </button>
         )}
-        <button type="button" className="btn sm" disabled={!hasKept || failed} onClick={preview.playAll}>
+        <button type="button" className="btn sm" disabled={!hasKept || failed} onClick={() => preview.playAll()}>
           {copy.playAll}
         </button>
       </div>

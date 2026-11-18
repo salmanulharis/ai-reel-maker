@@ -6,7 +6,9 @@ import { Alert, FilmIcon, InlineStatus, PageLoader, PlayIcon, Spinner } from "..
 import { ClipPreviewPanel, useClipPreview } from "../components/ClipPreview";
 import { MoreMoments } from "../components/MoreMoments";
 import { EditorExport } from "../components/EditorExport";
-import { insertIndex, insertIndexInShort, momentToClip, nearestShort, shortIndex } from "../services/clipPreview";
+import { insertIndex, insertIndexInShort, momentKey, momentToClip, nearestShort, shortIndex } from "../services/clipPreview";
+import { strength } from "../services/strength";
+import { MusicPanel } from "../components/MusicPanel";
 import type { Clip, Job, JobSource, Moment } from "../types";
 
 const copy = messages.review;
@@ -28,8 +30,32 @@ export default function Review() {
     job?.sources && job.sources.length
       ? job.sources
       : [{ id: "v0", filename: job?.original_filename || "", duration }];
-  const preview = useClipPreview(id || "", clips, sources);
+  const [spans, setSpans] = useState<Record<string, Array<[number, number]>>>({});
+  const preview = useClipPreview(id || "", clips, sources, spans);
   const previewPanel = useRef<HTMLElement>(null);
+
+  // With "tighten speech", the preview skips the same pauses as the finished video.
+  const tightenMode = (job?.config as { tighten?: string } | undefined)?.tighten || "off";
+  useEffect(() => {
+    if (!id || tightenMode === "off") {
+      setSpans({});
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      const list = clips.filter((clip) => clip.kept !== false);
+      api
+        .tightenSpans(id, list)
+        .then((data) => {
+          const map: Record<string, Array<[number, number]>> = {};
+          list.forEach((clip, i) => {
+            if (data.spans[i]?.length) map[momentKey(clip, sources)] = data.spans[i];
+          });
+          setSpans(map);
+        })
+        .catch(() => setSpans({}));
+    }, 400);
+    return () => window.clearTimeout(timer);
+  }, [id, tightenMode, clips]);
   /** Goes up when a new selection replaces the clips, so "More moments" reloads. */
   const [planVersion, setPlanVersion] = useState(0);
 
@@ -160,6 +186,7 @@ export default function Review() {
   const over = !shortsMode && !autoLength && estimated > job.max_duration;
   const multi = sources.length > 1;
   const shortNumbers = shortsMode ? [...new Set(clips.map(shortIndex))].sort((a, b) => a - b) : [0];
+  const overall = strength(clips, job.min_duration, job.max_duration);
 
   const adjust = (
     <div className="panel">
@@ -228,6 +255,11 @@ export default function Review() {
         {shortsMode && (
           <span>
             {copy.shorts} <strong>{shortNumbers.length}</strong>
+          </span>
+        )}
+        {!shortsMode && overall && (
+          <span title={fill(copy.strengthHint, { opening: overall.opening, moments: overall.moments, length: overall.length })}>
+            {copy.strength} <strong>{overall.score}</strong>
           </span>
         )}
         {(job.timing?.analysis_seconds ?? 0) > 0 && (
@@ -311,6 +343,28 @@ export default function Review() {
                 <span className={`muted ${shortOver ? "over" : ""}`}>
                   {fill(copy.shortSummary, { length: length.toFixed(1), kept: keptItems.length, total: items.length })}
                 </span>
+                {(() => {
+                  const value = strength(items.map(({ clip }) => clip), job.min_duration, job.max_duration);
+                  return value ? (
+                    <span
+                      className="tag accent"
+                      title={fill(copy.strengthHint, { opening: value.opening, moments: value.moments, length: value.length })}
+                    >
+                      {fill(copy.strengthTag, { n: value.score })}
+                    </span>
+                  ) : null;
+                })()}
+                <button
+                  type="button"
+                  className="btn sm push-right"
+                  disabled={!keptItems.length}
+                  onClick={() => {
+                    preview.playAll(short);
+                    showPreviewPanel();
+                  }}
+                >
+                  {fill(copy.playShort, { n: short + 1 })}
+                </button>
               </h3>
             )}
             {shortOver && <p className="field-hint warn">{copy.shortOver}</p>}
@@ -439,6 +493,11 @@ export default function Review() {
         preview={preview}
         onPreview={previewMoment}
         onAdd={addMoment}
+      />
+      <MusicPanel
+        jobId={id}
+        volume={Number((job.config as { music_volume?: number } | undefined)?.music_volume ?? 25)}
+        duck={(job.config as { music_duck?: boolean } | undefined)?.music_duck !== false}
       />
       {adjust}
       {error && <Alert>{error}</Alert>}

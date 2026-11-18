@@ -6,7 +6,7 @@ from flask import Blueprint, abort, request, send_file
 
 from app.config import get_settings
 from app.services.job_manager import get_job_manager
-from app.services.outputs import ShortParamError, find_output, parse_short
+from app.services.outputs import ShortParamError, find_output, output_stem, parse_short
 from app.utils.security import is_relative_to
 from app.video.sources import load_sources, lookup_path
 
@@ -83,8 +83,14 @@ def output_media(job_id: str):
 
 @media_bp.get("/media/<job_id>/srt")
 def srt_media(job_id: str):
+    """The subtitle file of the highlight, or ?short=N for one short."""
     manager = get_job_manager()
-    path = manager.job_dir(job_id) / "outputs" / "highlight.srt"
+    try:
+        short = parse_short(request.args.get("short"))
+    except ShortParamError:
+        abort(400)
+    name = f"{output_stem(short)}.srt"
+    path = manager.job_dir(job_id) / "outputs" / name
     if not path.exists():
         abort(404)
-    return send_file(path, as_attachment=True, download_name="highlight.srt")
+    return send_file(path, as_attachment=True, download_name=name)

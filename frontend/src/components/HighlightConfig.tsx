@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { fill, messages } from "../i18n";
 import type { HighlightForm } from "../types";
+import { LogoPicker } from "./LogoPicker";
 
 const PRESETS = [
   [10, 10],
@@ -13,6 +14,11 @@ const PRESETS = [
   [90, 90],
 ];
 
+const SUBTITLE_LANGUAGES = [
+  "English", "Spanish", "French", "German", "Italian", "Portuguese", "Dutch", "Polish", "Turkish",
+  "Russian", "Ukrainian", "Arabic", "Hindi", "Bengali", "Urdu", "Malayalam", "Tamil", "Indonesian",
+  "Vietnamese", "Thai", "Chinese", "Japanese", "Korean",
+];
 const STYLES = ["auto", "informative", "exciting", "social", "educational", "custom"] as const;
 const PRIORITIES = ["balanced", "action", "speech", "magic", "visual", "information", "connection"] as const;
 const AUDIO_FOCUSES = ["balanced", "natural", "dialogue"] as const;
@@ -466,6 +472,72 @@ export function HighlightConfigPanel({
               {!form.use_speech ? copy.tightenNeedsSpeech : copy.tightenHint}
             </p>
           </div>
+          {form.use_speech && form.subtitles !== "none" && (
+            <div className="field">
+              <label htmlFor="subtitleLanguage">{copy.subtitleLanguage}</label>
+              <select
+                id="subtitleLanguage"
+                aria-describedby="subtitleLanguage-hint"
+                value={form.subtitle_language}
+                onChange={(e) => update({ subtitle_language: e.target.value })}
+              >
+                <option value="">{copy.subtitleLanguageSpoken}</option>
+                {SUBTITLE_LANGUAGES.map((language) => (
+                  <option key={language} value={language}>
+                    {language}
+                  </option>
+                ))}
+              </select>
+              <p className="field-hint" id="subtitleLanguage-hint">
+                {form.subtitle_language ? copy.subtitleLanguageHint : ""}
+              </p>
+            </div>
+          )}
+          <div className="field">
+            <label htmlFor="logoPosition">{copy.logo}</label>
+            <select
+              id="logoPosition"
+              value={form.logo_position}
+              onChange={(e) => update({ logo_position: e.target.value as HighlightForm["logo_position"] })}
+            >
+              <option value="off">{copy.logoOff}</option>
+              <option value="top-left">{copy.logoTopLeft}</option>
+              <option value="top-right">{copy.logoTopRight}</option>
+              <option value="bottom-left">{copy.logoBottomLeft}</option>
+              <option value="bottom-right">{copy.logoBottomRight}</option>
+            </select>
+            {form.logo_position !== "off" && (
+              <>
+                <label htmlFor="logoSize">{fill(copy.logoSize, { n: form.logo_size })}</label>
+                <input
+                  id="logoSize"
+                  type="range"
+                  min={4}
+                  max={40}
+                  step={1}
+                  value={form.logo_size}
+                  onChange={(e) => update({ logo_size: Number(e.target.value) })}
+                />
+                <LogoPicker />
+              </>
+            )}
+          </div>
+          <div className="field extras-field">
+            <span className="field-label">{copy.extras}</span>
+            <label className="check">
+              <input type="checkbox" checked={form.level_audio} onChange={(e) => update({ level_audio: e.target.checked })} />
+              <span>{copy.levelAudio}</span>
+            </label>
+            <label className="check">
+              <input type="checkbox" checked={form.progress_bar} onChange={(e) => update({ progress_bar: e.target.checked })} />
+              <span>{copy.progressBar}</span>
+            </label>
+            <label className="check">
+              <input type="checkbox" checked={form.punch_in} onChange={(e) => update({ punch_in: e.target.checked })} />
+              <span>{copy.punchIn}</span>
+            </label>
+            <p className="field-hint">{copy.extrasHint}</p>
+          </div>
           <div className="field">
             <label htmlFor="transition">{copy.transition}</label>
             <select id="transition" value={form.transition} onChange={(e) => update({ transition: e.target.value })}>
@@ -596,6 +668,7 @@ export function HighlightConfigPanel({
               >
                 <option value="chronological">{copy.orderChronological}</option>
                 <option value="narrative">{copy.orderNarrative}</option>
+                <option value="hook">{copy.orderHook}</option>
               </select>
             </div>
             <div className="field">
@@ -704,6 +777,12 @@ export const defaultForm = (): HighlightForm => ({
   tighten: "off",
   reframe: "subject",
   shorts_count: 0,
+  level_audio: true,
+  subtitle_language: "",
+  punch_in: false,
+  progress_bar: false,
+  logo_position: "off",
+  logo_size: 12,
   transition: "cut",
   audio_focus: "balanced",
   frame_rate: "source",

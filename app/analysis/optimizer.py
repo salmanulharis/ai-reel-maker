@@ -15,6 +15,7 @@ REPEAT_THRESHOLD = 0.48
 AUTO_LENGTH_KEEP_RATIO = 0.65
 AUTO_LENGTH_STRICT_RATIO = 0.8
 AUTO_LENGTH_SOURCE_SHARE = 0.25
+HOOK_REASON = "Opens the video (strongest hook)."
 # A short must reach this share of the shortest length asked for, or it is not made.
 SHORT_MIN_SHARE = 0.75
 
@@ -275,6 +276,8 @@ class ClipOptimizer:
             selected = self._narrative_order(selected)
         else:
             selected.sort(key=lambda c: float(c["start"]))
+        if order_mode == "hook":
+            selected = self._hook_first(selected)
 
         clips = [self._as_item(c) for c in selected]
         estimated = sum(c.duration for c in clips)
@@ -390,6 +393,23 @@ class ClipOptimizer:
             total -= _duration(item)
         return kept
 
+    @staticmethod
+    def _hook_strength(item: dict) -> float:
+        metrics = item.get("metrics") or {}
+        hook = float(metrics.get("hook_strength") or 0)
+        return hook * 0.7 + float(item.get("score") or 0) * 0.3
+
+    def _hook_first(self, selected: list[dict]) -> list[dict]:
+        """The moment with the strongest hook opens the video; the rest keep their order."""
+        if len(selected) < 2:
+            return selected
+        best = max(range(len(selected)), key=lambda i: self._hook_strength(selected[i]))
+        opener = dict(selected[best])
+        reason = str(opener.get("reason") or "Meaningful moment")
+        if not reason.startswith(HOOK_REASON):
+            opener["reason"] = f"{HOOK_REASON} {reason}"
+        return [opener] + [item for i, item in enumerate(selected) if i != best]
+
     def _narrative_order(self, selected: list[dict]) -> list[dict]:
         def rank(item: dict) -> tuple[int, float]:
             reason = (item.get("reason") or "").lower()
@@ -489,7 +509,7 @@ class ClipOptimizer:
         local_options = {
             **options,
             "must_include": [],
-            "order_mode": "chronological",
+            "order_mode": "hook" if options.get("order_mode") == "hook" else "chronological",
             "length_mode": "range",
             "auto_length_strict": False,
             "source_duration": None,
