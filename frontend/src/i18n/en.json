@@ -368,6 +368,22 @@
     "clipReason": "Why it was chosen",
     "clipScore": "Score"
   },
+  "notify": {
+    "legend": "When it's done",
+    "notify": "Show a notification",
+    "sound": "Play a sound",
+    "hint": "Only when this window isn't in front. The tab title also shows ✓ when it's done, or ⚠ if it stops with a problem.",
+    "blocked": "Notifications are blocked for this site. Allow them in your browser's site settings to use this. The tab title still shows when it's done.",
+    "insecure": "Notifications only work when the app is opened at http://localhost. The sound and the tab title still work.",
+    "unsupported": "This browser can't show notifications. The sound and the tab title still work.",
+    "resultTitle": "Your highlight is ready",
+    "reviewTitle": "Clips are ready to review",
+    "failedTitle": "The highlight stopped with a problem",
+    "body": "{name}",
+    "bodyGeneric": "Open AI Video Highlights to continue.",
+    "badgeDone": "✓ ",
+    "badgeFailed": "⚠ "
+  },
   "editorExport": {
     "button": "Download for video editors",
     "busy": "Preparing…",

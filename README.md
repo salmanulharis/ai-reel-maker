@@ -28,6 +28,7 @@ Everything runs locally. Your videos are not uploaded to third-party AI services
 - Review timeline: keep, remove, trim, extend, regenerate
 - Clip preview on Review: play one clip or all kept clips from the original video, and set a start or end at the paused frame, without creating the video first
 - More moments on Review: the strongest moments left out of the clips, to preview and add by hand
+- Tell me when it's done: an optional system notification and sound when analysis or the video finishes while the app is in the background, plus a ✓ in the tab title
 - Download for video editors: the kept clips as a Premiere Pro / DaVinci Resolve (FCP 7 XML), Final Cut Pro (FCPXML) and EDL timeline that uses the original files, with subtitles timed to the edit
 - Must-include / must-exclude ranges
 - High-quality FFmpeg render (CRF, optional hardware encoders, no watermark)

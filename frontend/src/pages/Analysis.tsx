@@ -5,6 +5,7 @@ import { api, formatElapsed } from "../services/api";
 import { useElapsed } from "../hooks/useElapsed";
 import { fill, messages } from "../i18n";
 import { Alert, CheckIcon, PageLoader, Spinner } from "../components/Feedback";
+import { NotifySettings } from "../components/NotifySettings";
 import { DocLink } from "./Docs";
 import type { Job, JobSource } from "../types";
 
@@ -245,6 +246,7 @@ export default function Analysis() {
           )}
         </div>
         {actionError && <Alert>{actionError}</Alert>}
+        {!stopped && <NotifySettings />}
       </div>
 
       {sources.length > 1 ? (
