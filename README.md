@@ -35,6 +35,7 @@ Everything runs locally. Your videos are not uploaded to third-party AI services
 - Must-include / must-exclude ranges
 - High-quality FFmpeg render (CRF, optional hardware encoders, no watermark)
 - Optional subtitles (SRT or burned-in) and social 9:16 output
+- Tighten speech: cut long pauses (and optionally “um”, “uh”) out of the clips when the video is created
 - Subtitle styles for burned-in subtitles: Plain, or Clean / Bold / Boxed with the spoken word highlighted
 - Analysis cache so changing 20s → 30s does not re-transcribe
 - Cancel, retry from the last valid stage, job history, storage cleanup

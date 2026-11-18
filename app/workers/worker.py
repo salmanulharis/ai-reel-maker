@@ -12,6 +12,7 @@ from flask import Flask
 from app.ai.ollama import OllamaError
 from app.analysis.pipeline import PipelineProgress, VideoAnalyzer
 from app.analysis.sequence_limits import clamp_plan_clips, sequence_cap
+from app.analysis.tighten import tighten_clips
 from app.config import get_settings
 from app.services.ollama_runtime import get_ollama_client
 from app.models.schemas import ClipPlan, ClipPlanItem, HighlightConfig, RenderSettings, VideoMetadata
@@ -281,6 +282,19 @@ def _run_render(app: Flask, job_id: str) -> None:
             transcripts[source_id] = load_transcript(job_dir, source_id, multi_source)
         return transcripts[source_id]
 
+    tighten_note = ""
+    if config.tighten != "off":
+        clip_count, length_before = len(plan.clips), plan.estimated_duration
+        plan.clips = tighten_clips(plan.clips, transcript_for, remove_fillers=config.tighten == "fillers")
+        plan.estimated_duration = sum(c.duration for c in plan.clips)
+        cut = length_before - plan.estimated_duration
+        what = "pauses and filler words" if config.tighten == "fillers" else "pauses"
+        tighten_note = (
+            f"Tightened {clip_count} clips: {cut:.1f}s of {what} cut out"
+            if cut > 0.05
+            else f"Tighten clips: no {what} to cut (or no word timings)"
+        )
+
     if config.subtitles in {"auto", "burned", "srt"}:
         srt_path = outputs / "highlight.srt"
         srt_path.write_text(
@@ -313,6 +327,8 @@ def _run_render(app: Flask, job_id: str) -> None:
         _emit(app, job_id, "job_log", payload)
 
     emit_log("Rendering highlight")
+    if tighten_note:
+        emit_log(tighten_note)
     encoder = None
     if render_settings.quality not in {"source", "very_high"}:
         encoder = preferred_hw_encoder()

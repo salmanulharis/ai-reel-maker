@@ -10,6 +10,8 @@ from pathlib import Path
 from typing import Callable
 
 from app.analysis.sequence_limits import clamp_plan_clips, sequence_cap
+from app.analysis.tighten import tighten_clips
+from app.video.captions import load_transcript
 from app.config import resolve_project_path
 from app.models.db_models import Job
 from app.models.schemas import ClipPlanItem, HighlightConfig, VideoMetadata
@@ -167,6 +169,10 @@ def build_editor_package(job: Job, job_dir: Path, clips: list[dict], probe: Prob
     for item in items:
         if item.source_id not in known:
             item.source_id = first_id
+    if config.tighten != "off":
+        # Cut the same pauses (and fillers) as the rendered video, so the two match.
+        transcripts = {sid: load_transcript(job_dir, sid, multi) for sid in dict.fromkeys(i.source_id for i in items)}
+        items = tighten_clips(items, lambda clip: transcripts[clip.source_id], config.tighten == "fillers")
     # Only the videos the clips use are probed.
     by_id = {
         source_id: _timeline_source(known[source_id], job_dir, multi, config.use_speech, probe)

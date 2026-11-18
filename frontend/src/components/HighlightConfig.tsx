@@ -413,6 +413,23 @@ export function HighlightConfigPanel({
             </div>
           )}
           <div className="field">
+            <label htmlFor="tighten">{copy.tighten}</label>
+            <select
+              id="tighten"
+              aria-describedby="tighten-hint"
+              value={form.use_speech ? form.tighten : "off"}
+              disabled={!form.use_speech}
+              onChange={(e) => update({ tighten: e.target.value as HighlightForm["tighten"] })}
+            >
+              <option value="off">{copy.tightenOff}</option>
+              <option value="pauses">{copy.tightenPauses}</option>
+              <option value="fillers">{copy.tightenFillers}</option>
+            </select>
+            <p className="field-hint" id="tighten-hint">
+              {!form.use_speech ? copy.tightenNeedsSpeech : copy.tightenHint}
+            </p>
+          </div>
+          <div className="field">
             <label htmlFor="transition">{copy.transition}</label>
             <select id="transition" value={form.transition} onChange={(e) => update({ transition: e.target.value })}>
               <option value="cut">{copy.transitionCut}</option>
@@ -647,6 +664,7 @@ export const defaultForm = (): HighlightForm => ({
   aspect_ratio: "original",
   subtitles: "none",
   caption_style: "plain",
+  tighten: "off",
   transition: "cut",
   audio_focus: "balanced",
   frame_rate: "source",

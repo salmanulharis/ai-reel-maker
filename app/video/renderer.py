@@ -81,15 +81,22 @@ class Renderer:
             filters = clip_normalize_filters(
                 src_meta, canvas, extra=[aspect] if aspect else None, smooth_motion=settings.smooth_motion
             )
+            audio_filters = ["asetpts=PTS-STARTPTS", "aresample=48000:async=1"]
             if settings.transition == "fade":
                 dur = max(0.05, clip.end - clip.start)
                 fade = min(0.12, dur / 6)
-                filters.append(f"fade=t=in:st=0:d={fade},fade=t=out:st={dur - fade}:d={fade}")
-            audio_filters = ["asetpts=PTS-STARTPTS", "aresample=48000:async=1"]
-            if settings.transition == "fade":
-                audio_filters.extend(
-                    [f"afade=t=in:st=0:d={fade}", f"afade=t=out:st={dur - fade}:d={fade}"]
-                )
+                # Pieces of one moment (pauses cut out) join without a fade between them.
+                fade_in = not getattr(clip, "join_previous", False)
+                fade_out = not (i + 1 < len(clips) and getattr(clips[i + 1], "join_previous", False))
+                video_fades = []
+                if fade_in:
+                    video_fades.append(f"fade=t=in:st=0:d={fade}")
+                    audio_filters.append(f"afade=t=in:st=0:d={fade}")
+                if fade_out:
+                    video_fades.append(f"fade=t=out:st={dur - fade}:d={fade}")
+                    audio_filters.append(f"afade=t=out:st={dur - fade}:d={fade}")
+                if video_fades:
+                    filters.append(",".join(video_fades))
             extra = ["-vf", ",".join(filters), "-af", ",".join(audio_filters)]
             subtitle_path = clip_subtitles(i, clip, canvas) if clip_subtitles else None
             cmd = VideoProcessor.cut_clip_command(

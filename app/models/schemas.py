@@ -151,6 +151,9 @@ class ClipPlanItem(BaseModel):
     source_id: str = ""
     source_name: str = ""
     source_path: str = ""
+    # A piece of the same moment as the clip before it (after pauses were cut out): no fade
+    # between the two.
+    join_previous: bool = False
 
     @property
     def duration(self) -> float:
@@ -218,6 +221,9 @@ class HighlightConfig(BaseModel):
     # Look of burned-in subtitles. "plain" is the original look; the others highlight each word
     # as it is spoken.
     caption_style: Literal["plain", "clean", "bold", "boxed"] = "plain"
+    # Cut long pauses ("pauses"), or pauses and filler words ("fillers"), out of the clips when
+    # the video is created. Needs speech (word timings).
+    tighten: Literal["off", "pauses", "fillers"] = "off"
     transition: Literal["cut", "fade"] = "cut"
     audio_focus: Literal["balanced", "natural", "dialogue"] = "balanced"
     # "source" keeps the original frame rate; a number converts the output to that rate.
@@ -249,6 +255,7 @@ class HighlightConfig(BaseModel):
         if not self.use_speech:
             # Subtitles come from the transcript, which is not made without speech.
             self.subtitles = "none"
+            self.tighten = "off"
         if self.min_duration > self.max_duration:
             self.min_duration, self.max_duration = self.max_duration, self.min_duration
         if self.allow_repeated_content is None:
