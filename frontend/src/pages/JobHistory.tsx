@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import { api, formatElapsed, formatTime } from "../services/api";
-import { messages } from "../i18n";
+import { fill, messages } from "../i18n";
 import { Alert, HistoryIcon, PageLoader, Spinner } from "../components/Feedback";
 import type { Job } from "../types";
 
@@ -49,6 +49,17 @@ export default function JobHistory() {
     load();
   }, []);
 
+  // While highlights are being made (for example a batch), keep the list up to date.
+  const running = jobs.some((job) => ACTIVE.includes(job.status));
+  useEffect(() => {
+    if (!running) return;
+    const timer = window.setInterval(load, 4000);
+    return () => window.clearInterval(timer);
+  }, [running]);
+
+  const [params] = useSearchParams();
+  const queued = Number(params.get("queued") || 0);
+
   function href(job: Job) {
     if (job.status === "completed") return `/jobs/${job.id}/result`;
     if (job.analysis_status === "completed" && !ACTIVE.includes(job.status)) return `/jobs/${job.id}/review`;
@@ -91,6 +102,7 @@ export default function JobHistory() {
 
   return (
     <div>
+      {queued > 0 && <Alert kind="info">{fill(copy.queued, { n: queued })}</Alert>}
       {error && <Alert>{error}</Alert>}
       <div className="table-wrap">
         <table className="table">

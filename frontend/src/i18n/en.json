@@ -80,6 +80,11 @@
     "video": "Video {n}"
   },
   "create": {
+    "batchLegend": "These videos make…",
+    "batchCombine": "One highlight from all {n} videos",
+    "batchSeparate": "A separate highlight for each video ({n} highlights)",
+    "batchHint": "Each video gets its own highlight with these settings. They are made one after another; you can follow them in History.",
+    "batchHintCrop": "Each video gets its own highlight with these settings, and the crop is used for every video. They are made one after another; you can follow them in History.",
     "step1": "1. Add your video",
     "step2": "2. Choose your highlight",
     "needVideo": "Add a video to continue.",
@@ -208,6 +213,7 @@
     "rangeHint": "Time ranges in the original video, for example 00:32-00:38. Separate several with commas.",
     "analyze": "Create highlight",
     "analyzeMany": "Create highlight from {n} videos",
+    "analyzeEach": "Create {n} highlights",
     "starting": "Starting…",
     "crop": "Crop the video before analysis",
     "cropHint": "Only the selected area is analyzed and used in the highlight. Your original files are not changed. The same crop is used for every video.",
@@ -634,6 +640,7 @@
     "helpTrouble": "If a model is missing, click Install on its card. If the computer runs out of memory, choose the next smaller model. If FFmpeg is missing, install it and restart the app."
   },
   "history": {
+    "queued": "{n} highlights are queued. They are made one after another, and this list updates by itself.",
     "empty": "No highlights yet",
     "emptyHint": "Your highlights will appear here once you create one.",
     "start": "Create a highlight",
