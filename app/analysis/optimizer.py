@@ -35,6 +35,26 @@ def _range_overlaps(item: dict, used: list[tuple[str, float, float]]) -> bool:
     return any(sid == used_sid and _overlaps(span, (start, end)) for used_sid, start, end in used)
 
 
+def sequence_settings(
+    min_duration: float,
+    max_duration: float,
+    max_sequence_duration: float,
+    min_sequence_duration: float | None,
+    sequence_duration_mode: str,
+    length_mode: str = "range",
+) -> tuple[float, float | None, str]:
+    """The longest-clip cap, shortest-clip floor and mode the planner fits each moment with."""
+    max_sequence_duration = max(1.0, float(max_sequence_duration))
+    if min_sequence_duration is not None:
+        min_sequence_duration = max(0.5, float(min_sequence_duration))
+    if sequence_duration_mode == "custom" and min_sequence_duration is not None:
+        max_sequence_duration = max(max_sequence_duration, min_sequence_duration)
+    sequence_duration_mode = "auto" if sequence_duration_mode == "auto" else "custom"
+    if sequence_duration_mode == "auto":
+        max_sequence_duration = auto_cap(min_duration, max_duration, length_mode)
+    return max_sequence_duration, min_sequence_duration, sequence_duration_mode
+
+
 def _default_similarity(a: dict, b: dict) -> float:
     topic_a = str(a.get("topic") or "").strip().lower()
     topic_b = str(b.get("topic") or "").strip().lower()
@@ -88,15 +108,15 @@ class ClipOptimizer:
         similarity_fn = similarity_fn or _default_similarity
         must_include = must_include or []
         must_exclude = must_exclude or []
-        max_sequence_duration = max(1.0, float(max_sequence_duration))
-        if min_sequence_duration is not None:
-            min_sequence_duration = max(0.5, float(min_sequence_duration))
-        if sequence_duration_mode == "custom" and min_sequence_duration is not None:
-            max_sequence_duration = max(max_sequence_duration, min_sequence_duration)
+        max_sequence_duration, min_sequence_duration, sequence_duration_mode = sequence_settings(
+            min_duration,
+            max_duration,
+            max_sequence_duration,
+            min_sequence_duration,
+            sequence_duration_mode,
+            length_mode,
+        )
         max_repeated_duration = max(0.0, float(max_repeated_duration))
-        sequence_duration_mode = "auto" if sequence_duration_mode == "auto" else "custom"
-        if sequence_duration_mode == "auto":
-            max_sequence_duration = auto_cap(min_duration, max_duration, length_mode)
 
         def fit(item: dict, cap: float | None = None) -> dict:
             return fit_candidate(
@@ -420,6 +440,68 @@ class ClipOptimizer:
             pool = forward or remaining
             take(max(pool, key=lambda c: float(c.get("score") or 0)))
         return ordered
+
+    def alternatives(
+        self,
+        candidates: list[dict],
+        taken: list[dict],
+        *,
+        min_duration: float,
+        max_duration: float,
+        must_exclude: list[tuple[float, float]] | None = None,
+        max_sequence_duration: float = 5.0,
+        min_sequence_duration: float | None = None,
+        sequence_duration_mode: str = "custom",
+        content_priorities: list[str] | None = None,
+        length_mode: str = "range",
+        single_source: bool = False,
+        limit: int = 12,
+    ) -> list[ClipPlanItem]:
+        """
+        The strongest moments that are not in the plan, best first, for adding by hand.
+
+        Each moment is fitted to the same clip length as planned clips. Moments overlapping a
+        clip in `taken` (kept or removed), a must-exclude range, or a stronger alternative are
+        left out, as are low-value moments (filler, dead air, a weak intro). `single_source`
+        compares times without the video id, for plans saved before clips carried one.
+        """
+        cap, floor, mode = sequence_settings(
+            min_duration,
+            max_duration,
+            max_sequence_duration,
+            min_sequence_duration,
+            sequence_duration_mode,
+            length_mode,
+        )
+        must_exclude = must_exclude or []
+
+        def key(item: dict) -> str:
+            return "" if single_source else _source_key(item)
+
+        def overlaps(item: dict, used: list[tuple[str, float, float]]) -> bool:
+            span = (float(item["start"]), float(item["end"]))
+            return any(key(item) == sid and _overlaps(span, (start, end)) for sid, start, end in used)
+
+        pool = []
+        for candidate in candidates:
+            span = (float(candidate["start"]), float(candidate["end"]))
+            if any(_overlaps(span, excluded) for excluded in must_exclude) or is_low_value(candidate):
+                continue
+            fitted = fit_candidate(candidate, cap, mode, priorities=content_priorities, min_len=floor)
+            if _duration(fitted) >= 0.8:
+                pool.append(fitted)
+        pool.sort(key=lambda c: float(c.get("score") or 0), reverse=True)
+
+        used = [(key(t), float(t["start"]), float(t["end"])) for t in taken]
+        chosen: list[dict] = []
+        for item in pool:
+            if len(chosen) >= max(0, int(limit)):
+                break
+            if overlaps(item, used):
+                continue
+            chosen.append(item)
+            used.append((key(item), float(item["start"]), float(item["end"])))
+        return [self._as_item(c) for c in chosen]
 
     def _as_item(self, candidate: dict) -> ClipPlanItem:
         return ClipPlanItem(

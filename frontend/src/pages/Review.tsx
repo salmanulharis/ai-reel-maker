@@ -4,7 +4,9 @@ import { api, formatElapsed, formatTime } from "../services/api";
 import { fill, messages } from "../i18n";
 import { Alert, FilmIcon, InlineStatus, PageLoader, PlayIcon, Spinner } from "../components/Feedback";
 import { ClipPreviewPanel, useClipPreview } from "../components/ClipPreview";
-import type { Clip, Job, JobSource } from "../types";
+import { MoreMoments } from "../components/MoreMoments";
+import { insertIndex, momentToClip } from "../services/clipPreview";
+import type { Clip, Job, JobSource, Moment } from "../types";
 
 const copy = messages.review;
 const REGEN = Object.entries(copy.regen);
@@ -27,6 +29,8 @@ export default function Review() {
       : [{ id: "v0", filename: job?.original_filename || "", duration }];
   const preview = useClipPreview(id || "", clips, sources);
   const previewPanel = useRef<HTMLElement>(null);
+  /** Goes up when a new selection replaces the clips, so "More moments" reloads. */
+  const [planVersion, setPlanVersion] = useState(0);
 
   async function refresh() {
     if (!id) return;
@@ -77,6 +81,26 @@ export default function Review() {
 
   function previewClip(index: number) {
     preview.playClip(index);
+    showPreviewPanel();
+  }
+
+  function previewMoment(moment: Moment, key: string) {
+    preview.playMoment(moment, key);
+    showPreviewPanel();
+  }
+
+  /** Add a suggested moment as a kept clip. Returns its clip number. */
+  function addMoment(moment: Moment): number {
+    const order = (job?.config as { order_mode?: string } | undefined)?.order_mode;
+    const index = insertIndex(clips, moment, sources, !order || order === "chronological");
+    // Clips after the new one move down a place; the preview stays on the clip it showed.
+    if (preview.selected >= index) preview.retarget(preview.selected + 1);
+    save([...clips.slice(0, index), momentToClip(moment), ...clips.slice(index)]);
+    return index + 1;
+  }
+
+  /** Bring the player into view when it is off screen (it is above the clips on narrow screens). */
+  function showPreviewPanel() {
     const panel = previewPanel.current;
     if (!panel) return;
     const box = panel.getBoundingClientRect();
@@ -108,6 +132,7 @@ export default function Review() {
       const result = await api.regenerate(id, preset);
       if (result.job) setJob(result.job);
       await refresh();
+      setPlanVersion((value) => value + 1);
     } catch (err) {
       setError((err as Error).message);
     } finally {
@@ -213,7 +238,7 @@ export default function Review() {
                   }}
                 />
               ))}
-              {preview.selected >= 0 && preview.loadedSource === source.id && sourceDuration > 0 && (
+              {(preview.selected >= 0 || preview.moment) && preview.loadedSource === source.id && sourceDuration > 0 && (
                 <div
                   className="playhead"
                   style={{ left: `${Math.min(100, Math.max(0, (preview.time / sourceDuration) * 100))}%` }}
@@ -362,6 +387,15 @@ export default function Review() {
       </div>
       </div>
 
+      <MoreMoments
+        jobId={id}
+        clips={clips}
+        sources={sources}
+        version={planVersion}
+        preview={preview}
+        onPreview={previewMoment}
+        onAdd={addMoment}
+      />
       {adjust}
       {error && <Alert>{error}</Alert>}
       <div className="action-bar">

@@ -34,6 +34,19 @@ export interface Clip {
   source_name?: string;
 }
 
+/** A strong moment the current clips leave out (from GET /jobs/:id/moments). */
+export interface Moment {
+  start: number;
+  end: number;
+  score?: number;
+  reason?: string;
+  duration_reason?: string;
+  transcript?: string;
+  source_id?: string;
+  source_name?: string;
+  candidate_id?: string | null;
+}
+
 export interface JobSource {
   id: string;
   index?: number;

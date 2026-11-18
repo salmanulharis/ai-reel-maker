@@ -879,6 +879,24 @@ details.help p { color: var(--muted); font-size: 13px; }
 .preview-time { margin: 4px 0 0; font-size: 13px; font-variant-numeric: tabular-nums; }
 .preview-time > span:first-child { color: var(--muted); }
 .preview-controls { margin-top: 10px; }
+/* More moments: strong moments left out of the clips. */
+.more-moments-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; flex-wrap: wrap; }
+.more-moments-head .sub-title { margin-bottom: 0; }
+.more-moments-body { margin-top: 12px; }
+.more-moments-body > .inline-status { margin-bottom: 10px; }
+.moment-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(360px, 100%), 1fr));
+  gap: 10px;
+}
+.moment { border: 1px solid var(--border); border-radius: var(--radius-lg); padding: 12px 14px; background: var(--surface); }
+.moment.selected { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+.moment header { display: flex; justify-content: space-between; align-items: center; gap: 10px; flex-wrap: wrap; }
+.moment p { margin: 6px 0; }
+.moment .btn-row { margin-top: 10px; }
 .playhead { position: absolute; top: 0; bottom: 0; width: 2px; margin-left: -1px; background: var(--text); pointer-events: none; }
 @media (min-width: 1200px) {
   .review-body { grid-template-columns: minmax(0, 1fr) minmax(340px, 38%); }
