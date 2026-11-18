@@ -1,11 +1,16 @@
 from __future__ import annotations
 
-from flask import Blueprint, jsonify, request
+from pathlib import Path
+
+from flask import Blueprint, jsonify, request, send_file
 
 from app.config import get_settings
 from app.models.db_models import get_session
 from app.services.job_manager import get_job_manager
 from app.services.presets import PresetError, delete_preset, list_presets, save_preset
+from app.services.watch_folder import read_config as read_watch_config
+from app.services.watch_folder import save_config as save_watch_config
+from app.video.overlays import LOGO_SUFFIXES, brand_dir, brand_logo
 from app.services.settings_store import apply_values, effective_settings
 from app.services.storage import clear_cache, clear_tmp, delete_job_files, storage_report
 
@@ -101,6 +106,60 @@ def remove_preset():
         status = 404 if str(exc) == "preset not found" else 400
         return jsonify({"error": str(exc)}), status
     return jsonify({"presets": presets})
+
+
+LOGO_MAX_BYTES = 5 * 1024 * 1024
+
+
+@settings_bp.get("/brand/logo")
+def get_logo():
+    logo = brand_logo(get_settings().data_dir)
+    if not logo:
+        return jsonify({"error": "no logo"}), 404
+    return send_file(logo, max_age=0)
+
+
+@settings_bp.post("/brand/logo")
+def upload_logo():
+    """The logo shown on videos when a logo position is chosen (replaces an earlier one)."""
+    file = request.files.get("file")
+    if not file or not file.filename:
+        return jsonify({"error": "file is required"}), 400
+    suffix = Path(file.filename).suffix.lower()
+    if suffix not in LOGO_SUFFIXES:
+        return jsonify({"error": "unsupported image format"}), 400
+    folder = brand_dir(get_settings().data_dir)
+    folder.mkdir(parents=True, exist_ok=True)
+    for old in folder.glob("logo.*"):
+        old.unlink(missing_ok=True)
+    dest = folder / f"logo{suffix}"
+    file.save(dest)
+    if dest.stat().st_size > LOGO_MAX_BYTES:
+        dest.unlink()
+        return jsonify({"error": "image is too large"}), 400
+    return jsonify({"logo": True})
+
+
+@settings_bp.delete("/brand/logo")
+def delete_logo():
+    logo = brand_logo(get_settings().data_dir)
+    if logo:
+        logo.unlink(missing_ok=True)
+    return jsonify({"logo": False})
+
+
+@settings_bp.get("/watch-folder")
+def get_watch_folder():
+    return jsonify(read_watch_config())
+
+
+@settings_bp.post("/watch-folder")
+def post_watch_folder():
+    data = request.get_json(silent=True) or {}
+    try:
+        return jsonify(save_watch_config(data.get("enabled"), data.get("folder"), data.get("preset")))
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
 
 
 @settings_bp.post("/settings/storage/clear-tmp")

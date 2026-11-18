@@ -151,6 +151,12 @@ export interface HighlightForm {
   reframe: "center" | "subject";
   /** 0: one highlight; 2-10: that many separate shorts. */
   shorts_count: number;
+  level_audio: boolean;
+  subtitle_language: string;
+  punch_in: boolean;
+  progress_bar: boolean;
+  logo_position: "off" | "top-left" | "top-right" | "bottom-left" | "bottom-right";
+  logo_size: number;
   transition: string;
   audio_focus: "balanced" | "natural" | "dialogue";
   frame_rate: string;

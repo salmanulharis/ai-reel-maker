@@ -1,5 +1,6 @@
 import { useEffect, useId, useState, type ReactNode } from "react";
 import { useSearchParams } from "react-router-dom";
+import { WatchFolderPanel } from "../components/WatchFolderPanel";
 import { api, formatBytes } from "../services/api";
 import { fill, messages } from "../i18n";
 import { Alert, InlineStatus, PageLoader, Spinner } from "../components/Feedback";
@@ -751,6 +752,7 @@ export default function Settings() {
             }}
           />
         </div>
+        <WatchFolderPanel />
       </>
     ),
 

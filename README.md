@@ -20,6 +20,13 @@ Everything runs locally. Your videos are not uploaded to third-party AI services
 
 - Local upload of MP4, MOV, MKV, AVI, WebM, and M4V
 - Background jobs (the HTTP request never blocks on transcoding)
+- Even sound: every clip measured (EBU R128) and brought to about -14 LUFS
+- Strongest hook first: an order that opens with the moment the AI rates the best hook
+- Background music of your own, looped and faded, lowered automatically while someone speaks
+- Logo in a corner, a progress bar, and a "punch-in" closer framing on every other moment
+- Subtitles translated into another language by the local text model
+- Strength estimate (0-100) per highlight or short, from the AI scores
+- Watch folder: videos dropped into a folder become highlights automatically with a saved preset
 - Several shorts from one video: 2–10 separate videos, best first, each from one part of the source and never sharing footage
 - Several videos at once: one highlight from all of them, or a separate highlight for each (made one after another)
 - Scene detection, transcription, silence analysis, and keyframe sampling

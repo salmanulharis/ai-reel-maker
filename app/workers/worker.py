@@ -22,6 +22,8 @@ from app.video.ffmpeg_runner import CancelledError, FFmpegRunner
 from app.video.processor import VideoProcessor
 from app.video.captions import load_transcript, sequence_srt, write_clip_subtitles
 from app.video.renderer import Renderer
+from app.video.audio_mix import find_music, music_mix_command
+from app.video.overlays import Extras, brand_logo
 from app.utils.timefmt import format_elapsed
 from app.video.sources import fallback_source, load_sources, save_sources
 
@@ -185,6 +187,9 @@ def _run_analysis(app: Flask, job_id: str) -> None:
             "progress": 90,
             "error": None,
         }
+        if _wants_auto_render(job_id):
+            # Watch folder jobs go straight on to creating the video.
+            fields.update(status="queued", render_status="queued")
         if cache.get("metadata"):
             fields["metadata_json"] = json.dumps(cache["metadata"])
         manager.update(job_id, **fields)
@@ -249,6 +254,7 @@ def _run_render(app: Flask, job_id: str) -> None:
         subtitles=config.subtitles,
         transition=config.transition,
         reframe=config.reframe,
+        level_audio=config.level_audio,
         frame_rate=config.frame_rate,
         smooth_motion=config.smooth_motion,
         audio_bitrate=settings.output_audio_bitrate,
@@ -281,6 +287,40 @@ def _run_render(app: Flask, job_id: str) -> None:
         )
 
     groups = render_groups(plan, config, outputs, ext)
+    extras = render_extras(config, settings)
+    music = find_music(job_dir) if config.music_volume > 0 else None
+
+    # Subtitles in another language: the spoken lines of the kept clips, translated once.
+    subtitle_note = ""
+    subtitle_transcripts: dict[str, dict] = {}
+
+    def subtitle_transcript_for(clip: ClipPlanItem) -> dict:
+        nonlocal subtitle_note
+        original = transcript_for(clip)
+        language = config.subtitle_language
+        if not language or config.subtitles == "none":
+            return original
+        source_id = clip.source_id if clip.source_id in source_lookup else first_source_id
+        if source_id not in subtitle_transcripts:
+            ranges = [(c.start, c.end) for c in plan.clips if (c.source_id or first_source_id) == source_id]
+            try:
+                from app.services.ollama_runtime import get_ollama_client
+                from app.services.translate import translated_transcript
+
+                result, done, needed = translated_transcript(
+                    original,
+                    ranges,
+                    language,
+                    get_ollama_client(settings),
+                    settings.ollama_text_model,
+                    job_dir / "translations" / f"{source_id}-{language.lower()}.json",
+                )
+                subtitle_note = f"Subtitles translated into {language}: {done} of {needed} lines"
+                subtitle_transcripts[source_id] = result
+            except Exception as exc:  # noqa: BLE001 - original subtitles are better than none
+                subtitle_note = f"Subtitles could not be translated ({exc}); the original words are used"
+                subtitle_transcripts[source_id] = original
+        return subtitle_transcripts[source_id]
 
     meta = VideoMetadata.model_validate(json.loads(job.metadata_json or "{}"))
     renderer = Renderer(runner)
@@ -321,7 +361,7 @@ def _run_render(app: Flask, job_id: str) -> None:
             )
             if config.subtitles in {"auto", "burned", "srt"}:
                 group["srt"].write_text(
-                    sequence_srt([(transcript_for(c), c.start, c.end) for c in group["clips"]]),
+                    sequence_srt([(subtitle_transcript_for(c), c.start, c.end) for c in group["clips"]]),
                     encoding="utf-8",
                 )
             result = renderer.render(
@@ -331,13 +371,20 @@ def _run_render(app: Flask, job_id: str) -> None:
                 render_settings,
                 work_dir,
                 metadata=meta,
-                clip_subtitles=_clip_subtitle_writer(work_dir / "subtitles", transcript_for, config)
+                clip_subtitles=_clip_subtitle_writer(work_dir / "subtitles", subtitle_transcript_for, config)
                 if config.subtitles == "burned"
                 else None,
                 hardware_encoder=encoder,
                 source_lookup=source_lookup,
+                extras=extras,
             )
             out_meta = result["metadata"]
+            if number == 1 and subtitle_note:
+                emit_log(subtitle_note)
+            if result.get("leveled"):
+                emit_log(f"{prefix}Sound levelled in {result['leveled']['clips']} of {result['leveled']['of']} clips")
+            if music is not None:
+                out_meta = add_music(runner, group["output"], music, out_meta, config, settings, emit_log, prefix)
             canvas = result.get("canvas") or {}
             encoder_info = result.get("encoder") or {}
             if result.get("frame_rate") and number == 1:
@@ -382,6 +429,15 @@ def _run_render(app: Flask, job_id: str) -> None:
         manager.clear_outputs(job_id)
         for item in made:
             manager.add_output(job_id, **item)
+        if config.auto_render:
+            try:
+                from app.services.watch_folder import copy_outputs
+
+                copied = copy_outputs(job_dir, [Path(item["path"]) for item in made])
+                if copied:
+                    emit_log(f"Copied to {copied[0].parent}: " + ", ".join(p.name for p in copied))
+            except Exception as exc:  # noqa: BLE001 - the videos are still in the app
+                emit_log(f"Could not copy the videos to the watched folder: {exc}", "WARNING")
         manager.set_stage(job_id, "rendering", "done")
         took = manager.finish_attempt(job_id, "completed")
         manager.update(job_id, status="completed", render_status="completed", progress=100)
@@ -404,6 +460,54 @@ def _run_render(app: Flask, job_id: str) -> None:
         emit_log(str(exc), "ERROR")
         emit_log(f"Creating the video failed after {format_elapsed(took)}", "WARNING")
         _emit(app, job_id, "job_failed", {"error": str(exc)})
+
+
+def _wants_auto_render(job_id: str) -> bool:
+    job = get_job_manager().get(job_id)
+    try:
+        return bool(json.loads(job.config_json or "{}").get("auto_render")) if job else False
+    except json.JSONDecodeError:
+        return False
+
+
+def render_extras(config: HighlightConfig, settings) -> Extras:
+    """Picture extras for a render: punch-in, progress bar and logo (when one is saved)."""
+    logo = brand_logo(settings.data_dir) if config.logo_position != "off" else None
+    return Extras(
+        punch_in=config.punch_in,
+        logo=logo,
+        logo_position=config.logo_position,
+        logo_size=config.logo_size / 100,
+        progress_bar=config.progress_bar,
+    )
+
+
+def add_music(runner, output: Path, music: Path, out_meta: dict, config, settings, emit_log, prefix: str = "") -> dict:
+    """Mix the background music into a finished video. On failure the video keeps its own sound."""
+    mixed = output.with_name(f"{output.stem}.music{output.suffix}")
+    try:
+        runner.run(
+            music_mix_command(
+                output,
+                music,
+                mixed,
+                float(out_meta.get("duration") or 0),
+                config.music_volume / 100,
+                config.music_duck,
+                bool(out_meta.get("has_audio", True)),
+                settings.output_audio_bitrate,
+            )
+        )
+        mixed.replace(output)
+        meta = runner.probe(output).model_dump()
+        emit_log(f"{prefix}Background music added ({music.name}{', lowered under speech' if config.music_duck else ''})")
+        return {**out_meta, **{k: v for k, v in meta.items() if v}}
+    except CancelledError:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        mixed.unlink(missing_ok=True)
+        emit_log(f"{prefix}Background music could not be added: {exc}", "WARNING")
+        return out_meta
 
 
 def plan_items_from_clips(clips: list[dict], source_lookup: dict, source: Path) -> tuple[list[ClipPlanItem], int]:

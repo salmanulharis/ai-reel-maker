@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -15,6 +16,10 @@ from app.services.cover import CoverError, cover_image
 from app.services.cover import parse_request as parse_cover_request
 from app.services.editor_export import ExportError, build_editor_package
 from app.services.job_manager import get_job_manager
+from app.analysis.tighten import tighten_spans
+from app.video.audio_mix import MUSIC_SUFFIXES, find_music
+from app.video.captions import load_transcript
+from app.video.sources import load_sources
 from app.services.outputs import ShortParamError, find_output, parse_short
 from app.services.post_text import PostTextError
 from app.services.post_text import saved as saved_post_text
@@ -316,6 +321,107 @@ def make_post_text(job_id: str):
     except PostTextError as exc:
         return jsonify({"error": str(exc)}), exc.status
     return jsonify({"suggestion": result})
+
+
+MUSIC_MAX_BYTES = 200 * 1024 * 1024
+RENDER_OPTIONS = {"music_volume", "music_duck"}
+
+
+@jobs_bp.get("/jobs/<job_id>/music")
+def get_music(job_id: str):
+    manager = get_job_manager()
+    if not manager.get(job_id):
+        return jsonify({"error": "not found"}), 404
+    music = find_music(manager.job_dir(job_id))
+    return jsonify({"name": music.name.split("_", 1)[-1] if music else None})
+
+
+@jobs_bp.post("/jobs/<job_id>/music")
+def upload_music(job_id: str):
+    """Background music for this job's video (replaces an earlier file)."""
+    manager = get_job_manager()
+    if not manager.get(job_id):
+        return jsonify({"error": "not found"}), 404
+    file = request.files.get("file")
+    if not file or not file.filename:
+        return jsonify({"error": "file is required"}), 400
+    suffix = Path(file.filename).suffix.lower()
+    if suffix not in MUSIC_SUFFIXES:
+        return jsonify({"error": "unsupported music format"}), 400
+    folder = manager.job_dir(job_id) / "music"
+    folder.mkdir(parents=True, exist_ok=True)
+    for old in folder.iterdir():
+        if old.is_file():
+            old.unlink()
+    # The video-name helper would force a video extension; keep the music file's own.
+    stem = re.sub(r"[^\w\- .]", "_", Path(file.filename).stem).strip(" .")[:80] or "music"
+    name = f"{stem}{suffix}"
+    dest = folder / f"music_{name}"
+    file.save(dest)
+    if dest.stat().st_size > MUSIC_MAX_BYTES:
+        dest.unlink()
+        return jsonify({"error": "music file is too large"}), 400
+    return jsonify({"name": name})
+
+
+@jobs_bp.delete("/jobs/<job_id>/music")
+def delete_music(job_id: str):
+    manager = get_job_manager()
+    if not manager.get(job_id):
+        return jsonify({"error": "not found"}), 404
+    music = find_music(manager.job_dir(job_id))
+    if music:
+        music.unlink(missing_ok=True)
+    return jsonify({"name": None})
+
+
+@jobs_bp.post("/jobs/<job_id>/render-options")
+def render_options(job_id: str):
+    """Change choices that only affect creating the video (no new analysis or clip choice)."""
+    manager = get_job_manager()
+    job = manager.get(job_id)
+    if not job:
+        return jsonify({"error": "not found"}), 404
+    data = request.get_json(silent=True) or {}
+    changes = {key: value for key, value in data.items() if key in RENDER_OPTIONS}
+    config = HighlightConfig.model_validate({**json.loads(job.config_json or "{}"), **changes})
+    manager.update(job_id, config_json=config.model_dump_json())
+    return jsonify({"config": {key: getattr(config, key) for key in RENDER_OPTIONS}})
+
+
+@jobs_bp.post("/jobs/<job_id>/tighten-spans")
+def tighten_spans_route(job_id: str):
+    """The parts of each clip the video will keep after pauses (and fillers) are cut, so the
+    Review preview can skip the same pauses."""
+    manager = get_job_manager()
+    job = manager.get(job_id)
+    if not job:
+        return jsonify({"error": "not found"}), 404
+    config = HighlightConfig.model_validate(json.loads(job.config_json or "{}"))
+    clips = (request.get_json(silent=True) or {}).get("clips") or []
+    job_dir = manager.job_dir(job_id)
+    sources = load_sources(job_dir)
+    multi = len(sources) > 1
+    known = {str(s.get("id") or "v0") for s in sources}
+    first = str(sources[0].get("id") or "v0") if sources else "v0"
+    transcripts: dict[str, dict] = {}
+    spans = []
+    for clip in clips[:500]:
+        try:
+            start, end = float(clip["start"]), float(clip["end"])
+        except (KeyError, TypeError, ValueError):
+            spans.append([])
+            continue
+        if config.tighten == "off" or end <= start:
+            spans.append([[start, end]] if end > start else [])
+            continue
+        source_id = str(clip.get("source_id") or "")
+        source_id = source_id if source_id in known else first
+        if source_id not in transcripts:
+            transcripts[source_id] = load_transcript(job_dir, source_id, multi)
+        pieces = tighten_spans(start, end, transcripts[source_id].get("words") or [], config.tighten == "fillers")
+        spans.append([[a, b] for a, b in pieces])
+    return jsonify({"mode": config.tighten, "spans": spans})
 
 
 @jobs_bp.post("/jobs/<job_id>/clips")

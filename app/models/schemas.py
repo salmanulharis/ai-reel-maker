@@ -216,7 +216,7 @@ class HighlightConfig(BaseModel):
     preserve_context: Literal["low", "balanced", "high"] = "balanced"
     remove_repetition: bool = True
     repetition_mode: Literal["strict", "balanced", "light"] = "balanced"
-    order_mode: Literal["chronological", "narrative", "ai"] = "chronological"
+    order_mode: Literal["chronological", "narrative", "ai", "hook"] = "chronological"
     social_short: bool = False
     aspect_ratio: Literal["original", "16:9", "9:16", "1:1", "4:5"] = "original"
     subtitles: Literal["none", "auto", "burned", "srt"] = "none"
@@ -231,6 +231,20 @@ class HighlightConfig(BaseModel):
     reframe: Literal["center", "subject"] = "center"
     # 0: one highlight. 2-10: that many separate shorts, each aiming for min..max_duration.
     shorts_count: int = 0
+    # Even out loudness across clips (about -14 LUFS). Off for jobs made before this option.
+    level_audio: bool = False
+    # Translate subtitles into this language with the local text model ("" = as spoken).
+    subtitle_language: str = ""
+    # Picture extras: closer framing on every other moment, a progress bar, a logo in a corner.
+    punch_in: bool = False
+    progress_bar: bool = False
+    logo_position: Literal["off", "top-left", "top-right", "bottom-left", "bottom-right"] = "off"
+    logo_size: float = 12.0  # percent of the video width
+    # Background music (a file added on the Review page): volume in percent, ducked under speech.
+    music_volume: float = 25.0
+    music_duck: bool = True
+    # Create the video right after analysis (used by the watch folder).
+    auto_render: bool = False
     transition: Literal["cut", "fade"] = "cut"
     audio_focus: Literal["balanced", "natural", "dialogue"] = "balanced"
     # "source" keeps the original frame rate; a number converts the output to that rate.
@@ -263,6 +277,9 @@ class HighlightConfig(BaseModel):
             # Subtitles come from the transcript, which is not made without speech.
             self.subtitles = "none"
             self.tighten = "off"
+        self.subtitle_language = " ".join(str(self.subtitle_language or "").split())[:40]
+        self.logo_size = min(40.0, max(4.0, float(self.logo_size or 12.0)))
+        self.music_volume = min(100.0, max(0.0, float(self.music_volume)))
         self.shorts_count = int(self.shorts_count or 0)
         self.shorts_count = 0 if self.shorts_count < 2 else min(10, self.shorts_count)
         if self.shorts_count:
@@ -325,5 +342,6 @@ class RenderSettings(BaseModel):
     frame_rate: str = "source"
     smooth_motion: bool = False
     audio_bitrate: str = "192k"
+    level_audio: bool = False
     # "subject": centre a 9:16 / 1:1 / 4:5 crop on the people in each clip; "center": the middle.
     reframe: str = "center"
