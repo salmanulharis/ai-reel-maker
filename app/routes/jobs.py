@@ -17,6 +17,7 @@ from app.services.cover import parse_request as parse_cover_request
 from app.services.editor_export import ExportError, build_editor_package
 from app.services.job_manager import get_job_manager
 from app.analysis.tighten import tighten_spans
+from app.analysis.speakers import job_speakers
 from app.video.audio_mix import MUSIC_SUFFIXES, find_music
 from app.video.captions import load_transcript
 from app.video.sources import load_sources
@@ -422,6 +423,19 @@ def tighten_spans_route(job_id: str):
         pieces = tighten_spans(start, end, transcripts[source_id].get("words") or [], config.tighten == "fillers")
         spans.append([[a, b] for a, b in pieces])
     return jsonify({"mode": config.tighten, "spans": spans})
+
+
+@jobs_bp.get("/jobs/<job_id>/speakers")
+def job_speakers_route(job_id: str):
+    """Who speaks in the job's videos (found once, then kept). ?refresh=1 finds them again."""
+    manager = get_job_manager()
+    if not manager.get(job_id):
+        return jsonify({"error": "not found"}), 404
+    try:
+        data = job_speakers(manager.job_dir(job_id), refresh=request.args.get("refresh") == "1")
+    except Exception as exc:  # noqa: BLE001 - reported to the person, the job is unaffected
+        return jsonify({"error": f"could not find speakers: {exc}"}), 500
+    return jsonify(data)
 
 
 @jobs_bp.post("/jobs/<job_id>/clips")

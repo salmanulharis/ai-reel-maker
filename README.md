@@ -26,6 +26,7 @@ Everything runs locally. Your videos are not uploaded to third-party AI services
 - Logo in a corner, a progress bar, and a "punch-in" closer framing on every other moment
 - Subtitles translated into another language by the local text model
 - Strength estimate (0-100) per highlight or short, from the AI scores
+- Speakers: tell the voices apart (light, no large models) and choose moments of one person
 - Watch folder: videos dropped into a folder become highlights automatically with a saved preset
 - Several shorts from one video: 2–10 separate videos, best first, each from one part of the source and never sharing footage
 - Several videos at once: one highlight from all of them, or a separate highlight for each (made one after another)

@@ -243,6 +243,8 @@ class HighlightConfig(BaseModel):
     # Background music (a file added on the Review page): volume in percent, ducked under speech.
     music_volume: float = 25.0
     music_duck: bool = True
+    # Only choose moments where this speaker talks most ("v0:A"; "" = everyone).
+    focus_speaker: str = ""
     # Create the video right after analysis (used by the watch folder).
     auto_render: bool = False
     transition: Literal["cut", "fade"] = "cut"
@@ -277,6 +279,7 @@ class HighlightConfig(BaseModel):
             # Subtitles come from the transcript, which is not made without speech.
             self.subtitles = "none"
             self.tighten = "off"
+        self.focus_speaker = str(self.focus_speaker or "").strip()[:20]
         self.subtitle_language = " ".join(str(self.subtitle_language or "").split())[:40]
         self.logo_size = min(40.0, max(4.0, float(self.logo_size or 12.0)))
         self.music_volume = min(100.0, max(0.0, float(self.music_volume)))

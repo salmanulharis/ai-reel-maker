@@ -912,6 +912,12 @@ details.help p { color: var(--muted); font-size: 13px; }
 .watch-panel { margin-top: 16px; display: grid; gap: 10px; }
 .short-title .push-right { margin-left: auto; }
 
+/* Speakers on the Review page. */
+.speaker-list { list-style: none; margin: 10px 0; padding: 0; display: grid; gap: 6px; }
+.speaker-list li { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; padding: 6px 10px; border: 1px solid var(--border); border-radius: var(--radius); }
+.speaker-list li.selected { border-color: var(--accent); }
+.speaker-list li .btn:last-child { margin-left: auto; }
+
 /* Cover image picker on the Result page. */
 .cover-grid {
   display: grid;

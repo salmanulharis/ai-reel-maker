@@ -845,6 +845,17 @@ def _rescored_candidates(cache: dict, config: HighlightConfig, embedding_fn=None
 
 def plan_from_cache(cache: dict, config: HighlightConfig, settings: Settings) -> dict:
     embedding_fn = repetition_embedding_fn(_plan_embedder(settings))
+    speaker_note = ""
+    if config.focus_speaker and cache.get("speakers"):
+        # Before repeats are removed: otherwise this speaker's moment could be dropped as a
+        # "repeat" of another speaker's similar words.
+        from app.analysis.speakers import filter_candidates
+
+        only = filter_candidates(list(cache.get("candidates") or []), cache["speakers"], config.focus_speaker)
+        if only:
+            cache = {**cache, "candidates": only}
+        else:
+            speaker_note = "No strong moments where that speaker talks most; showing everyone."
     candidates = _rescored_candidates(cache, config, embedding_fn)
     analyzer = RepetitionAnalyzer(embedding_fn)
     similarity_fn = analyzer.as_similarity_fn(candidates) if candidates else None
@@ -857,7 +868,10 @@ def plan_from_cache(cache: dict, config: HighlightConfig, settings: Settings) ->
         similarity_fn=similarity_fn,
         repeat_threshold=analyzer.threshold_for(config.repetition_mode),
     )
-    return plan.model_dump()
+    data = plan.model_dump()
+    if speaker_note:
+        data["notes"] = f"{speaker_note} {data.get('notes') or ''}".strip()
+    return data
 
 
 def alternative_moments(
