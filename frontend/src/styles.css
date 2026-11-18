@@ -890,6 +890,40 @@ details.help p { color: var(--muted); font-size: 13px; }
 .preview-time { margin: 4px 0 0; font-size: 13px; font-variant-numeric: tabular-nums; }
 .preview-time > span:first-child { color: var(--muted); }
 .preview-controls { margin-top: 10px; }
+/* Cover image picker on the Result page. */
+.cover-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: 10px;
+  margin-top: 10px;
+}
+.cover-option {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 6px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  text-align: center;
+}
+.cover-option:hover { border-color: var(--border-hover); }
+.cover-option.selected { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent); }
+.cover-option img {
+  display: block;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  object-fit: contain;
+  background: var(--preview-bg);
+  border-radius: calc(var(--radius) - 2px);
+}
+.cover-option span { font-variant-numeric: tabular-nums; }
+.cover-actions { margin-top: 12px; }
+
 /* A message from a button in a row (such as Download for video editors) takes a full line. */
 .btn-row > .alert { flex-basis: 100%; margin: 4px 0 0; }
 
