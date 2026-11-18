@@ -6,7 +6,7 @@ import sys
 
 from flask import Blueprint, jsonify, request, send_file
 
-from app.analysis.pipeline import plan_from_cache
+from app.analysis.pipeline import alternative_moments, plan_from_cache
 from app.config import get_settings
 from app.models.schemas import HighlightConfig
 from app.services.job_manager import get_job_manager
@@ -183,6 +183,34 @@ def job_timeline(job_id: str):
             "plan": cache.get("clip_plan"),
         }
     )
+
+
+MOMENTS_DEFAULT = 12
+MOMENTS_MAX = 50
+
+
+@jobs_bp.get("/jobs/<job_id>/moments")
+def job_moments(job_id: str):
+    """Strong moments the current clips leave out, best first (for "More moments" on Review)."""
+    manager = get_job_manager()
+    job = manager.get(job_id)
+    if not job:
+        return jsonify({"error": "not found"}), 404
+    cache = load_cache(manager.job_dir(job_id))
+    if not cache.get("candidates"):
+        return jsonify({"moments": [], "available": False})
+    limit = request.args.get("limit", default=MOMENTS_DEFAULT, type=int) or MOMENTS_DEFAULT
+    limit = max(1, min(MOMENTS_MAX, limit))
+    config = HighlightConfig.model_validate(json.loads(job.config_json or "{}"))
+    serialized = manager.serialize(job)
+    moments = alternative_moments(
+        cache,
+        config,
+        serialized.get("clips") or [],
+        single_source=len(serialized.get("sources") or []) <= 1,
+        limit=limit,
+    )
+    return jsonify({"moments": moments, "available": True})
 
 
 @jobs_bp.post("/jobs/<job_id>/clips")

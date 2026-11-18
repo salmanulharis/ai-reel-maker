@@ -1,4 +1,4 @@
-import type { Clip, JobSource } from "../types";
+import type { Clip, JobSource, Moment } from "../types";
 
 /** Shortest clip the preview controls will create when setting a start or end point. */
 export const MIN_CLIP_SECONDS = 0.2;
@@ -23,13 +23,13 @@ export function formatPrecise(seconds?: number): string {
 }
 
 /** The source a clip comes from; clips without one belong to the first video. */
-export function clipSourceId(clip: Clip, sources: JobSource[]): string {
+export function clipSourceId(clip: Clip | Moment, sources: JobSource[]): string {
   return clip.source_id || sources[0]?.id || "v0";
 }
 
 /** Address of the video the preview plays for a clip. With one source this is the same
  *  address the Analysis page uses (the cropped working copy when a crop is set). */
-export function previewUrl(jobId: string, clip: Clip, sources: JobSource[]): string {
+export function previewUrl(jobId: string, clip: Clip | Moment, sources: JobSource[]): string {
   if (sources.length > 1) {
     return `/api/media/${encodeURIComponent(jobId)}/source/${encodeURIComponent(clipSourceId(clip, sources))}`;
   }
@@ -59,6 +59,47 @@ export function trimTo(edge: "start" | "end", time: number, clip: Clip, limit?: 
 
 /** True when the playhead has reached the end of the clip being previewed. A small
  *  tolerance keeps a frame that lands just before the end from slipping past it. */
-export function reachedEnd(time: number, clip: Clip): boolean {
+export function reachedEnd(time: number, clip: Clip | Moment): boolean {
   return time >= clip.end - 0.02;
+}
+
+/** Stable identity for a suggested moment (it has no saved id). */
+export function momentKey(moment: Moment, sources: JobSource[]): string {
+  return `${clipSourceId(moment, sources)}:${moment.start}-${moment.end}`;
+}
+
+/** True when the moment shares any time with a clip from the same video (kept or removed). */
+export function overlapsClips(moment: Moment, clips: Clip[], sources: JobSource[]): boolean {
+  const source = clipSourceId(moment, sources);
+  return clips.some(
+    (clip) => clipSourceId(clip, sources) === source && moment.start < clip.end && clip.start < moment.end,
+  );
+}
+
+/**
+ * Where an added moment goes in the clip list. In time order it goes among the clips by
+ * video and start time; for other orders it goes last, where the user can move it.
+ */
+export function insertIndex(clips: Clip[], moment: Moment, sources: JobSource[], chronological: boolean): number {
+  if (!chronological) return clips.length;
+  const order = (item: Clip | Moment) => Math.max(0, sources.findIndex((s) => s.id === clipSourceId(item, sources)));
+  const after = clips.findIndex(
+    (clip) => order(clip) > order(moment) || (order(clip) === order(moment) && clip.start > moment.start),
+  );
+  return after < 0 ? clips.length : after;
+}
+
+/** A kept clip made from a suggested moment. */
+export function momentToClip(moment: Moment): Clip {
+  return {
+    start: moment.start,
+    end: moment.end,
+    score: moment.score,
+    reason: moment.reason,
+    duration_reason: moment.duration_reason,
+    transcript: moment.transcript,
+    source_id: moment.source_id,
+    source_name: moment.source_name,
+    kept: true,
+  };
 }

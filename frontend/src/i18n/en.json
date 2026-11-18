@@ -314,7 +314,25 @@
       "startTooLate": "To start here, the clip would end before it starts. Move earlier, or set the end first.",
       "endTooEarly": "To end here, the clip would end before it starts. Move later, or set the start first.",
       "removedHint": "This clip is removed. Keep it to change its start or end here.",
+      "momentLabel": "Suggested moment",
+      "momentHint": "This moment isn't one of your clips yet. Choose Add under More moments to use it.",
       "hint": "Pause where the clip should begin or end, then choose Start here or End here. You can go outside the clip to make it longer. Changes are saved at once."
+    },
+    "more": {
+      "title": "More moments",
+      "hint": "Strong moments that aren't in your clips. Preview one, then add it.",
+      "show": "Show moments",
+      "hide": "Hide",
+      "loading": "Finding moments…",
+      "error": "Couldn't load more moments. {error}",
+      "retry": "Try again",
+      "unavailable": "More moments appear once the video has been analyzed.",
+      "empty": "No other strong moments were found. To get a different set, pick new clips below.",
+      "range": "{start} to {end}",
+      "previewLabel": "Preview the moment from {range}",
+      "add": "Add",
+      "addLabel": "Add the moment from {range} to your clips",
+      "added": "Added as clip {n} (starts at {start})."
     },
     "regen": {
       "more_concise": "Shorter",

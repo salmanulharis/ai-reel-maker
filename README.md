@@ -27,6 +27,7 @@ Everything runs locally. Your videos are not uploaded to third-party AI services
 - Diversity-aware clip selection against a duration range
 - Review timeline: keep, remove, trim, extend, regenerate
 - Clip preview on Review: play one clip or all kept clips from the original video, and set a start or end at the paused frame, without creating the video first
+- More moments on Review: the strongest moments left out of the clips, to preview and add by hand
 - Must-include / must-exclude ranges
 - High-quality FFmpeg render (CRF, optional hardware encoders, no watermark)
 - Optional subtitles (SRT or burned-in) and social 9:16 output

@@ -1,5 +1,5 @@
 import { messages } from "../i18n";
-import type { HighlightForm, Job, OllamaStatus, OptimizationPlan } from "../types";
+import type { HighlightForm, Job, Moment, OllamaStatus, OptimizationPlan } from "../types";
 
 // Short server messages that are worth rewording for people.
 const SERVER_MESSAGES: Record<string, string> = {
@@ -166,6 +166,11 @@ export const api = {
   logs: (id: string) => http<{ logs: Array<{ level: string; message: string; ts?: number }> }>(`/api/jobs/${id}/logs`),
   analysis: (id: string) => http<Record<string, unknown>>(`/api/jobs/${id}/analysis`),
   timeline: (id: string) => http<Record<string, unknown>>(`/api/jobs/${id}/timeline`),
+  /** Strong moments the current clips leave out, best first. */
+  moments: (id: string, limit?: number) =>
+    http<{ moments: Moment[]; available: boolean }>(
+      `/api/jobs/${id}/moments${limit ? `?limit=${encodeURIComponent(limit)}` : ""}`,
+    ),
   deleteJob: (id: string) => http(`/api/jobs/${id}`, { method: "DELETE" }),
   openFolder: (id: string) => http(`/api/jobs/${id}/open-folder`, { method: "POST" }),
   ollama: () => http<OllamaStatus>("/api/system/ollama/status"),

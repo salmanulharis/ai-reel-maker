@@ -10,7 +10,7 @@ import {
   reachedEnd,
   trimTo,
 } from "../services/clipPreview";
-import type { Clip, JobSource } from "../types";
+import type { Clip, JobSource, Moment } from "../types";
 
 const copy = messages.review.preview;
 
@@ -24,6 +24,9 @@ export interface ClipPreviewState {
   duration?: number;
   /** Index of the clip the player is set to, or -1. */
   selected: number;
+  /** A suggested moment (not one of the clips) the player is set to, with its key. */
+  moment: Moment | null;
+  momentKey: string;
   mode: Mode;
   /** Player position in seconds of the loaded source. */
   time: number;
@@ -34,6 +37,8 @@ export interface ClipPreviewState {
   /** Metadata of the loaded video is available, so seeking and trimming work. */
   ready: boolean;
   playClip: (index: number) => void;
+  /** Play a suggested moment from "More moments"; `key` identifies it in that list. */
+  playMoment: (moment: Moment, key: string) => void;
   playAll: () => void;
   pause: () => void;
   step: (seconds: number) => void;
@@ -58,6 +63,7 @@ export function useClipPreview(jobId: string, clips: Clip[], sources: JobSource[
   }, []);
   const [duration, setDuration] = useState<number | undefined>(undefined);
   const [selected, setSelected] = useState(-1);
+  const [moment, setMoment] = useState<{ value: Moment; key: string } | null>(null);
   const [mode, setMode] = useState<Mode>("idle");
   const [time, setTime] = useState(0);
   const [loadedSource, setLoadedSource] = useState("");
@@ -74,6 +80,8 @@ export function useClipPreview(jobId: string, clips: Clip[], sources: JobSource[
   selectedRef.current = selected;
   const modeRef = useRef<Mode>(mode);
   modeRef.current = mode;
+  const momentRef = useRef<Moment | null>(moment?.value ?? null);
+  momentRef.current = moment?.value ?? null;
   /** Raised while the player switches clips itself, so its own pause is not read as the user's. */
   const switching = useRef(false);
   /** Each load gets a number; a slower, older load that finishes later is ignored. */
@@ -85,17 +93,27 @@ export function useClipPreview(jobId: string, clips: Clip[], sources: JobSource[
     setMode(next);
   }, []);
 
-  const selectNow = useCallback((index: number) => {
+  /** Point the player at a clip (index) or, with index -1, at a suggested moment (or nothing). */
+  const selectNow = useCallback((index: number, next: { value: Moment; key: string } | null = null) => {
     selectedRef.current = index;
     setSelected(index);
+    momentRef.current = next?.value ?? null;
+    setMoment(next);
   }, []);
+
+  /** What the player is bounded by: the selected clip, else the suggested moment. */
+  const target = useCallback(
+    (): Clip | Moment | null =>
+      selectedRef.current >= 0 ? (clipsRef.current[selectedRef.current] ?? null) : momentRef.current,
+    [],
+  );
 
   /**
    * Load the video a clip comes from (if it is not already loaded) and seek to `at`.
    * "stale": a newer request replaced this one, which must then leave the state alone.
    */
   const loadAndSeek = useCallback(
-    async (clip: Clip, at: number): Promise<"ok" | "failed" | "stale"> => {
+    async (clip: Clip | Moment, at: number): Promise<"ok" | "failed" | "stale"> => {
       const video = videoNode.current;
       if (!video) return "failed";
       const url = previewUrl(jobId, clip, sourcesRef.current);
@@ -138,16 +156,17 @@ export function useClipPreview(jobId: string, clips: Clip[], sources: JobSource[
     [jobId],
   );
 
+  /** Select a clip (index) or a suggested moment (index -1), load its video and play it. */
   const startPlayback = useCallback(
-    async (index: number, nextMode: Mode) => {
-      const clip = clipsRef.current[index];
+    async (index: number, nextMode: Mode, suggested: { value: Moment; key: string } | null = null) => {
+      const item = index >= 0 ? clipsRef.current[index] : suggested?.value;
       const video = videoNode.current;
-      if (!clip || !video) return;
+      if (!item || !video) return;
       switching.current = true;
       video.pause();
-      selectNow(index);
+      selectNow(index, index >= 0 ? null : suggested);
       setModeNow(nextMode);
-      const result = await loadAndSeek(clip, clip.start);
+      const result = await loadAndSeek(item, item.start);
       // A newer request (another clip, or the preview being cleared) owns the player now.
       if (result === "stale") return;
       switching.current = false;
@@ -155,7 +174,9 @@ export function useClipPreview(jobId: string, clips: Clip[], sources: JobSource[
         setModeNow("idle");
         return;
       }
-      if (selectedRef.current !== index || modeRef.current !== nextMode) return;
+      // Still the same choice? (A clip edited meanwhile is a new object, so compare its place.)
+      const same = index >= 0 ? selectedRef.current === index : momentRef.current === item;
+      if (!same || modeRef.current !== nextMode) return;
       try {
         await video.play();
       } catch {
@@ -163,10 +184,15 @@ export function useClipPreview(jobId: string, clips: Clip[], sources: JobSource[
         setModeNow("idle");
       }
     },
-    [loadAndSeek, selectNow, setModeNow],
+    [loadAndSeek, selectNow, setModeNow, target],
   );
 
   const playClip = useCallback((index: number) => void startPlayback(index, "clip"), [startPlayback]);
+
+  const playMoment = useCallback(
+    (value: Moment, key: string) => void startPlayback(-1, "clip", { value, key }),
+    [startPlayback],
+  );
 
   const playAll = useCallback(() => {
     const first = nextKept(clipsRef.current, -1);
@@ -226,7 +252,7 @@ export function useClipPreview(jobId: string, clips: Clip[], sources: JobSource[
       frame = requestAnimationFrame(tick);
       const video = videoNode.current;
       if (!video || video.paused || switching.current) return;
-      const clip = clipsRef.current[selectedRef.current];
+      const clip = target();
       if (!clip) {
         pause();
         return;
@@ -237,7 +263,7 @@ export function useClipPreview(jobId: string, clips: Clip[], sources: JobSource[
       // Only playback that runs into the end counts; a jump with the seek bar does not.
       const crossed = before < clip.end && reachedEnd(now, clip) && now - before < 1;
       if (!crossed) return;
-      if (modeRef.current === "clip") {
+      if (modeRef.current === "clip" || selectedRef.current < 0) {
         pause();
         return;
       }
@@ -257,7 +283,7 @@ export function useClipPreview(jobId: string, clips: Clip[], sources: JobSource[
     };
     frame = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(frame);
-  }, [mode, jobId, pause, selectNow, startPlayback]);
+  }, [mode, jobId, pause, selectNow, startPlayback, target]);
 
   // Keep the shown time and state in step with the player, including its own controls.
   useEffect(() => {
@@ -268,7 +294,7 @@ export function useClipPreview(jobId: string, clips: Clip[], sources: JobSource[
     // Starting the player's own play button inside a clip stops at that clip's end, as
     // "Play clip" does. Playing on from beyond the end is not stopped (see the crossing check).
     const onPlay = () => {
-      if (switching.current || modeRef.current !== "idle" || selectedRef.current < 0) return;
+      if (switching.current || modeRef.current !== "idle" || !target()) return;
       lastTime.current = video.currentTime;
       setModeNow("clip");
     };
@@ -305,7 +331,7 @@ export function useClipPreview(jobId: string, clips: Clip[], sources: JobSource[
       video.removeEventListener("canplay", onPlaying);
       video.removeEventListener("error", onError);
     };
-  }, [videoEl, setModeNow]);
+  }, [videoEl, setModeNow, target]);
 
   // A new set of clips (for example after choosing new clips) may not have this index.
   useEffect(() => {
@@ -316,6 +342,8 @@ export function useClipPreview(jobId: string, clips: Clip[], sources: JobSource[
     videoRef,
     duration,
     selected,
+    moment: moment?.value ?? null,
+    momentKey: moment?.key ?? "",
     mode,
     time,
     loadedSource,
@@ -323,6 +351,7 @@ export function useClipPreview(jobId: string, clips: Clip[], sources: JobSource[
     failed,
     ready,
     playClip,
+    playMoment,
     playAll,
     pause,
     step,
@@ -347,8 +376,11 @@ export const ClipPreviewPanel = forwardRef<HTMLElement, PanelProps>(function Cli
 ) {
   const { videoRef, duration, selected, mode, time, loading, failed, ready } = preview;
   const clip = selected >= 0 ? clips[selected] : undefined;
+  const moment = clip ? null : preview.moment;
+  // What the player shows: a clip, or a suggested moment that is not a clip yet.
+  const shown = clip ?? moment;
   const hasKept = nextKept(clips, -1) >= 0;
-  const label = clip ? fill(messages.review.clipNumber, { n: selected + 1 }) : "";
+  const label = clip ? fill(messages.review.clipNumber, { n: selected + 1 }) : moment ? copy.momentLabel : "";
   const sameSource = !!clip && clipSourceId(clip, sources) === preview.loadedSource;
   const canEdit = !!clip && clip.kept !== false && ready && !failed && sameSource;
   const newStart = canEdit && clip ? trimTo("start", time, clip, duration) : null;
@@ -361,25 +393,25 @@ export const ClipPreviewPanel = forwardRef<HTMLElement, PanelProps>(function Cli
     const order = clips.filter((c) => c.kept !== false).indexOf(clip) + 1;
     const total = clips.filter((c) => c.kept !== false).length;
     status = fill(copy.playingAll, { clip: label, n: order, total });
-  } else if (mode === "clip" && clip) status = fill(copy.playingClip, { clip: label });
-  else if (clip) status = fill(copy.paused, { clip: label });
+  } else if (mode === "clip" && shown) status = fill(copy.playingClip, { clip: label });
+  else if (shown) status = fill(copy.paused, { clip: label });
 
   return (
     <section className="panel preview-panel" ref={ref} aria-labelledby="clip-preview-title">
       <h3 id="clip-preview-title" className="sub-title">
         {copy.title}
       </h3>
-      <div className={`preview-frame ${clip ? "" : "empty"}`}>
+      <div className={`preview-frame ${shown ? "" : "empty"}`}>
         <video
           ref={videoRef}
           className="preview"
-          controls={!!clip && !failed}
+          controls={!!shown && !failed}
           preload="metadata"
           playsInline
-          aria-label={clip ? fill(copy.videoLabel, { clip: label }) : copy.title}
-          hidden={!clip || failed}
+          aria-label={shown ? fill(copy.videoLabel, { clip: label }) : copy.title}
+          hidden={!shown || failed}
         />
-        {!clip && <p className="preview-placeholder">{copy.empty}</p>}
+        {!shown && <p className="preview-placeholder">{copy.empty}</p>}
         {loading && !failed && (
           <span className="preview-loading">
             <Spinner label={copy.loading} />
@@ -389,12 +421,12 @@ export const ClipPreviewPanel = forwardRef<HTMLElement, PanelProps>(function Cli
       <p className="preview-status" role="status" aria-live="polite">
         {status}
       </p>
-      {clip && !failed && (
+      {shown && !failed && (
         <p className="preview-time">
           <span>{copy.position}</span> <strong>{formatPrecise(time)}</strong>
           <span className="muted">
             {" "}
-            · {fill(copy.clipRange, { start: formatPrecise(clip.start), end: formatPrecise(clip.end) })}
+            · {fill(copy.clipRange, { start: formatPrecise(shown.start), end: formatPrecise(shown.end) })}
           </span>
         </p>
       )}
@@ -407,10 +439,12 @@ export const ClipPreviewPanel = forwardRef<HTMLElement, PanelProps>(function Cli
           <button
             type="button"
             className="btn sm primary"
-            disabled={!clip || failed}
-            onClick={() => preview.playClip(selected)}
+            disabled={!shown || failed}
+            onClick={() =>
+              moment ? preview.playMoment(moment, preview.momentKey) : preview.playClip(selected)
+            }
           >
-            {clip ? fill(copy.playClip, { clip: label }) : copy.playSelected}
+            {shown ? fill(copy.playClip, { clip: label }) : copy.playSelected}
           </button>
         )}
         <button type="button" className="btn sm" disabled={!hasKept || failed} onClick={preview.playAll}>
@@ -421,7 +455,7 @@ export const ClipPreviewPanel = forwardRef<HTMLElement, PanelProps>(function Cli
         <button
           type="button"
           className="btn sm ghost"
-          disabled={!clip || !ready || failed}
+          disabled={!shown || !ready || failed}
           aria-label={copy.backLabel}
           onClick={() => preview.step(-FINE_STEP_SECONDS)}
         >
@@ -430,7 +464,7 @@ export const ClipPreviewPanel = forwardRef<HTMLElement, PanelProps>(function Cli
         <button
           type="button"
           className="btn sm ghost"
-          disabled={!clip || !ready || failed}
+          disabled={!shown || !ready || failed}
           aria-label={copy.forwardLabel}
           onClick={() => preview.step(FINE_STEP_SECONDS)}
         >
@@ -454,6 +488,7 @@ export const ClipPreviewPanel = forwardRef<HTMLElement, PanelProps>(function Cli
         </button>
       </div>
       {clip && clip.kept === false && <p className="field-hint">{copy.removedHint}</p>}
+      {moment && <p className="field-hint">{copy.momentHint}</p>}
       {canEdit && newStart === null && newEnd !== null && <p className="field-hint">{copy.startTooLate}</p>}
       {canEdit && newEnd === null && newStart !== null && <p className="field-hint">{copy.endTooEarly}</p>}
       <p className="field-hint">{copy.hint}</p>

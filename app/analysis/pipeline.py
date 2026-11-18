@@ -841,7 +841,9 @@ class VideoAnalyzer:
             raise CancelledError("Job cancelled")
 
 
-def plan_from_cache(cache: dict, config: HighlightConfig, settings: Settings) -> dict:
+def _rescored_candidates(cache: dict, config: HighlightConfig, embedding_fn=None) -> list[dict]:
+    """Cached candidates scored for the current style and priorities, repeats removed when the
+    config asks for it."""
     candidates = list(cache.get("candidates") or [])
     populate_candidate_audio_metrics(
         candidates,
@@ -859,10 +861,15 @@ def plan_from_cache(cache: dict, config: HighlightConfig, settings: Settings) ->
             audio_focus=config.audio_focus,
         )
         cand["reason"] = scorer.reason_for(metrics, cand.get("reason") or "Meaningful moment")
-    embedding_fn = repetition_embedding_fn(_plan_embedder(settings))
     if config.remove_repetition:
         analyzer = RepetitionAnalyzer(embedding_fn)
         candidates = analyzer.deduplicate(candidates, threshold=analyzer.threshold_for(config.repetition_mode))
+    return candidates
+
+
+def plan_from_cache(cache: dict, config: HighlightConfig, settings: Settings) -> dict:
+    embedding_fn = repetition_embedding_fn(_plan_embedder(settings))
+    candidates = _rescored_candidates(cache, config, embedding_fn)
     analyzer = RepetitionAnalyzer(embedding_fn)
     similarity_fn = analyzer.as_similarity_fn(candidates) if candidates else None
     optimizer = ClipOptimizer()
@@ -887,6 +894,38 @@ def plan_from_cache(cache: dict, config: HighlightConfig, settings: Settings) ->
         auto_length_strict=config.auto_length_strict,
     )
     return plan.model_dump()
+
+
+def alternative_moments(
+    cache: dict,
+    config: HighlightConfig,
+    taken: list[dict],
+    *,
+    single_source: bool = False,
+    limit: int = 12,
+) -> list[dict]:
+    """
+    Strong moments the plan left out, best first, so the user can add one by hand.
+
+    Uses word-based repetition only: no model call, so the Review page gets the list at once.
+    """
+    candidates = _rescored_candidates(cache, config)
+    items = ClipOptimizer().alternatives(
+        candidates,
+        taken,
+        min_duration=config.min_duration,
+        max_duration=config.max_duration,
+        must_exclude=config.must_exclude,
+        max_sequence_duration=config.max_sequence_duration,
+        min_sequence_duration=config.min_sequence_duration,
+        sequence_duration_mode=config.sequence_duration_mode,
+        content_priorities=config.content_priorities,
+        length_mode=config.length_mode,
+        single_source=single_source,
+        limit=limit,
+    )
+    # The browser plays sources by id; it never needs the path on disk.
+    return [item.model_dump(exclude={"source_path", "thumbnail"}) for item in items]
 
 
 def _expand_segment_score(raw: dict, seg) -> CandidateScore:
