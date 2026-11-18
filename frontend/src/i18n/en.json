@@ -392,6 +392,23 @@
     "clipReason": "Why it was chosen",
     "clipScore": "Score"
   },
+  "postText": {
+    "title": "Text for posting",
+    "hint": "Titles, a description and hashtags written by your local AI from what is said and shown in the highlight. Check them before posting.",
+    "make": "Suggest titles and hashtags",
+    "again": "Suggest again",
+    "busy": "Writing suggestions… On a computer without a graphics card this can take a minute.",
+    "simple": "Made without the AI model, from the most used words. {note}",
+    "titles": "Titles",
+    "description": "Description",
+    "hashtags": "Hashtags",
+    "copy": "Copy",
+    "copied": "Copied",
+    "copyTitle": "Copy title {n}",
+    "copyDescription": "Copy the description",
+    "copyHashtags": "Copy the hashtags",
+    "copyFailed": "Couldn't copy. Select the text and copy it yourself."
+  },
   "cover": {
     "title": "Cover image",
     "hint": "A still to use as the thumbnail when you post the video. Pick a suggested frame, or pause the video above where you like and use that frame.",

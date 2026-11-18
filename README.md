@@ -29,6 +29,7 @@ Everything runs locally. Your videos are not uploaded to third-party AI services
 - Review timeline: keep, remove, trim, extend, regenerate
 - Clip preview on Review: play one clip or all kept clips from the original video, and set a start or end at the paused frame, without creating the video first
 - More moments on Review: the strongest moments left out of the clips, to preview and add by hand
+- Text for posting: titles, a description and hashtags written by the local text model from the kept clips (simple keyword fallback when it is offline)
 - Cover image: pick a suggested frame of the finished highlight, or the frame in the player, and save it as a JPEG
 - Saved presets: keep the Create page choices under a name and apply them to the next video (the crop and time ranges stay per video)
 - Tell me when it's done: an optional system notification and sound when analysis or the video finishes while the app is in the background, plus a ✓ in the tab title
