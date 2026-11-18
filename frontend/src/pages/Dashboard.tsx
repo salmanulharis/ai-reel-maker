@@ -23,6 +23,8 @@ export default function Dashboard() {
   const [starting, setStarting] = useState(false);
   const [error, setError] = useState("");
   const [aiNotice, setAiNotice] = useState(false);
+  // With several videos: one highlight from all of them, or one highlight per video.
+  const [separate, setSeparate] = useState(false);
 
   useEffect(() => {
     if (sessionStorage.getItem("ai-setup-dismissed")) return;
@@ -104,6 +106,11 @@ export default function Dashboard() {
     setStarting(true);
     setError("");
     try {
+      if (separate && files.length > 1) {
+        const result = await api.split(job.id, form);
+        navigate(`/history?queued=${result.jobs.length}`);
+        return;
+      }
       await api.analyze(job.id, form);
       navigate(`/jobs/${job.id}/analysis`);
     } catch (err) {
@@ -178,6 +185,22 @@ export default function Dashboard() {
             />
           </>
         )}
+        {files.length > 1 && (
+          <fieldset className="batch-choice">
+            <legend className="sub-title">{copy.batchLegend}</legend>
+            <label className="check">
+              <input type="radio" name="batch" checked={!separate} onChange={() => setSeparate(false)} />
+              <span>{fill(copy.batchCombine, { n: files.length })}</span>
+            </label>
+            <label className="check">
+              <input type="radio" name="batch" checked={separate} onChange={() => setSeparate(true)} />
+              <span>{fill(copy.batchSeparate, { n: files.length })}</span>
+            </label>
+            {separate && (
+              <p className="field-hint">{form.cropEnabled ? copy.batchHintCrop : copy.batchHint}</p>
+            )}
+          </fieldset>
+        )}
         {job && (
           <div className="meta-grid" aria-label={copy.details}>
             {(sources.length || files.length) > 1 && (
@@ -228,7 +251,7 @@ export default function Dashboard() {
             {starting
               ? messages.config.starting
               : files.length > 1
-                ? fill(messages.config.analyzeMany, { n: files.length })
+                ? fill(separate ? messages.config.analyzeEach : messages.config.analyzeMany, { n: files.length })
                 : messages.config.analyze}
           </button>
           {blocker && (

@@ -20,6 +20,7 @@ Everything runs locally. Your videos are not uploaded to third-party AI services
 
 - Local upload of MP4, MOV, MKV, AVI, WebM, and M4V
 - Background jobs (the HTTP request never blocks on transcoding)
+- Several videos at once: one highlight from all of them, or a separate highlight for each (made one after another)
 - Scene detection, transcription, silence analysis, and keyframe sampling
 - Optional local vision + language understanding through Ollama (`qwen3-vl:8b-instruct` recommended)
 - Light and dark theme (header switch, preference saved locally)

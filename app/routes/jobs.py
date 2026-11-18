@@ -93,6 +93,26 @@ def analyze_job(job_id: str):
     return jsonify(manager.serialize(job))
 
 
+@jobs_bp.post("/jobs/<job_id>/split")
+def split_job(job_id: str):
+    """Make a separate highlight for each video of a job that has not started: one queued job
+    per video with these settings (the body, as for /analyze). The original job is removed."""
+    manager = get_job_manager()
+    job = manager.get(job_id)
+    if not job:
+        return jsonify({"error": "not found"}), 404
+    data = request.get_json(silent=True) or {}
+    try:
+        config = _config_from_request({**json.loads(job.config_json or "{}"), **data})
+        jobs = manager.split_into_jobs(job_id, config)
+    except (ValueError, OSError) as exc:
+        return jsonify({"error": str(exc)}), 400
+    from app.routes.settings import request_delete
+
+    request_delete(job_id)
+    return jsonify({"jobs": [manager.serialize(item) for item in jobs]})
+
+
 @jobs_bp.post("/jobs/<job_id>/cancel")
 def cancel_job(job_id: str):
     job = get_job_manager().cancel(job_id)

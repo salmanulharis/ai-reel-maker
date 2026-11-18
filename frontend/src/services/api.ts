@@ -179,6 +179,13 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(configPayload(form)),
     }),
+  /** One highlight per video of a job that has not started (the job is replaced). */
+  split: (id: string, form: HighlightForm) =>
+    http<{ jobs: Job[] }>(`/api/jobs/${id}/split`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(configPayload(form)),
+    }),
   render: (id: string, clips?: unknown) =>
     http<Job>(`/api/jobs/${id}/render`, {
       method: "POST",

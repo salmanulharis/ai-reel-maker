@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 import threading
 import uuid
 from datetime import datetime, timezone
@@ -114,6 +115,19 @@ class JobManager:
                     "size_bytes": meta.size_bytes,
                 }
             )
+        return self._create_record(job_id, job_dir, sources, first_meta, total_duration, config)
+
+    def _create_record(
+        self,
+        job_id: str,
+        job_dir: Path,
+        sources: list[dict],
+        first_meta: VideoMetadata | None,
+        total_duration: float,
+        config: HighlightConfig,
+        status: str = "uploaded",
+    ) -> Job:
+        """Save the sources list and add the job (with its pending stages) to the database."""
         save_sources(job_dir, sources)
         display = ", ".join(s["filename"] for s in sources)
         combined = VideoMetadata(
@@ -131,7 +145,8 @@ class JobManager:
         try:
             job = Job(
                 id=job_id,
-                status="uploaded",
+                status=status,
+                analysis_status="pending",
                 original_filename=display[:255],
                 input_path=sources[0]["path"],
                 style=config.style,
@@ -149,6 +164,78 @@ class JobManager:
             return job
         finally:
             session.close()
+
+    def split_into_jobs(self, job_id: str, config: HighlightConfig) -> list[Job]:
+        """
+        Turn a job with several videos that has not started yet into one queued job per video,
+        all with `config`. The uploaded files are moved, not copied. The original job is left
+        without videos; the caller deletes it. Nothing changes if a file cannot be moved.
+        """
+        job = self.get(job_id)
+        if not job:
+            raise LookupError("not found")
+        if job.status != "uploaded":
+            raise ValueError("only a job that has not started can be split")
+        sources = load_sources(self.job_dir(job_id))
+        if len(sources) < 2:
+            raise ValueError("splitting needs at least two videos")
+
+        moved: list[tuple[Path, Path, str, dict]] = []
+        new_ids: list[str] = []
+        try:
+            for source in sources:
+                original = Path(str(source.get("path") or ""))
+                if not original.is_file():
+                    raise ValueError(f"video file is missing: {source.get('filename')}")
+                new_id = uuid.uuid4().hex[:12]
+                new_ids.append(new_id)
+                new_dir = self.settings.jobs_dir / new_id / "source"
+                new_dir.mkdir(parents=True, exist_ok=True)
+                dest = new_dir / f"{source_id_for(0)}_{source.get('filename') or original.name}"
+                shutil.move(str(original), str(dest))
+                moved.append((original, dest.resolve(), new_id, source))
+        except Exception:
+            # Put every file back and remove the new folders, so the original job still works.
+            for original, dest, _, _ in moved:
+                if dest.is_file():
+                    shutil.move(str(dest), str(original))
+            for new_id in new_ids:
+                shutil.rmtree(self.settings.jobs_dir / new_id, ignore_errors=True)
+            raise
+
+        runner = FFmpegRunner()
+        jobs = []
+        for _, dest, new_id, source in moved:
+            try:
+                meta = runner.probe(dest)
+            except Exception:  # noqa: BLE001 - the upload's own record is enough to start
+                meta = VideoMetadata(
+                    filename=str(source.get("filename") or dest.name),
+                    duration=float(source.get("duration") or 0),
+                    width=int(source.get("width") or 0),
+                    height=int(source.get("height") or 0),
+                    fps=float(source.get("fps") or 0),
+                    size_bytes=int(source.get("size_bytes") or 0),
+                )
+            entry = {
+                "id": source_id_for(0),
+                "index": 0,
+                "filename": source.get("filename") or dest.name,
+                "path": str(dest),
+                "analysis_path": str(dest),
+                "duration": meta.duration,
+                "width": meta.width,
+                "height": meta.height,
+                "fps": source_frame_rate(meta),
+                "size_bytes": meta.size_bytes or dest.stat().st_size,
+            }
+            jobs.append(
+                self._create_record(
+                    new_id, self.settings.jobs_dir / new_id, [entry], meta, float(meta.duration or 0), config, "queued"
+                )
+            )
+        save_sources(self.job_dir(job_id), [])
+        return jobs
 
     def get(self, job_id: str) -> Job | None:
         session = get_session()
