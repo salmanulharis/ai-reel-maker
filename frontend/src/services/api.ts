@@ -146,6 +146,7 @@ export function configPayload(form: HighlightForm) {
     social_short: form.social_short,
     aspect_ratio: form.aspect_ratio,
     subtitles: form.subtitles,
+    caption_style: form.caption_style,
     transition: form.transition,
     audio_focus: form.audio_focus,
     frame_rate: form.frame_rate,

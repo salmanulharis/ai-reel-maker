@@ -215,6 +215,9 @@ class HighlightConfig(BaseModel):
     social_short: bool = False
     aspect_ratio: Literal["original", "16:9", "9:16", "1:1", "4:5"] = "original"
     subtitles: Literal["none", "auto", "burned", "srt"] = "none"
+    # Look of burned-in subtitles. "plain" is the original look; the others highlight each word
+    # as it is spoken.
+    caption_style: Literal["plain", "clean", "bold", "boxed"] = "plain"
     transition: Literal["cut", "fade"] = "cut"
     audio_focus: Literal["balanced", "natural", "dialogue"] = "balanced"
     # "source" keeps the original frame rate; a number converts the output to that rate.

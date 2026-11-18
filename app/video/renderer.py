@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Callable
 
-from app.models.schemas import ClipPlan, RenderSettings, VideoMetadata
+from app.models.schemas import ClipPlan, ClipPlanItem, RenderSettings, VideoMetadata
 from app.video.ffmpeg_runner import FFmpegError, FFmpegRunner
 from app.video.processor import VideoProcessor
 from app.video.quality import (
@@ -48,10 +49,15 @@ class Renderer:
         settings: RenderSettings,
         work_dir: Path,
         metadata: VideoMetadata | None = None,
-        srt_path: Path | None = None,
+        clip_subtitles: Callable[[int, ClipPlanItem, OutputCanvas], Path | None] | None = None,
         hardware_encoder: str | None = None,
         source_lookup: dict[str, Path] | None = None,
     ) -> dict:
+        """
+        Cut, normalize and join the clips. `clip_subtitles(index, clip, canvas)` returns a
+        subtitle file to burn into one clip, timed from that clip's start (each clip is cut on
+        its own and starts at 0), or None for no subtitles on it.
+        """
         work_dir.mkdir(parents=True, exist_ok=True)
         output.parent.mkdir(parents=True, exist_ok=True)
         clips = [c for c in plan.clips if c.end > c.start]
@@ -85,6 +91,7 @@ class Renderer:
                     [f"afade=t=in:st=0:d={fade}", f"afade=t=out:st={dur - fade}:d={fade}"]
                 )
             extra = ["-vf", ",".join(filters), "-af", ",".join(audio_filters)]
+            subtitle_path = clip_subtitles(i, clip, canvas) if clip_subtitles else None
             cmd = VideoProcessor.cut_clip_command(
                 clip_source,
                 clip_path,
@@ -97,8 +104,8 @@ class Renderer:
                 audio_bitrate=settings.audio_bitrate,
                 extra=extra,
             )
-            if srt_path and settings.subtitles == "burned":
-                cmd = self._inject_subtitles(cmd, srt_path)
+            if subtitle_path:
+                cmd = self._inject_subtitles(cmd, subtitle_path)
             try:
                 self.runner.run(cmd)
             except FFmpegError:
@@ -117,8 +124,8 @@ class Renderer:
                     audio_bitrate=settings.audio_bitrate,
                     extra=extra,
                 )
-                if srt_path and settings.subtitles == "burned":
-                    cmd = self._inject_subtitles(cmd, srt_path)
+                if subtitle_path:
+                    cmd = self._inject_subtitles(cmd, subtitle_path)
                 self.runner.run(cmd)
             clip_files.append(clip_path)
 
@@ -255,32 +262,3 @@ def validate_output(
                 "error": f"Output frame rate {measured:.3f} fps does not match target {canvas.fps:.3f} fps",
             }
     return {"ok": True, "error": None}
-
-
-def build_srt(plan: ClipPlan, transcript_segments: list[dict], dest: Path) -> Path:
-    lines = []
-    cursor = 0.0
-    idx = 1
-    for clip in plan.clips:
-        offset = cursor - clip.start
-        for seg in transcript_segments:
-            if seg["end"] < clip.start or seg["start"] > clip.end:
-                continue
-            start = max(clip.start, seg["start"]) + offset
-            end = min(clip.end, seg["end"]) + offset
-            lines.append(str(idx))
-            lines.append(f"{_srt_ts(start)} --> {_srt_ts(end)}")
-            lines.append(seg["text"].strip())
-            lines.append("")
-            idx += 1
-        cursor += clip.end - clip.start
-    dest.write_text("\n".join(lines), encoding="utf-8")
-    return dest
-
-
-def _srt_ts(seconds: float) -> str:
-    ms = int(round(seconds * 1000))
-    h, ms = divmod(ms, 3_600_000)
-    m, ms = divmod(ms, 60_000)
-    s, ms = divmod(ms, 1000)
-    return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"

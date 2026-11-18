@@ -20,7 +20,8 @@ from app.services.job_manager import get_job_manager
 from app.video.crop import normalize_crop, to_crop_pixels
 from app.video.ffmpeg_runner import CancelledError, FFmpegRunner
 from app.video.processor import VideoProcessor
-from app.video.renderer import Renderer, build_srt
+from app.video.captions import load_transcript, sequence_srt, write_clip_subtitles
+from app.video.renderer import Renderer
 from app.utils.timefmt import format_elapsed
 from app.video.sources import fallback_source, load_sources, save_sources
 
@@ -269,14 +270,39 @@ def _run_render(app: Flask, job_id: str) -> None:
     outputs.mkdir(parents=True, exist_ok=True)
     ext = render_settings.format if render_settings.format in {"mp4", "webm"} else "mp4"
     output = outputs / f"highlight.{ext}"
-    srt_path = None
-    transcript = {}
-    tpath = job_dir / "transcript.json"
-    if tpath.exists():
-        transcript = json.loads(tpath.read_text(encoding="utf-8"))
+    # Each video has its own transcript (multi-video jobs keep one per video under work/).
+    multi_source = len(sources) > 1
+    first_source_id = str(sources[0].get("id") or "v0")
+    transcripts: dict[str, dict] = {}
+
+    def transcript_for(clip: ClipPlanItem) -> dict:
+        source_id = clip.source_id if clip.source_id in source_lookup else first_source_id
+        if source_id not in transcripts:
+            transcripts[source_id] = load_transcript(job_dir, source_id, multi_source)
+        return transcripts[source_id]
+
     if config.subtitles in {"auto", "burned", "srt"}:
         srt_path = outputs / "highlight.srt"
-        build_srt(plan, transcript.get("segments") or [], srt_path)
+        srt_path.write_text(
+            sequence_srt([(transcript_for(c), c.start, c.end) for c in plan.clips if c.end > c.start]),
+            encoding="utf-8",
+        )
+
+    clip_subtitles = None
+    if config.subtitles == "burned":
+        subtitle_dir = job_dir / "tmp_render" / "subtitles"
+
+        def clip_subtitles(index: int, clip: ClipPlanItem, canvas) -> Path | None:
+            return write_clip_subtitles(
+                subtitle_dir,
+                index,
+                transcript_for(clip),
+                clip.start,
+                clip.end,
+                config.caption_style,
+                canvas.width,
+                canvas.height,
+            )
 
     meta = VideoMetadata.model_validate(json.loads(job.metadata_json or "{}"))
     renderer = Renderer(runner)
@@ -303,7 +329,7 @@ def _run_render(app: Flask, job_id: str) -> None:
             render_settings,
             job_dir / "tmp_render",
             metadata=meta,
-            srt_path=srt_path if config.subtitles == "burned" else None,
+            clip_subtitles=clip_subtitles,
             hardware_encoder=encoder,
             source_lookup=source_lookup,
         )
