@@ -368,6 +368,12 @@
     "clipReason": "Why it was chosen",
     "clipScore": "Score"
   },
+  "editorExport": {
+    "button": "Download for video editors",
+    "busy": "Preparing…",
+    "hint": "A timeline for Premiere Pro, DaVinci Resolve or Final Cut Pro that uses your original video files, so you can finish the edit there. No video is created.",
+    "done": "Saved {name}. Open README.txt inside it for how to import the timeline."
+  },
   "localAi": {
     "notice": "The AI models are not ready yet. Highlights still work, but the AI makes them better.",
     "action": "Set up AI",

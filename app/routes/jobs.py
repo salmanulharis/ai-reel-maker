@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import io
 import json
 import subprocess
 import sys
@@ -9,6 +10,7 @@ from flask import Blueprint, jsonify, request, send_file
 from app.analysis.pipeline import alternative_moments, plan_from_cache
 from app.config import get_settings
 from app.models.schemas import HighlightConfig
+from app.services.editor_export import ExportError, build_editor_package
 from app.services.job_manager import get_job_manager
 from app.services.storage import delete_job_files
 from app.workers.worker import load_cache
@@ -211,6 +213,22 @@ def job_moments(job_id: str):
         limit=limit,
     )
     return jsonify({"moments": moments, "available": True})
+
+
+@jobs_bp.get("/jobs/<job_id>/export/editor")
+def export_for_editors(job_id: str):
+    """The kept clips as timelines for Premiere Pro, DaVinci Resolve and Final Cut Pro (zip)."""
+    manager = get_job_manager()
+    job = manager.get(job_id)
+    if not job:
+        return jsonify({"error": "not found"}), 404
+    try:
+        data, filename = build_editor_package(
+            job, manager.job_dir(job_id), manager.serialize(job).get("clips") or []
+        )
+    except ExportError as exc:
+        return jsonify({"error": str(exc)}), exc.status
+    return send_file(io.BytesIO(data), mimetype="application/zip", as_attachment=True, download_name=filename)
 
 
 @jobs_bp.post("/jobs/<job_id>/clips")

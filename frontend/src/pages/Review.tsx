@@ -5,6 +5,7 @@ import { fill, messages } from "../i18n";
 import { Alert, FilmIcon, InlineStatus, PageLoader, PlayIcon, Spinner } from "../components/Feedback";
 import { ClipPreviewPanel, useClipPreview } from "../components/ClipPreview";
 import { MoreMoments } from "../components/MoreMoments";
+import { EditorExport } from "../components/EditorExport";
 import { insertIndex, momentToClip } from "../services/clipPreview";
 import type { Clip, Job, JobSource, Moment } from "../types";
 
@@ -409,6 +410,12 @@ export default function Review() {
             {pending === "render" && <Spinner />}
             {pending === "render" ? copy.generating : copy.generate}
           </button>
+          <EditorExport
+            jobId={id}
+            disabled={pending !== "" || kept.length === 0}
+            // Clip changes save in the background; make sure the latest are saved first.
+            beforeExport={() => api.clips(id, clips)}
+          />
           <span className="muted">
             {kept.length}/{clips.length} · {estimated.toFixed(1)}s
           </span>

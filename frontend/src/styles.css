@@ -879,6 +879,9 @@ details.help p { color: var(--muted); font-size: 13px; }
 .preview-time { margin: 4px 0 0; font-size: 13px; font-variant-numeric: tabular-nums; }
 .preview-time > span:first-child { color: var(--muted); }
 .preview-controls { margin-top: 10px; }
+/* A message from a button in a row (such as Download for video editors) takes a full line. */
+.btn-row > .alert { flex-basis: 100%; margin: 4px 0 0; }
+
 /* More moments: strong moments left out of the clips. */
 .more-moments-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; flex-wrap: wrap; }
 .more-moments-head .sub-title { margin-bottom: 0; }
