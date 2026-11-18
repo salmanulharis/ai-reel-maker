@@ -145,6 +145,7 @@ export interface HighlightForm {
   subtitles: string;
   caption_style: "plain" | "clean" | "bold" | "boxed";
   tighten: "off" | "pauses" | "fillers";
+  reframe: "center" | "subject";
   transition: string;
   audio_focus: "balanced" | "natural" | "dialogue";
   frame_rate: string;

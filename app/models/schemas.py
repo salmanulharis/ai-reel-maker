@@ -224,6 +224,9 @@ class HighlightConfig(BaseModel):
     # Cut long pauses ("pauses"), or pauses and filler words ("fillers"), out of the clips when
     # the video is created. Needs speech (word timings).
     tighten: Literal["off", "pauses", "fillers"] = "off"
+    # Framing when the shape changes (9:16, 1:1, 4:5): "subject" follows faces in each clip,
+    # "center" keeps the middle (the behaviour of earlier versions, kept for existing jobs).
+    reframe: Literal["center", "subject"] = "center"
     transition: Literal["cut", "fade"] = "cut"
     audio_focus: Literal["balanced", "natural", "dialogue"] = "balanced"
     # "source" keeps the original frame rate; a number converts the output to that rate.
@@ -313,3 +316,5 @@ class RenderSettings(BaseModel):
     frame_rate: str = "source"
     smooth_motion: bool = False
     audio_bitrate: str = "192k"
+    # "subject": centre a 9:16 / 1:1 / 4:5 crop on the people in each clip; "center": the middle.
+    reframe: str = "center"
