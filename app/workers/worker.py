@@ -740,6 +740,7 @@ def load_cache(job_dir: Path) -> dict:
         "image_match": "image_match.json",
         "candidates": "candidates.json",
         "clip_plan": "clip_plan.json",
+        "speakers": "speakers.json",
     }
     for key, name in mapping.items():
         path = job_dir / name

@@ -32,6 +32,13 @@ export interface PostText {
   note?: string;
 }
 
+/** Who speaks in a job's videos (from GET /jobs/:id/speakers). */
+export interface SpeakerData {
+  speakers: Array<{ id: string; letter: string; source_id: string; seconds: number; sample: { start: number; end: number } | null }>;
+  segments: Array<{ source_id: string; start: number; end: number; speaker: string }>;
+  note?: string;
+}
+
 /** Send one file to the API as a form upload. */
 function upload<T>(path: string, file: File): Promise<T> {
   const form = new FormData();
@@ -274,6 +281,14 @@ export const api = {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(config),
+    }),
+  speakers: (id: string) => http<SpeakerData>(`/api/jobs/${encodeURIComponent(id)}/speakers`),
+  /** Pick new clips with changed choices (for example one speaker only). */
+  regenerateWith: (id: string, changes: Record<string, unknown>) =>
+    http<{ job: Job; plan: unknown }>(`/api/jobs/${id}/regenerate`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(changes),
     }),
   presets: () => http<{ presets: Preset[] }>("/api/presets"),
   savePreset: (name: string, form: Partial<HighlightForm>) =>

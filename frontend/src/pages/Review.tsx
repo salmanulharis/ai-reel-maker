@@ -9,6 +9,8 @@ import { EditorExport } from "../components/EditorExport";
 import { insertIndex, insertIndexInShort, momentKey, momentToClip, nearestShort, shortIndex } from "../services/clipPreview";
 import { strength } from "../services/strength";
 import { MusicPanel } from "../components/MusicPanel";
+import { SpeakersPanel, speakerLabel } from "../components/SpeakersPanel";
+import type { SpeakerData } from "../services/api";
 import type { Clip, Job, JobSource, Moment } from "../types";
 
 const copy = messages.review;
@@ -31,6 +33,7 @@ export default function Review() {
       ? job.sources
       : [{ id: "v0", filename: job?.original_filename || "", duration }];
   const [spans, setSpans] = useState<Record<string, Array<[number, number]>>>({});
+  const [speakers, setSpeakers] = useState<SpeakerData | null>(null);
   const preview = useClipPreview(id || "", clips, sources, spans);
   const previewPanel = useRef<HTMLElement>(null);
 
@@ -158,6 +161,38 @@ export default function Review() {
       setError((err as Error).message);
       setPending("");
     }
+  }
+
+  /** New clips with only one speaker's moments ("" = everyone). */
+  async function focusSpeaker(speakerId: string) {
+    if (!id) return;
+    preview.clear();
+    setPending("speaker");
+    setError("");
+    try {
+      const result = await api.regenerateWith(id, { focus_speaker: speakerId });
+      if (result.job) setJob(result.job);
+      await refresh();
+      setPlanVersion((value) => value + 1);
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setPending("");
+    }
+  }
+
+  /** The speaker who talks most in a clip, from the found speakers. */
+  function clipSpeaker(clip: Clip): string | null {
+    if (!speakers) return null;
+    const source = clip.source_id || sources[0]?.id || "v0";
+    const talk: Record<string, number> = {};
+    for (const segment of speakers.segments) {
+      if (segment.source_id !== source) continue;
+      const overlap = Math.min(clip.end, segment.end) - Math.max(clip.start, segment.start);
+      if (overlap > 0) talk[segment.speaker] = (talk[segment.speaker] || 0) + overlap;
+    }
+    const best = Object.entries(talk).sort((a, b) => b[1] - a[1])[0];
+    return best ? best[0] : null;
   }
 
   async function regenerate(preset: string) {
@@ -386,6 +421,10 @@ export default function Review() {
               </strong>
               <span className="tag-row">
                 {inPreview && <span className="tag accent">{copy.previewing}</span>}
+                {(() => {
+                  const who = clipSpeaker(clip);
+                  return who ? <span className="tag">{speakerLabel(who, sources)}</span> : null;
+                })()}
                 {removed && <span className="tag">{copy.removed}</span>}
                 <span className="score" title={copy.scoreHint}>
                   {fill(copy.score, { n: Math.round((clip.score || 0) * 100) })}
@@ -494,6 +533,18 @@ export default function Review() {
         onPreview={previewMoment}
         onAdd={addMoment}
       />
+      {(job.config as { use_speech?: boolean } | undefined)?.use_speech !== false && (
+        <SpeakersPanel
+          jobId={id}
+          sources={sources}
+          data={speakers}
+          focus={String((job.config as { focus_speaker?: string } | undefined)?.focus_speaker || "")}
+          busy={pending !== ""}
+          onLoaded={setSpeakers}
+          onFocus={focusSpeaker}
+          onPreview={previewMoment}
+        />
+      )}
       <MusicPanel
         jobId={id}
         volume={Number((job.config as { music_volume?: number } | undefined)?.music_volume ?? 25)}

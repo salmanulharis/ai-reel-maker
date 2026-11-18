@@ -343,6 +343,22 @@
     "strengthTag": "Strength {n}",
     "strengthHint": "An estimate from the AI scores, not a prediction of views. Opening {opening}, moments {moments}, length fit {length}.",
     "playShort": "Play short {n}",
+    "speakers": {
+      "title": "Speakers",
+      "hint": "Tell the voices apart and choose moments of one person. Works best when voices clearly differ; similar voices may be grouped together.",
+      "find": "Find speakers",
+      "finding": "Listening… this takes a few seconds per minute of speech.",
+      "none": "No speech was found in this video.",
+      "one": "Only one voice was found.",
+      "speaker": "Speaker {letter}",
+      "share": "{n}% of the talking",
+      "sample": "Hear",
+      "sampleLabel": "Hear {name}",
+      "focus": "Only this speaker",
+      "focused": "Chosen",
+      "all": "All speakers again",
+      "choosing": "Choosing new clips…"
+    },
     "music": {
       "title": "Background music",
       "hint": "Add a music file of your own. It plays under the whole video, fades in and out, and is lowered while someone speaks.",
