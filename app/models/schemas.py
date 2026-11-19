@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -70,6 +71,8 @@ class VisualAnalysis(BaseModel):
     appears_ending: bool = False
     surprising: bool = False
     focus_region: tuple[float, float, float, float] | None = None
+    # How clearly the scene shows content the user wants left out (only when asked).
+    avoid: float | None = None
 
     @field_validator(
         "visual_importance",
@@ -83,6 +86,18 @@ class VisualAnalysis(BaseModel):
     @classmethod
     def _clamp(cls, value: Any) -> float:
         return _unit(value)
+
+    @field_validator("avoid", mode="before")
+    @classmethod
+    def _clamp_avoid(cls, value: Any) -> float | None:
+        # Kept to 0-1 (a reply on another scale would otherwise push scores below zero); an
+        # unreadable value means "not answered", not a failed batch.
+        if value is None:
+            return None
+        try:
+            return _unit(value)
+        except (TypeError, ValueError):
+            return None
 
 
 class TranscriptSegment(BaseModel):
@@ -200,6 +215,20 @@ class CropRegion(BaseModel):
         return self
 
 
+_MAX_FOCUS_CHARS = 500
+_MAX_RANGES = 50
+
+
+def _clean_ranges(ranges: list[tuple[float, float]]) -> list[tuple[float, float]]:
+    """Time ranges that can be used: finite, not negative, start before end; at most 50."""
+    clean = []
+    for start, end in ranges or []:
+        start, end = float(start), float(end)
+        if math.isfinite(start) and math.isfinite(end) and 0 <= start < end:
+            clean.append((start, end))
+    return clean[:_MAX_RANGES]
+
+
 class HighlightConfig(BaseModel):
     min_duration: float = 20.0
     max_duration: float = 30.0
@@ -211,7 +240,19 @@ class HighlightConfig(BaseModel):
     # False: ignore what is said and choose moments from pictures and sound only (no
     # transcription, no speech scoring, no subtitles).
     use_speech: bool = True
-    style: Literal["auto", "informative", "exciting", "social", "educational", "custom"] = "auto"
+    style: Literal[
+        "auto",
+        "informative",
+        "exciting",
+        "social",
+        "educational",
+        "cinematic",
+        "funny",
+        "story",
+        "trailer",
+        "calm",
+        "custom",
+    ] = "auto"
     custom_focus: str = ""
     preserve_context: Literal["low", "balanced", "high"] = "balanced"
     remove_repetition: bool = True
@@ -267,9 +308,25 @@ class HighlightConfig(BaseModel):
     crop: CropRegion | None = None
     content_priorities: list[str] = Field(default_factory=lambda: ["balanced"])
     priority_weights: dict[str, float] = Field(default_factory=dict)
+    # What to leave out (app.analysis.avoid.AVOID_ITEMS), the user's own words, and whether
+    # matching moments are only ranked lower ("avoid") or removed ("never").
+    avoid: list[str] = Field(default_factory=list)
+    avoid_custom: str = ""
+    avoid_mode: Literal["avoid", "never"] = "avoid"
 
     @model_validator(mode="after")
     def _range(self) -> "HighlightConfig":
+        # NaN/Infinity would be saved as null and make the job's settings unreadable later.
+        # Negative clip and repeat lengths are corrected below, as before.
+        for name in ("min_duration", "max_duration", "max_sequence_duration", "max_repeated_duration"):
+            value = float(getattr(self, name))
+            if not math.isfinite(value) or (value < 0 and name in {"min_duration", "max_duration"}):
+                raise ValueError(f"{name.replace('_', ' ')} must be a positive number")
+        if self.min_sequence_duration is not None and not math.isfinite(float(self.min_sequence_duration)):
+            raise ValueError("min sequence duration must be a positive number")
+        self.must_include = _clean_ranges(self.must_include)
+        self.must_exclude = _clean_ranges(self.must_exclude)
+        self.custom_focus = (self.custom_focus or "")[:_MAX_FOCUS_CHARS]
         if self.social_short and self.aspect_ratio == "original":
             self.aspect_ratio = "9:16"
         if self.social_short:
@@ -289,7 +346,12 @@ class HighlightConfig(BaseModel):
             # Each short has its own length range; "no maximum" does not apply to shorts.
             self.length_mode = "range"
         if self.min_duration > self.max_duration:
-            self.min_duration, self.max_duration = self.max_duration, self.min_duration
+            if self.length_mode == "auto":
+                # Automatic length has no maximum to respect (the field is hidden), so the
+                # minimum the user typed is kept and the stored maximum follows it.
+                self.max_duration = self.min_duration
+            else:
+                self.min_duration, self.max_duration = self.max_duration, self.min_duration
         if self.allow_repeated_content is None:
             self.allow_repeated_content = not self.remove_repetition
         else:
@@ -305,7 +367,21 @@ class HighlightConfig(BaseModel):
         if self.sequence_duration_mode not in {"auto", "custom"}:
             self.sequence_duration_mode = "auto"
         self.max_repeated_duration = max(0.0, float(self.max_repeated_duration))
-        allowed = {"balanced", "action", "speech", "magic", "visual", "information", "connection"}
+        allowed = {
+            "balanced",
+            "action",
+            "speech",
+            "magic",
+            "visual",
+            "information",
+            "connection",
+            "people",
+            "scenery",
+            "fun",
+            "pets",
+            "music",
+            "sports",
+        }
         selected = []
         for item in self.content_priorities or []:
             key = str(item).strip().lower()
@@ -330,6 +406,11 @@ class HighlightConfig(BaseModel):
             if name != "balanced" and name not in weights:
                 weights[name] = 1.0
         self.priority_weights = weights
+        from app.analysis.avoid import clean_items
+
+        # Speech kinds need a transcript, which is not made without speech.
+        self.avoid = clean_items(self.avoid, use_speech=self.use_speech)
+        self.avoid_custom = (self.avoid_custom or "").strip()[:300]
         return self
 
 

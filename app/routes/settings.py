@@ -11,7 +11,7 @@ from app.services.presets import PresetError, delete_preset, list_presets, save_
 from app.services.watch_folder import read_config as read_watch_config
 from app.services.watch_folder import save_config as save_watch_config
 from app.video.overlays import LOGO_SUFFIXES, brand_dir, brand_logo
-from app.services.settings_store import apply_values, effective_settings
+from app.services.settings_store import apply_values, effective_settings, validate_values
 from app.services.storage import clear_cache, clear_tmp, delete_job_files, storage_report
 
 settings_bp = Blueprint("settings", __name__)
@@ -78,6 +78,10 @@ def save_settings():
     values = {key: value for key, value in payload.items() if key in EDITABLE}
     if "vision_scope" in values and values["vision_scope"] not in {"shortlist", "all"}:
         return jsonify({"error": "vision_scope must be shortlist or all"}), 400
+    try:
+        values = validate_values(values, get_settings())
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
     apply_values(values, get_settings())
     return jsonify({"settings": _current()})
 

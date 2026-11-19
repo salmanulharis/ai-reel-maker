@@ -100,7 +100,11 @@ class ClipOptimizer:
         content_priorities: list[str] | None = None,
         length_mode: str = "range",
         auto_length_strict: bool = False,
+        multi_source: bool = False,
+        style: str = "auto",
     ) -> ClipPlan:
+        """``multi_source``: the candidates come from several videos and ``source_duration`` is
+        their combined length."""
         auto_length = length_mode == "auto"
         if auto_length:
             # No maximum from the user: a safety limit stops a highlight from becoming most of
@@ -128,6 +132,7 @@ class ClipOptimizer:
                 sequence_duration_mode,
                 priorities=content_priorities,
                 min_len=min_sequence_duration,
+                style=style,
             )
 
         repeat_budget = 0.0 if not allow_repeated_content else max_repeated_duration
@@ -141,6 +146,7 @@ class ClipOptimizer:
                 max_sequence_duration,
                 sequence_duration_mode,
                 min_sequence_duration,
+                multi_source=multi_source,
             )
 
         pool = []
@@ -310,26 +316,31 @@ class ClipOptimizer:
         max_sequence_duration: float,
         sequence_duration_mode: str = "custom",
         min_sequence_duration: float | None = None,
+        multi_source: bool = False,
     ) -> ClipPlan:
+        # With several videos, source_duration is their combined length and times are per video,
+        # so overlaps are checked per video and one timeline cannot be covered by windows.
+        multi = multi_source or len({_source_key(c) for c in candidates}) > 1
         if candidates:
             selected = []
-            used: list[tuple[float, float]] = []
-            for candidate in sorted(candidates, key=lambda c: c["start"]):
+            used: list[tuple[str, float, float]] = []
+            for candidate in sorted(candidates, key=lambda c: (_source_key(c), c["start"])):
                 item = fit_candidate(
                     candidate,
                     max_sequence_duration,
                     sequence_duration_mode,
                     min_len=min_sequence_duration,
                 )
-                span = (float(item["start"]), float(item["end"]))
-                if any(_overlaps(span, used_span) for used_span in used):
+                if _range_overlaps(item, used):
                     continue
                 selected.append(item)
-                used.append(span)
+                used.append((_source_key(item), float(item["start"]), float(item["end"])))
         else:
             selected = []
+        if multi:
+            selected = self._multi_source_order(selected) if selected else selected
         covered = sum(_duration(c) for c in selected)
-        if covered + 0.5 < source_duration:
+        if not multi and covered + 0.5 < source_duration:
             selected = []
             for i, (start, end) in enumerate(split_span(0.0, source_duration, max_sequence_duration)):
                 selected.append(
@@ -469,10 +480,13 @@ class ClipOptimizer:
         config: HighlightConfig,
         *,
         source_duration: float | None = None,
+        multi_source: bool = False,
         similarity_fn: SimilarityFn | None = None,
         repeat_threshold: float = REPEAT_THRESHOLD,
     ) -> ClipPlan:
-        """The clip plan for a highlight config: one highlight, or several separate shorts."""
+        """The clip plan for a highlight config: one highlight, or several separate shorts.
+        ``multi_source``: the candidates come from several videos and ``source_duration`` is
+        their combined length."""
         options = dict(
             min_duration=config.min_duration,
             max_duration=config.max_duration,
@@ -490,6 +504,8 @@ class ClipOptimizer:
             content_priorities=config.content_priorities,
             length_mode=config.length_mode,
             auto_length_strict=config.auto_length_strict,
+            multi_source=multi_source,
+            style=config.style,
         )
         if int(config.shorts_count or 0) >= 2:
             return self.select_shorts(candidates, int(config.shorts_count), **options)

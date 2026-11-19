@@ -51,6 +51,48 @@ STYLE_EMPHASIS = {
         "novelty": 0.16,
         "information_density": 0.12,
     },
+    # Beautiful, well-shot pictures over talk.
+    "cinematic": {
+        "visual_importance": 0.30,
+        "production_quality": 0.20,
+        "emotional": 0.14,
+        "semantic_importance": 0.10,
+        "information_density": 0.06,
+        "hook_strength": 0.04,
+    },
+    # Reactions, surprises and punchlines.
+    "funny": {
+        "emotional": 0.30,
+        "hook_strength": 0.18,
+        "novelty": 0.16,
+        "visual_importance": 0.14,
+        "information_density": 0.06,
+    },
+    # What happened, told in order with enough context to follow.
+    "story": {
+        "semantic_importance": 0.28,
+        "context_quality": 0.15,
+        "emotional": 0.14,
+        "information_density": 0.14,
+        "hook_strength": 0.05,
+    },
+    # Peaks and strong openings, cut short.
+    "trailer": {
+        "hook_strength": 0.26,
+        "emotional": 0.24,
+        "visual_importance": 0.20,
+        "novelty": 0.14,
+        "information_density": 0.06,
+    },
+    # Gentle, good-looking moments without loud peaks.
+    "calm": {
+        "visual_importance": 0.26,
+        "production_quality": 0.18,
+        "context_quality": 0.10,
+        "novelty": 0.10,
+        "emotional": 0.06,
+        "hook_strength": 0.04,
+    },
     "custom": {},
 }
 
@@ -95,6 +137,46 @@ PRIORITY_EMPHASIS = {
         "information_density": 0.08,
         "hook_strength": 0.06,
     },
+    "people": {
+        "visual_importance": 0.26,
+        "emotional": 0.22,
+        "semantic_importance": 0.14,
+        "novelty": 0.08,
+        "information_density": 0.06,
+        "hook_strength": 0.06,
+    },
+    "scenery": {
+        "visual_importance": 0.36,
+        "production_quality": 0.20,
+        "novelty": 0.12,
+        "emotional": 0.06,
+        "information_density": 0.04,
+    },
+    "fun": {
+        "emotional": 0.34,
+        "hook_strength": 0.16,
+        "novelty": 0.16,
+        "visual_importance": 0.16,
+    },
+    "pets": {
+        "visual_importance": 0.32,
+        "emotional": 0.22,
+        "novelty": 0.14,
+        "hook_strength": 0.06,
+    },
+    "music": {
+        "emotional": 0.26,
+        "visual_importance": 0.24,
+        "natural_audio": 0.16,
+        "novelty": 0.10,
+    },
+    "sports": {
+        "emotional": 0.30,
+        "visual_importance": 0.28,
+        "hook_strength": 0.12,
+        "novelty": 0.10,
+        "information_density": 0.06,
+    },
 }
 
 READABLE_REASONS = [
@@ -137,9 +219,15 @@ class HighlightScorer:
             total += factor
             for key, value in PRIORITY_EMPHASIS.get(name, {}).items():
                 blended[key] = blended.get(key, 0.0) + value * factor
+        style_emphasis = STYLE_EMPHASIS.get(style, {})
         if total:
             for key, value in blended.items():
-                setattr(weights, key, value / total)
+                value = value / total
+                if key in style_emphasis:
+                    # Both the style and the priorities weight this signal: each counts half,
+                    # so a style still changes the result when priorities are chosen.
+                    value = 0.5 * style_emphasis[key] + 0.5 * value
+                setattr(weights, key, value)
         if audio_focus == "natural":
             weights.natural_audio = 0.25
         elif audio_focus == "dialogue":

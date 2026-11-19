@@ -10,6 +10,12 @@ class OutputCanvas:
     width: int
     height: int
     fps: float
+    # True when an aspect ratio is chosen: every clip is scaled to cover the canvas and the
+    # overflow is cropped from the centre, instead of fitting it inside black bars.
+    fill: bool = False
+
+
+ASPECT_RATIOS = {"16:9": 16 / 9, "9:16": 9 / 16, "1:1": 1.0, "4:5": 4 / 5}
 
 
 def even_dim(value: int | float) -> int:
@@ -26,13 +32,20 @@ def choose_canvas(metas: list[VideoMetadata], settings: RenderSettings | None = 
     best = max(usable, key=lambda item: int(item.width) * int(item.height))
     width = even_dim(best.width)
     height = even_dim(best.height)
+    ratio = ASPECT_RATIOS.get(str(getattr(settings, "aspect_ratio", "original") or "original"))
+    if ratio:
+        # The largest box of the chosen shape that fits inside the main source.
+        if width / height > ratio:
+            width = even_dim(height * ratio)
+        else:
+            height = even_dim(width / ratio)
     fps = target_frame_rate(best, usable, getattr(settings, "frame_rate", "source"))
     cap = {"1080p": 1080, "720p": 720}.get(str(settings.resolution or ""), None)
     if cap and height > cap:
         scale = cap / height
         width = even_dim(width * scale)
         height = even_dim(cap)
-    return OutputCanvas(width=width, height=height, fps=fps)
+    return OutputCanvas(width=width, height=height, fps=fps, fill=bool(ratio))
 
 
 # NTSC rates and how far a probed value may be from them. Tight enough that a true 24 or 30 fps
@@ -171,7 +184,12 @@ def clip_normalize_filters(
     filters: list[str] = []
     src_w = even_dim(source.width or canvas.width)
     src_h = even_dim(source.height or canvas.height)
-    if src_w != canvas.width or src_h != canvas.height:
+    if canvas.fill and (src_w != canvas.width or src_h != canvas.height):
+        filters.append(
+            f"scale={canvas.width}:{canvas.height}:force_original_aspect_ratio=increase:flags=lanczos"
+        )
+        filters.append(f"crop={canvas.width}:{canvas.height}")
+    elif src_w != canvas.width or src_h != canvas.height:
         filters.append(
             f"scale={canvas.width}:{canvas.height}:force_original_aspect_ratio=decrease:flags=lanczos"
         )

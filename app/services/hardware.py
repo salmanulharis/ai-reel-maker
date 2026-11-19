@@ -93,6 +93,8 @@ def detect_ffmpeg_encoders() -> list[str]:
             [ffmpeg, "-hide_banner", "-encoders"],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=10,
             check=False,
         )
@@ -159,7 +161,7 @@ def probe_encoder(name: str) -> bool:
         "-",
     ]
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=20, check=False)
+        result = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=20, check=False)
         ok = result.returncode == 0
     except (OSError, subprocess.TimeoutExpired):
         ok = False
@@ -268,6 +270,8 @@ def _nvidia_gpus() -> list[dict[str, Any]]:
             ],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=8,
             check=False,
         )
@@ -329,6 +333,8 @@ def _rocm_gpu() -> dict[str, Any] | None:
             [smi, "--showproductname"],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=4,
             check=False,
         )
@@ -369,6 +375,7 @@ def _windows_gpu() -> dict[str, Any] | None:
             ],
             capture_output=True,
             text=True,
+            errors="replace",
             timeout=4,
             check=False,
         )
@@ -412,6 +419,8 @@ def _nvidia_smi_name() -> str | None:
             [smi, "--query-gpu=name,memory.total", "--format=csv,noheader"],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=8,
             check=False,
         )

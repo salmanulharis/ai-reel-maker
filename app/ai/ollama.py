@@ -109,6 +109,27 @@ def thinking_vision_warning(model: str) -> str:
     )
 
 
+# Text tags that only think. Hybrid tags (qwen3:8b and larger) honour think=false and are fine,
+# so the capability list cannot tell them apart; these names can.
+_THINKING_ONLY_TEXT = {"qwen3:4b": "qwen3:4b-instruct-2507-q4_K_M"}
+
+
+def thinking_text_warning(model: str) -> str | None:
+    """A warning when the text model writes its reasoning into replies, or None."""
+    name = (model or "").strip().lower()
+    if name in _THINKING_ONLY_TEXT:
+        suggestion = _THINKING_ONLY_TEXT[name]
+    elif "thinking" in name:
+        suggestion = None
+    else:
+        return None
+    choice = f"Install and choose {suggestion}" if suggestion else "Choose an instruct (non-thinking) text model"
+    return (
+        f"{model} is a thinking-only model. It writes its reasoning into the reply, so speech "
+        f"scores often fall back to simple rules. {choice} for transcript scoring."
+    )
+
+
 def predict_budget(configured: int, items: int, per_item: int, num_ctx: int) -> int:
     """num_predict for a batched JSON reply: room for every item, but never more than half the
     context window so the prompt still fits. Never below the configured value."""
@@ -382,6 +403,9 @@ class OllamaClient:
                     )
                 elif "thinking" in capabilities:
                     warnings.append(thinking_vision_warning(vision))
+        text_warning = thinking_text_warning(self.settings.ollama_text_model)
+        if info.get("text_present") and text_warning:
+            warnings.append(text_warning)
         vision_version = version_problem(info.get("version"), vision)
         for model in (vision, self.settings.ollama_text_model):
             problem = version_problem(info.get("version"), model)

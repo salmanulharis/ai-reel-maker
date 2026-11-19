@@ -23,7 +23,8 @@ def bench_import_app() -> dict:
     from app.config import get_settings
 
     settings = get_settings()
-    app = create_app(settings)
+    # No worker: it would pick up (and re-queue) jobs of an app that is already running.
+    app = create_app(settings, start_background=False)
     t_ready = time.perf_counter()
     return {
         "import_create_app_ms": round((t_import - t0) * 1000, 1),
@@ -94,7 +95,7 @@ def main() -> None:
         from app import create_app
         from app.config import get_settings
 
-        app = create_app(get_settings())
+        app = create_app(get_settings(), start_background=False)
         client = app.test_client()
         out["http"] = [
             bench_http("home", "/", client),

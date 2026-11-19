@@ -52,6 +52,10 @@ class FFmpegRunner:
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE if collect_stderr else subprocess.DEVNULL,
             text=True,
+            # FFmpeg writes UTF-8 (file names included). The Windows default code page cannot
+            # decode names in other scripts, which silently emptied every probe.
+            encoding="utf-8",
+            errors="replace",
         )
         with self._procs_lock:
             self._procs.add(proc)
@@ -164,10 +168,16 @@ def parse_probe(payload: dict, path: Path) -> VideoMetadata:
     size = int(fmt.get("size") or 0)
     if path.exists() and not size:
         size = path.stat().st_size
+    width = int(video.get("width") or 0)
+    height = int(video.get("height") or 0)
+    if abs(rotation) % 180 == 90:
+        # Phones store portrait video as landscape plus a rotation flag. FFmpeg turns the
+        # frames upright when decoding, so the size everything works with is the displayed one.
+        width, height = height, width
     return VideoMetadata(
         duration=duration,
-        width=int(video.get("width") or 0),
-        height=int(video.get("height") or 0),
+        width=width,
+        height=height,
         fps=round(fps, 3),
         avg_fps=round(_parse_frame_rate(video.get("avg_frame_rate")), 3),
         bitrate=int(fmt.get("bit_rate") or 0),

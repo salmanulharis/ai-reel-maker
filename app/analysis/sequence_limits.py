@@ -92,6 +92,7 @@ def desired_auto_length(
     cap: float,
     priorities: list[str] | None = None,
     min_len: float | None = None,
+    style: str = "auto",
 ) -> tuple[float, str]:
     floor = max(0.4, float(min_len if min_len is not None else AUTO_MIN))
     start = float(candidate["start"])
@@ -163,6 +164,26 @@ def desired_auto_length(
     if "magic" in focus and (hook >= 0.6 or float(metrics.get("novelty") or 0) >= 0.6 or action >= 0.7):
         needed = max(needed, min(natural, 6.0))
         reasons.append("magic-moment priority")
+    if focus & {"people", "pets", "fun", "sports"} and (action >= 0.45 or visual >= 0.45):
+        needed = max(needed, min(natural, 5.0))
+        reasons.append("kept the whole reaction")
+    if focus & {"scenery", "music"} and visual >= 0.45:
+        needed = max(needed, min(natural, 6.0))
+        reasons.append("let the shot breathe")
+
+    # Pacing of the chosen style.
+    if style in {"cinematic", "calm"}:
+        needed = max(needed, min(natural, 6.0))
+        reasons.append(f"{style} pacing")
+    elif style == "story":
+        needed = max(needed, min(natural, needed * 1.2))
+        reasons.append("story pacing")
+    elif style == "trailer":
+        needed = min(needed, max(floor, 3.0))
+        reasons.append("trailer pacing")
+    elif style == "funny":
+        needed = min(needed, max(floor, 5.0))
+        reasons.append("quick comic pacing")
 
     length = _clamp_sequence_length(min(natural, max(floor, needed)), natural, cap, floor)
     if natural <= cap and natural - length <= 0.45:
@@ -182,13 +203,14 @@ def fit_candidate(
     mode: str = "custom",
     priorities: list[str] | None = None,
     min_len: float | None = None,
+    style: str = "auto",
 ) -> dict:
     item = dict(candidate)
     cap = max(0.4, float(cap))
     floor = max(0.4, float(min_len if min_len is not None else AUTO_MIN))
     natural = max(0.0, float(item["end"]) - float(item["start"]))
     if (mode or "custom") == "auto":
-        length, reason = desired_auto_length(item, cap, priorities=priorities, min_len=floor)
+        length, reason = desired_auto_length(item, cap, priorities=priorities, min_len=floor, style=style)
     elif natural > cap + 1e-9:
         length = cap
         reason = f"{cap:.0f}s max — kept the peak of a {natural:.1f}s moment"

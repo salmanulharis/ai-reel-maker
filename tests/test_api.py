@@ -45,7 +45,21 @@ def test_settings_roundtrip(client):
     assert posted.get_json()["settings"]["output_crf"] == 20
 
 
-def test_sample_video_endpoint(client):
+def test_sample_video_endpoint(client, tmp_path):
+    import shutil
+    import subprocess
+
+    from app.config import get_settings
+
+    if not shutil.which("ffmpeg"):
+        pytest.skip("FFmpeg is not installed")
+    sample = tmp_path / "sample.mp4"
+    subprocess.run(
+        ["ffmpeg", "-y", "-v", "error", "-f", "lavfi", "-i", "testsrc=size=160x90:rate=10:duration=1",
+         "-pix_fmt", "yuv420p", str(sample)],
+        check=True,
+    )
+    get_settings().sample_video = sample
     response = client.get("/api/media/sample")
     assert response.status_code == 200
     assert response.mimetype == "video/mp4"

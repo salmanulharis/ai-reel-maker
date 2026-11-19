@@ -8,7 +8,7 @@ import numpy as np
 from collections.abc import Callable
 
 from app.ai.ollama import OllamaClient, OllamaConnectionError, OllamaTruncatedError, predict_budget
-from app.ai.prompts import VISUAL_BATCH_SCHEMA, visual_batch_prompt
+from app.ai.prompts import visual_batch_prompt, visual_batch_schema
 from app.analysis import score_source
 from app.models.schemas import Scene, VisualAnalysis
 from app.utils.timefmt import clamp_timestamp
@@ -158,8 +158,12 @@ def analyze_scenes_visual(
     settings: Settings | None = None,
     on_batch_start: Callable[[int, int, int], None] | None = None,
     shortlist: set[int] | None = None,
+    avoid: str = "",
 ) -> tuple[dict[int, VisualAnalysis], list[str], dict[int, str]]:
     """Score scenes with the vision model, falling back to motion scoring per scene.
+
+    ``avoid`` lists content the user wants left out; the model then also rates how clearly
+    each scene shows it.
 
     Returns the scores, log messages, and the fallback reason for every scene that did not get
     an AI score (see app.analysis.score_source)."""
@@ -217,7 +221,7 @@ def analyze_scenes_visual(
                 use_fallback(scene_model, fallback, score_source.AI_FAILED)
             continue
         try:
-            by_id = _score_visual_batch(client, model, batch, custom_focus, cfg)
+            by_id = _score_visual_batch(client, model, batch, custom_focus, cfg, avoid)
             for scene_model, _, _, fallback in batch:
                 raw = by_id.get(scene_model.scene_id, {})
                 if not raw:
@@ -249,6 +253,7 @@ def _score_visual_batch(
     batch: list[tuple[Scene, list[Path], Path, VisualAnalysis]],
     custom_focus: str,
     cfg: Settings,
+    avoid: str = "",
 ) -> dict[int, dict]:
     """Raw AI rows by scene id. A reply cut off by the token limit is retried as two smaller batches."""
     scene_meta = [
@@ -263,9 +268,9 @@ def _score_visual_batch(
     try:
         data = client.chat(
             model=model,
-            prompt=visual_batch_prompt(scene_meta, custom_focus),
+            prompt=visual_batch_prompt(scene_meta, custom_focus, avoid),
             images=images,
-            schema=VISUAL_BATCH_SCHEMA,
+            schema=visual_batch_schema(bool(avoid)),
             options=options,
             schema_first=False,
         )
@@ -274,8 +279,8 @@ def _score_visual_batch(
             raise
         middle = len(batch) // 2
         return {
-            **_score_visual_batch(client, model, batch[:middle], custom_focus, cfg),
-            **_score_visual_batch(client, model, batch[middle:], custom_focus, cfg),
+            **_score_visual_batch(client, model, batch[:middle], custom_focus, cfg, avoid),
+            **_score_visual_batch(client, model, batch[middle:], custom_focus, cfg, avoid),
         }
     by_id: dict[int, dict] = {}
     for row in data.get("scenes") or []:

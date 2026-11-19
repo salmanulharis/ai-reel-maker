@@ -68,7 +68,6 @@ export default function Review() {
     setJob(data);
     setClips(data.clips || []);
     setDuration(data.metadata?.duration || 0);
-    if (data.status === "completed") navigate(`/jobs/${id}/result`);
     if (["queued", "analyzing", "rendering"].includes(data.status)) {
       navigate(`/jobs/${id}/analysis`);
     }
@@ -155,7 +154,9 @@ export default function Review() {
     setPending("render");
     setError("");
     try {
-      await api.render(id, clips.filter((c) => c.kept !== false));
+      // All clips, removed ones included, so they can be restored later; the server renders
+      // only the kept ones, and its clip numbers match the cards.
+      await api.render(id, clips);
       navigate(`/jobs/${id}/analysis`);
     } catch (err) {
       setError((err as Error).message);

@@ -44,17 +44,26 @@ def start_worker(app: Flask) -> None:
 
 
 def _recover_orphaned_jobs() -> None:
+    from sqlalchemy import and_, or_
+
     from app.models.db_models import Job, get_session
 
     session = get_session()
     try:
+        # "planning" with a running analysis is the last analysis step, not the review page.
         stuck = (
             session.query(Job)
-            .filter(Job.status.in_(["analyzing", "rendering"]), Job.cancelled.is_(False))
+            .filter(
+                or_(
+                    Job.status.in_(["analyzing", "rendering"]),
+                    and_(Job.status == "planning", Job.analysis_status == "running"),
+                ),
+                Job.cancelled.is_(False),
+            )
             .all()
         )
         for job in stuck:
-            if job.status == "analyzing":
+            if job.status in {"analyzing", "planning"}:
                 job.status = "queued"
                 job.analysis_status = "pending"
             elif job.status == "rendering":
@@ -130,8 +139,6 @@ def _run_analysis(app: Flask, job_id: str) -> None:
     runner = FFmpegRunner(cancel)
     job_dir = manager.job_dir(job_id)
     original = Path(job.input_path)
-    config = HighlightConfig.model_validate(json.loads(job.config_json or "{}"))
-    cache = load_cache(job_dir)
 
     def emit(kind: str, payload: dict) -> None:
         if kind == "log":
@@ -175,9 +182,15 @@ def _run_analysis(app: Flask, job_id: str) -> None:
         progress.log("Ollama is unavailable. Continuing in degraded mode.", "WARNING")
 
     analyzer = VideoAnalyzer(settings, runner, ollama, vision_enabled=vision_enabled, text_enabled=text_enabled)
+    manager.register_runner(job_id, runner)
     try:
+        config = HighlightConfig.model_validate(json.loads(job.config_json or "{}"))
+        cache = load_cache(job_dir)
         sources, cache = _prepare_all_sources(manager, job, original, job_dir, config, runner, progress, cache)
         cache = analyzer.analyze_sources(job_dir, sources, config, progress, cache)
+        if cancel.is_set():
+            # Cancelled during the last steps, which have no cancel point of their own.
+            raise CancelledError("Job cancelled")
         plan = cache.get("clip_plan") or {}
         save_sources(job_dir, cache.get("sources") or sources)
         manager.save_plan(job_id, plan.get("clips") or [])
@@ -213,6 +226,8 @@ def _run_analysis(app: Flask, job_id: str) -> None:
         progress.log(str(exc), "ERROR")
         progress.log(f"Analysis failed after {format_elapsed(took)}", "WARNING")
         _emit(app, job_id, "job_failed", {"error": str(exc)})
+    finally:
+        manager.unregister_runner(job_id, runner)
 
 
 def _run_render(app: Flask, job_id: str) -> None:
@@ -224,129 +239,134 @@ def _run_render(app: Flask, job_id: str) -> None:
     manager.update(job_id, status="rendering", render_status="running")
     manager.start_attempt(job_id, "render")
     cancel = manager.cancel_event(job_id)
+    # A cancel of an earlier run must not stop this one before it starts.
+    cancel.clear()
     runner = FFmpegRunner(cancel)
+    manager.register_runner(job_id, runner)
     job_dir = manager.job_dir(job_id)
-    sources = load_sources(job_dir) or [fallback_source(job.input_path, job.original_filename)]
-    source = Path(sources[0].get("analysis_path") or sources[0]["path"])
-    source_lookup = {str(item["id"]): Path(item.get("analysis_path") or item["path"]) for item in sources}
-    config = HighlightConfig.model_validate(json.loads(job.config_json or "{}"))
-    plan_path = job_dir / "clip_plan.json"
-    if not plan_path.exists():
-        manager.update(job_id, status="failed", error="No clip plan to render", render_status="failed")
-        manager.finish_attempt(job_id, "failed")
-        return
-    plan = ClipPlan.model_validate(json.loads(plan_path.read_text(encoding="utf-8")))
-    kept = [c for c in (manager.serialize(job).get("clips") or []) if c.get("kept", True)]
-    skipped_clips = 0
-    if kept:
-        # The clips exactly as kept on the Review page: the planner already kept each one
-        # within the longest-clip setting, so anything longer was made longer on purpose.
-        plan.clips, skipped_clips = plan_items_from_clips(kept, source_lookup, source)
-    plan.estimated_duration = sum(c.duration for c in plan.clips)
-
-    render_settings = RenderSettings(
-        format=config.output_format,
-        quality=config.quality,
-        codec=config.codec,
-        crf=settings.output_crf,
-        resolution=config.resolution,
-        aspect_ratio=config.aspect_ratio,
-        subtitles=config.subtitles,
-        transition=config.transition,
-        reframe=config.reframe,
-        level_audio=config.level_audio,
-        frame_rate=config.frame_rate,
-        smooth_motion=config.smooth_motion,
-        audio_bitrate=settings.output_audio_bitrate,
-    )
-    outputs = job_dir / "outputs"
-    outputs.mkdir(parents=True, exist_ok=True)
-    ext = render_settings.format if render_settings.format in {"mp4", "webm"} else "mp4"
-    # Each video has its own transcript (multi-video jobs keep one per video under work/).
-    multi_source = len(sources) > 1
-    first_source_id = str(sources[0].get("id") or "v0")
-    transcripts: dict[str, dict] = {}
-
-    def transcript_for(clip: ClipPlanItem) -> dict:
-        source_id = clip.source_id if clip.source_id in source_lookup else first_source_id
-        if source_id not in transcripts:
-            transcripts[source_id] = load_transcript(job_dir, source_id, multi_source)
-        return transcripts[source_id]
-
-    tighten_note = ""
-    if config.tighten != "off":
-        clip_count, length_before = len(plan.clips), plan.estimated_duration
-        plan.clips = tighten_clips(plan.clips, transcript_for, remove_fillers=config.tighten == "fillers")
-        plan.estimated_duration = sum(c.duration for c in plan.clips)
-        cut = length_before - plan.estimated_duration
-        what = "pauses and filler words" if config.tighten == "fillers" else "pauses"
-        tighten_note = (
-            f"Tightened {clip_count} clips: {cut:.1f}s of {what} cut out"
-            if cut > 0.05
-            else f"Tighten clips: no {what} to cut (or no word timings)"
-        )
-
-    groups = render_groups(plan, config, outputs, ext)
-    extras = render_extras(config, settings)
-    music = find_music(job_dir) if config.music_volume > 0 else None
-
-    # Subtitles in another language: the spoken lines of the kept clips, translated once.
-    subtitle_note = ""
-    subtitle_transcripts: dict[str, dict] = {}
-
-    def subtitle_transcript_for(clip: ClipPlanItem) -> dict:
-        nonlocal subtitle_note
-        original = transcript_for(clip)
-        language = config.subtitle_language
-        if not language or config.subtitles == "none":
-            return original
-        source_id = clip.source_id if clip.source_id in source_lookup else first_source_id
-        if source_id not in subtitle_transcripts:
-            ranges = [(c.start, c.end) for c in plan.clips if (c.source_id or first_source_id) == source_id]
-            try:
-                from app.services.ollama_runtime import get_ollama_client
-                from app.services.translate import translated_transcript
-
-                result, done, needed = translated_transcript(
-                    original,
-                    ranges,
-                    language,
-                    get_ollama_client(settings),
-                    settings.ollama_text_model,
-                    job_dir / "translations" / f"{source_id}-{language.lower()}.json",
-                )
-                subtitle_note = f"Subtitles translated into {language}: {done} of {needed} lines"
-                subtitle_transcripts[source_id] = result
-            except Exception as exc:  # noqa: BLE001 - original subtitles are better than none
-                subtitle_note = f"Subtitles could not be translated ({exc}); the original words are used"
-                subtitle_transcripts[source_id] = original
-        return subtitle_transcripts[source_id]
-
-    meta = VideoMetadata.model_validate(json.loads(job.metadata_json or "{}"))
-    renderer = Renderer(runner)
 
     def emit_log(message: str, level: str = "INFO") -> None:
         payload = {"level": level, "message": message, "ts": time.time()}
         append_log(job_dir, payload)
         _emit(app, job_id, "job_log", payload)
 
-    emit_log("Rendering highlight" if len(groups) == 1 else f"Rendering {len(groups)} shorts")
-    if skipped_clips:
-        emit_log(
-            f"Left out {skipped_clips} clip(s) whose end is not after the start. Check their times on the Review page.",
-            "WARNING",
-        )
-    if tighten_note:
-        emit_log(tighten_note)
-    encoder = None
-    if render_settings.quality not in {"source", "very_high"}:
-        encoder = preferred_hw_encoder()
-    if encoder:
-        emit_log(f"Using hardware encoder {encoder}")
-    else:
-        emit_log("Using high-quality CPU encoder libx264 to preserve source detail")
-    manager.set_stage(job_id, "rendering", "running")
     try:
+        sources = load_sources(job_dir) or [fallback_source(job.input_path, job.original_filename)]
+        source = Path(sources[0].get("analysis_path") or sources[0]["path"])
+        source_lookup = {str(item["id"]): Path(item.get("analysis_path") or item["path"]) for item in sources}
+        config = HighlightConfig.model_validate(json.loads(job.config_json or "{}"))
+        plan_path = job_dir / "clip_plan.json"
+        if not plan_path.exists():
+            raise FileNotFoundError("No clip plan to render")
+        plan_data = json.loads(plan_path.read_text(encoding="utf-8"))
+        # The saved plan keeps clips removed on the review page (so they can be restored).
+        plan_data["clips"] = [c for c in plan_data.get("clips") or [] if c.get("kept", True) is not False]
+        plan = ClipPlan.model_validate(plan_data)
+        kept = [c for c in (manager.serialize(job).get("clips") or []) if c.get("kept", True)]
+        skipped_clips = 0
+        if kept:
+            # The clips exactly as kept on the Review page: the planner already kept each one
+            # within the longest-clip setting, so anything longer was made longer on purpose.
+            plan.clips, skipped_clips = plan_items_from_clips(kept, source_lookup, source)
+        plan.estimated_duration = sum(c.duration for c in plan.clips)
+
+        render_settings = RenderSettings(
+            format=config.output_format,
+            quality=config.quality,
+            codec=config.codec,
+            crf=settings.output_crf,
+            resolution=config.resolution,
+            aspect_ratio=config.aspect_ratio,
+            subtitles=config.subtitles,
+            transition=config.transition,
+            reframe=config.reframe,
+            level_audio=config.level_audio,
+            frame_rate=config.frame_rate,
+            smooth_motion=config.smooth_motion,
+            audio_bitrate=settings.output_audio_bitrate,
+        )
+        outputs = job_dir / "outputs"
+        outputs.mkdir(parents=True, exist_ok=True)
+        ext = render_settings.format if render_settings.format in {"mp4", "webm"} else "mp4"
+        # Each video has its own transcript (multi-video jobs keep one per video under work/).
+        multi_source = len(sources) > 1
+        first_source_id = str(sources[0].get("id") or "v0")
+        transcripts: dict[str, dict] = {}
+
+        def transcript_for(clip: ClipPlanItem) -> dict:
+            source_id = clip.source_id if clip.source_id in source_lookup else first_source_id
+            if source_id not in transcripts:
+                transcripts[source_id] = load_transcript(job_dir, source_id, multi_source)
+            return transcripts[source_id]
+
+        tighten_note = ""
+        if config.tighten != "off":
+            clip_count, length_before = len(plan.clips), plan.estimated_duration
+            plan.clips = tighten_clips(plan.clips, transcript_for, remove_fillers=config.tighten == "fillers")
+            plan.estimated_duration = sum(c.duration for c in plan.clips)
+            cut = length_before - plan.estimated_duration
+            what = "pauses and filler words" if config.tighten == "fillers" else "pauses"
+            tighten_note = (
+                f"Tightened {clip_count} clips: {cut:.1f}s of {what} cut out"
+                if cut > 0.05
+                else f"Tighten clips: no {what} to cut (or no word timings)"
+            )
+
+        groups = render_groups(plan, config, outputs, ext)
+        extras = render_extras(config, settings)
+        music = find_music(job_dir) if config.music_volume > 0 else None
+
+        # Subtitles in another language: the spoken lines of the kept clips, translated once.
+        subtitle_note = ""
+        subtitle_transcripts: dict[str, dict] = {}
+
+        def subtitle_transcript_for(clip: ClipPlanItem) -> dict:
+            nonlocal subtitle_note
+            original = transcript_for(clip)
+            language = config.subtitle_language
+            if not language or config.subtitles == "none":
+                return original
+            source_id = clip.source_id if clip.source_id in source_lookup else first_source_id
+            if source_id not in subtitle_transcripts:
+                ranges = [(c.start, c.end) for c in plan.clips if (c.source_id or first_source_id) == source_id]
+                try:
+                    from app.services.ollama_runtime import get_ollama_client
+                    from app.services.translate import translated_transcript
+
+                    result, done, needed = translated_transcript(
+                        original,
+                        ranges,
+                        language,
+                        get_ollama_client(settings),
+                        settings.ollama_text_model,
+                        job_dir / "translations" / f"{source_id}-{language.lower()}.json",
+                    )
+                    subtitle_note = f"Subtitles translated into {language}: {done} of {needed} lines"
+                    subtitle_transcripts[source_id] = result
+                except Exception as exc:  # noqa: BLE001 - original subtitles are better than none
+                    subtitle_note = f"Subtitles could not be translated ({exc}); the original words are used"
+                    subtitle_transcripts[source_id] = original
+            return subtitle_transcripts[source_id]
+
+        meta = VideoMetadata.model_validate(json.loads(job.metadata_json or "{}"))
+        renderer = Renderer(runner)
+
+        emit_log("Rendering highlight" if len(groups) == 1 else f"Rendering {len(groups)} shorts")
+        if skipped_clips:
+            emit_log(
+                f"Left out {skipped_clips} clip(s) whose end is not after the start. Check their times on the Review page.",
+                "WARNING",
+            )
+        if tighten_note:
+            emit_log(tighten_note)
+        encoder = None
+        if render_settings.quality not in {"source", "very_high"}:
+            encoder = preferred_hw_encoder()
+        if encoder:
+            emit_log(f"Using hardware encoder {encoder}")
+        else:
+            emit_log("Using high-quality CPU encoder libx264 to preserve source detail")
+        manager.set_stage(job_id, "rendering", "running")
         if not groups:
             raise ValueError("No clips to render")
         made: list[dict] = []
@@ -460,6 +480,8 @@ def _run_render(app: Flask, job_id: str) -> None:
         emit_log(str(exc), "ERROR")
         emit_log(f"Creating the video failed after {format_elapsed(took)}", "WARNING")
         _emit(app, job_id, "job_failed", {"error": str(exc)})
+    finally:
+        manager.unregister_runner(job_id, runner)
 
 
 def _wants_auto_render(job_id: str) -> bool:
@@ -616,6 +638,7 @@ _CACHE_FILES = (
     "scene_quality.json",
     "audio_energy.json",
     "image_match.json",
+    "candidates_all.json",
     "candidates.json",
     "clip_plan.json",
 )
@@ -672,6 +695,10 @@ def _crop_one(
         f"Cropping {original.name} to {box.width}×{box.height} at ({box.x},{box.y}) for analysis. Original file is unchanged."
     )
     settings = get_settings()
+    # The stamp describes a finished crop, so it goes first: an interrupted or failed crop must
+    # never leave a half-written file that looks like an earlier finished one.
+    if stamp.exists():
+        stamp.unlink()
     runner.run(
         VideoProcessor.crop_command(
             original,
@@ -738,6 +765,7 @@ def load_cache(job_dir: Path) -> dict:
         "scene_quality": "scene_quality.json",
         "audio_energy": "audio_energy.json",
         "image_match": "image_match.json",
+        "candidates_all": "candidates_all.json",
         "candidates": "candidates.json",
         "clip_plan": "clip_plan.json",
         "speakers": "speakers.json",
@@ -750,6 +778,24 @@ def load_cache(job_dir: Path) -> dict:
             except json.JSONDecodeError:
                 pass
     return cache
+
+
+def load_transcripts(job_dir: Path, sources: list[dict]) -> dict[str, list[dict]]:
+    """Transcript segments per source id. One video keeps its transcript in the job folder;
+    with several, each video's analysis lives in ``work/<source id>/``."""
+    multi = len(sources) > 1
+    result: dict[str, list[dict]] = {}
+    for index, src in enumerate(sources or [{}]):
+        sid = str(src.get("id") or f"v{index}")
+        path = (job_dir / "work" / sid if multi else job_dir) / "transcript.json"
+        segments: list[dict] = []
+        if path.exists():
+            try:
+                segments = list(json.loads(path.read_text(encoding="utf-8")).get("segments") or [])
+            except (json.JSONDecodeError, AttributeError):
+                segments = []
+        result[sid] = segments
+    return result
 
 
 def append_log(job_dir: Path, payload: dict) -> None:

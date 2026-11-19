@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import os
+import time
 from pathlib import Path
 from typing import Callable
 
 from app.models.schemas import ClipPlan, ClipPlanItem, RenderSettings, VideoMetadata
-from app.video.ffmpeg_runner import FFmpegError, FFmpegRunner
+from app.video.ffmpeg_runner import CancelledError, FFmpegError, FFmpegRunner
 from app.video.processor import VideoProcessor
 from app.video.reframe import aspect_crop_filter, clip_frames, subject_center, to_canvas
 from app.video.audio_mix import leveling_filters, leveling_gain, measure_command, parse_loudness
@@ -56,11 +58,16 @@ class Renderer:
         hardware_encoder: str | None = None,
         source_lookup: dict[str, Path] | None = None,
         extras: Extras | None = None,
+        subtitle_segments: dict[str, list[dict]] | list[dict] | None = None,
     ) -> dict:
         """
-        Cut, normalize and join the clips. `clip_subtitles(index, clip, canvas)` returns a
-        subtitle file to burn into one clip, timed from that clip's start (each clip is cut on
-        its own and starts at 0), or None for no subtitles on it.
+        Cut, normalize and join the clips into ``output``. Each clip is cut on its own and
+        starts at 0, so burned subtitles are written per clip, timed from that clip's start.
+
+        `clip_subtitles(index, clip, canvas)` returns the subtitle file to burn into one clip, or
+        None for no subtitles on it. Without that callback, ``subtitle_segments`` (transcript
+        segments, per source id or for every clip) are burned in as plain subtitles when
+        ``settings.subtitles == "burned"``.
         """
         work_dir.mkdir(parents=True, exist_ok=True)
         output.parent.mkdir(parents=True, exist_ok=True)
@@ -82,12 +89,17 @@ class Renderer:
         offset = 0.0
         moment = -1
         probes: dict[str, VideoMetadata] = {}
+        failed_probes: set[str] = set()
+        any_audio = any(meta.has_audio for meta in source_metas)
+        burn = settings.subtitles == "burned" and subtitle_segments is not None
+        # Filters, subtitle file and silent-track flag per clip. Worked out once, so a second
+        # pass in software does not measure, reframe or count the clips again.
+        prepared: dict[int, tuple[list[str], Path | None, bool]] = {}
 
-        clip_files = []
-        for i, clip in enumerate(clips):
-            clip_path = work_dir / f"clip_{i:03d}.mp4"
+        def prepare(i: int, clip) -> tuple[list[str], Path | None, bool]:
+            nonlocal reframed, leveled, offset, moment
             clip_source = clip_sources[i]
-            src_meta = self._cached_probe(probes, clip_source, metadata)
+            src_meta = self._cached_probe(probes, clip_source, metadata, failed_probes)
             clip_aspect = aspect
             if aspect and settings.reframe == "subject":
                 center = self._subject_center(clip_source, clip, src_meta, canvas, work_dir, i)
@@ -127,65 +139,86 @@ class Renderer:
                 video_graph = build_graph(video_graph, extras, out_w, out_h, canvas.fps, offset, total)
             offset += max(0.0, clip.end - clip.start)
             extra = ["-vf", video_graph, "-af", ",".join(audio_filters)]
-            subtitle_path = clip_subtitles(i, clip, canvas) if clip_subtitles else None
+            subtitle_path = None
+            if clip_subtitles:
+                subtitle_path = clip_subtitles(i, clip, canvas)
+            elif burn:
+                clip_srt = work_dir / f"clip_{i:03d}.srt"
+                if build_clip_srt(clip, _segments_for(clip, subtitle_segments), clip_srt):
+                    subtitle_path = clip_srt
+            silent = any_audio and not src_meta.has_audio and str(clip_source) not in failed_probes
+            return extra, subtitle_path, silent
+
+        def clip_command(i: int, clip, codec: str) -> list[str]:
+            if i not in prepared:
+                prepared[i] = prepare(i, clip)
+            extra, subtitle_path, silent = prepared[i]
             cmd = VideoProcessor.cut_clip_command(
-                clip_source,
-                clip_path,
+                clip_sources[i],
+                work_dir / f"clip_{i:03d}.mp4",
                 clip.start,
                 clip.end,
                 stream_copy=False,
-                video_codec=video_codec,
+                video_codec=codec,
                 crf=crf,
                 quality=settings.quality,
                 audio_bitrate=settings.audio_bitrate,
-                extra=extra,
+                extra=list(extra),
+                silent_audio=silent,
             )
             if subtitle_path:
                 cmd = self._inject_subtitles(cmd, subtitle_path)
-            try:
-                self.runner.run(cmd)
-            except FFmpegError:
-                if video_codec not in HW_ENCODERS:
-                    raise
-                video_codec = "libx264"
-                cmd = VideoProcessor.cut_clip_command(
-                    clip_source,
-                    clip_path,
-                    clip.start,
-                    clip.end,
-                    stream_copy=False,
-                    video_codec=video_codec,
-                    crf=crf,
-                    quality=settings.quality,
-                    audio_bitrate=settings.audio_bitrate,
-                    extra=extra,
-                )
-                if subtitle_path:
-                    cmd = self._inject_subtitles(cmd, subtitle_path)
-                self.runner.run(cmd)
-            clip_files.append(clip_path)
+            return cmd
 
+        def encode_all(codec: str) -> list[Path]:
+            files = []
+            for i, clip in enumerate(clips):
+                self.runner.run(clip_command(i, clip, codec))
+                files.append(work_dir / f"clip_{i:03d}.mp4")
+            return files
+
+        try:
+            clip_files = encode_all(video_codec)
+        except FFmpegError:
+            if video_codec not in HW_ENCODERS:
+                raise
+            # Start over in software, so every clip shares one encoder and the stream-copied
+            # join does not mix differently encoded pieces.
+            video_codec = "libx264"
+            clip_files = encode_all(video_codec)
+
+        # Write next to the final file and move it into place only once it is verified, so a
+        # failed re-render never replaces a good earlier video. The leading dot keeps it out of
+        # the "highlight.*" lookups that serve the finished video.
+        pending = output.with_name(f".{output.stem}.rendering{output.suffix}")
         list_path = work_dir / "concat.txt"
         VideoProcessor.write_concat_list(list_path, clip_files)
-        concat = VideoProcessor.concat_command(list_path, output, stream_copy=True)
+        concat = VideoProcessor.concat_command(list_path, pending, stream_copy=True)
         try:
-            self.runner.run(concat)
-        except FFmpegError:
-            self.runner.run(
-                VideoProcessor.concat_command(
-                    list_path,
-                    output,
-                    stream_copy=False,
-                    video_codec=video_codec,
-                    crf=crf,
-                    quality=settings.quality,
-                    audio_bitrate=settings.audio_bitrate,
+            try:
+                self.runner.run(concat)
+            except FFmpegError:
+                self.runner.run(
+                    VideoProcessor.concat_command(
+                        list_path,
+                        pending,
+                        stream_copy=False,
+                        video_codec=video_codec,
+                        crf=crf,
+                        quality=settings.quality,
+                        audio_bitrate=settings.audio_bitrate,
+                    )
                 )
-            )
-        probe = self.runner.probe(output)
-        validation = validate_output(probe, metadata, output, canvas=canvas, settings=settings)
-        if not validation["ok"]:
-            raise FFmpegError(validation["error"])
+            probe = self.runner.probe(pending)
+            validation = validate_output(probe, metadata, pending, canvas=canvas, settings=settings)
+            if not validation["ok"]:
+                raise FFmpegError(validation["error"])
+            _replace(pending, output)
+        except BaseException:
+            # Failed, cancelled, or could not be moved into place: never leave a partial file.
+            pending.unlink(missing_ok=True)
+            raise
+        probe = probe.model_copy(update={"filename": output.name})
         return {
             "metadata": probe.model_dump(),
             "validation": validation,
@@ -254,6 +287,8 @@ class Renderer:
         for path in unique:
             try:
                 metas.append(self.runner.probe(path))
+            except CancelledError:
+                raise
             except Exception:
                 if fallback:
                     metas.append(fallback)
@@ -262,14 +297,22 @@ class Renderer:
         return metas
 
     def _cached_probe(
-        self, cache: dict[str, VideoMetadata], path: Path, fallback: VideoMetadata | None
+        self,
+        cache: dict[str, VideoMetadata],
+        path: Path,
+        fallback: VideoMetadata | None,
+        failed: set[str] | None = None,
     ) -> VideoMetadata:
         key = str(path)
         if key not in cache:
             try:
                 cache[key] = self.runner.probe(path)
+            except CancelledError:
+                raise
             except Exception:
                 cache[key] = fallback or VideoMetadata()
+                if failed is not None:
+                    failed.add(key)
         return cache[key]
 
     def _inject_subtitles(self, cmd: list[str], srt_path: Path) -> list[str]:
@@ -316,3 +359,83 @@ def validate_output(
                 "error": f"Output frame rate {measured:.3f} fps does not match target {canvas.fps:.3f} fps",
             }
     return {"ok": True, "error": None}
+
+
+def _segments_for(clip, transcripts: dict[str, list[dict]] | list[dict] | None) -> list[dict]:
+    """The transcript segments of the video a clip comes from. A plain list applies to every
+    clip; a mapping is keyed by source id, and a clip without one uses the only transcript."""
+    if not transcripts:
+        return []
+    if isinstance(transcripts, list):
+        return transcripts
+    sid = str(getattr(clip, "source_id", "") or "")
+    if sid in transcripts:
+        return transcripts[sid]
+    if not sid and len(transcripts) == 1:
+        return next(iter(transcripts.values()))
+    return []
+
+
+def _clip_entries(clip, segments: list[dict], offset: float) -> list[tuple[float, float, str]]:
+    entries = []
+    for seg in segments:
+        text = str(seg.get("text") or "").strip()
+        if not text or seg["end"] <= clip.start or seg["start"] >= clip.end:
+            continue
+        start = max(clip.start, seg["start"]) + offset
+        end = min(clip.end, seg["end"]) + offset
+        if end > start:
+            entries.append((start, end, text))
+    return entries
+
+
+def _write_srt(entries: list[tuple[float, float, str]], dest: Path) -> None:
+    lines = []
+    for idx, (start, end, text) in enumerate(entries, start=1):
+        lines += [str(idx), f"{_srt_ts(start)} --> {_srt_ts(end)}", text, ""]
+    dest.write_text("\n".join(lines), encoding="utf-8")
+
+
+def build_srt(plan: ClipPlan, transcript_segments: dict[str, list[dict]] | list[dict], dest: Path) -> Path:
+    """Subtitles for the joined highlight, timed on its own timeline."""
+    entries = []
+    cursor = 0.0
+    for clip in plan.clips:
+        if clip.end <= clip.start:
+            continue
+        entries += _clip_entries(clip, _segments_for(clip, transcript_segments), cursor - clip.start)
+        cursor += clip.end - clip.start
+    _write_srt(entries, dest)
+    return dest
+
+
+def build_clip_srt(clip, segments: list[dict], dest: Path) -> bool:
+    """Subtitles for one clip, timed from the clip's own start. Returns False (and writes
+    nothing) when no speech falls inside the clip, because FFmpeg cannot open an empty file."""
+    entries = _clip_entries(clip, segments, -clip.start)
+    if not entries:
+        dest.unlink(missing_ok=True)
+        return False
+    _write_srt(entries, dest)
+    return True
+
+
+def _replace(pending: Path, output: Path) -> None:
+    """Move the verified file into place. On Windows the old file can be briefly held open
+    (for example while it is being streamed), so a few retries are allowed."""
+    for attempt in range(10):
+        try:
+            os.replace(pending, output)
+            return
+        except PermissionError:
+            if attempt == 9:
+                raise
+            time.sleep(0.5)
+
+
+def _srt_ts(seconds: float) -> str:
+    ms = int(round(seconds * 1000))
+    h, ms = divmod(ms, 3_600_000)
+    m, ms = divmod(ms, 60_000)
+    s, ms = divmod(ms, 1000)
+    return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
