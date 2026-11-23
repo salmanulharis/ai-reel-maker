@@ -1,16 +1,57 @@
 import { useEffect, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { io } from "socket.io-client";
-import { api, formatElapsed } from "../services/api";
+import { api, formatElapsed, formatTime } from "../services/api";
 import { useElapsed } from "../hooks/useElapsed";
 import { fill, messages } from "../i18n";
 import { Alert, CheckIcon, PageLoader, Spinner } from "../components/Feedback";
 import { NotifySettings } from "../components/NotifySettings";
+import { ProgressBar, formatTimeLeft } from "../components/Progress";
 import { DocLink } from "./Docs";
-import type { Job, JobSource } from "../types";
+import type { Job, JobSource, ProgressEvent, Stage } from "../types";
 
 const copy = messages.progress;
 const LABELS: Record<string, string> = copy.stages;
+const UNITS: Record<string, string> = copy.units;
+
+/** "412 of 1,200 scenes", "2:10 of 10:00" (time) or "" (a plain share: the bar says it). */
+function stepText(stage: Stage): string {
+  const total = Number(stage.total || 0);
+  if (!(total > 0) || !stage.unit) return "";
+  const done = Math.min(Number(stage.done || 0), total);
+  if (stage.unit === "time") return fill(copy.stepTime, { done: formatTime(done), total: formatTime(total) });
+  return fill(copy.stepCount, {
+    done: Math.floor(done).toLocaleString(),
+    total: Math.round(total).toLocaleString(),
+    unit: UNITS[stage.unit] || stage.unit,
+  });
+}
+
+/**
+ * A socket update applied to the job on screen, or null when the page should load the job
+ * again instead (a step started or ended, and its times come from the server).
+ */
+function applyProgress(job: Job, event: ProgressEvent): Job | null {
+  const stages = job.stages || [];
+  const index = stages.findIndex((stage) => stage.name === event.stage);
+  if (index < 0 || stages[index].status !== event.status || event.status !== "running") return null;
+  const next = [...stages];
+  next[index] = {
+    ...stages[index],
+    detail: event.detail ?? stages[index].detail,
+    done: event.step_done ?? 0,
+    total: event.step_total ?? 0,
+    unit: event.step_unit ?? "",
+  };
+  return {
+    ...job,
+    progress: event.overall,
+    eta_seconds: event.eta ?? null,
+    source_index: event.source_index ?? job.source_index,
+    source_count: event.source_count ?? job.source_count,
+    stages: next,
+  };
+}
 
 function StageMark({ status }: { status: string }) {
   if (status === "done") {
@@ -69,6 +110,8 @@ export default function Analysis() {
   const [action, setAction] = useState<"" | "cancel" | "retry" | "pause" | "resume">("");
   const [actionError, setActionError] = useState("");
   const elapsed = useElapsed(job?.timing);
+  // When the time left on screen was received, so it counts down between updates.
+  const [etaAt, setEtaAt] = useState(() => Date.now());
   const queued = useRef(false);
   const logRef = useRef<HTMLDivElement>(null);
   const stickToBottom = useRef(true);
@@ -98,6 +141,7 @@ export default function Analysis() {
         .job(id)
         .then((j) => {
           setJob(j);
+          setEtaAt(Date.now());
           if (j.status === "uploaded" && !queued.current) {
             queued.current = true;
             api.retry(id).then((next) => setJob(next)).catch(() => {
@@ -113,8 +157,16 @@ export default function Analysis() {
     load();
     api.logs(id).then((r) => setLogs(r.logs || [])).catch(() => undefined);
     const socket = io("/", { transports: ["websocket", "polling"] });
-    socket.on("job_progress", (payload: { job_id: string }) => {
-      if (payload.job_id === id) load();
+    socket.on("job_progress", (payload: ProgressEvent) => {
+      if (payload.job_id !== id) return;
+      let reload = false;
+      setJob((current) => {
+        const next = current ? applyProgress(current, payload) : null;
+        reload = next === null;
+        return next ?? current;
+      });
+      setEtaAt(Date.now());
+      if (reload) load();
     });
     socket.on("job_paused", (payload: { job_id: string }) => {
       if (payload.job_id === id) load();
@@ -139,7 +191,7 @@ export default function Analysis() {
   const sources = job.sources || [];
   const previewSrc =
     sources.length > 1 ? `/api/media/${id}/source/${sources[0].id}` : `/api/media/${id}/source`;
-  const percent = Math.max(0, Math.min(100, Math.round(job.progress || 0)));
+  const percent = Math.max(0, Math.min(100, Math.floor(job.progress || 0)));
   const failed = job.status === "failed";
   const cancelled = job.status === "cancelled";
   const paused = job.status === "paused";
@@ -150,6 +202,10 @@ export default function Analysis() {
     job.status === "rendering" || job.render_status === "running" || (paused && job.analysis_status === "completed");
   const waiting = job.status === "queued" && !job.last_stage;
   const current = waiting ? copy.waiting : job.last_stage ? LABELS[job.last_stage] || job.last_stage : "";
+  const left =
+    typeof job.eta_seconds === "number" ? Math.max(0, job.eta_seconds - (Date.now() - etaAt) / 1000) : null;
+  const sourceCount = Number(job.source_count || 0);
+  const showSource = !rendering && sourceCount > 1 && elapsed.running;
 
   return (
     <div>
@@ -171,19 +227,17 @@ export default function Analysis() {
               {current && (
                 <span>
                   {copy.current}: {current}
+                  {showSource &&
+                    ` · ${fill(copy.videoOf, { n: Number(job.source_index || 0) + 1, total: sourceCount })}`}
+                </span>
+              )}
+              {elapsed.running && percent < 100 && (
+                <span>
+                  {left !== null && left >= 1 ? fill(copy.timeLeft, { time: formatTimeLeft(left) }) : `${copy.estimating}…`}
                 </span>
               )}
             </p>
-            <div
-              className="progress-line lg"
-              role="progressbar"
-              aria-label={copy.overall}
-              aria-valuemin={0}
-              aria-valuemax={100}
-              aria-valuenow={percent}
-            >
-              <span style={{ width: `${percent}%` }} />
-            </div>
+            <ProgressBar value={percent} label={copy.overall} size="lg" />
           </>
         )}
         {failed && (
@@ -214,6 +268,9 @@ export default function Analysis() {
           {(job.stages || []).map((stage) => {
             const running = stage.status === "running" && Boolean(stage.started_at);
             const seconds = elapsed.stageSeconds(stage.seconds, running ? stage.started_at : null);
+            const total = Number(stage.total || 0);
+            const share = total > 0 ? (Math.min(Number(stage.done || 0), total) / total) * 100 : null;
+            const count = stepText(stage);
             return (
               <li key={stage.name} className={stage.status || "pending"}>
                 <StageMark status={stage.status} />
@@ -221,6 +278,14 @@ export default function Analysis() {
                   <strong>{LABELS[stage.name] || stage.name}</strong>
                   <span className="sr-only"> — {STATUS_TEXT[stage.status] || "waiting"}</span>
                   {stage.detail && <div className="stage-detail">{stage.detail}</div>}
+                  {running && !stopped && share !== null && (
+                    <div className="stage-progress">
+                      <ProgressBar value={share} label={LABELS[stage.name] || stage.name} size="sm" />
+                      <span className="stage-detail tabular">
+                        {[count, `${Math.floor(share)}%`].filter(Boolean).join(" · ")}
+                      </span>
+                    </div>
+                  )}
                 </div>
                 {seconds >= 0.05 && (
                   <span className="stage-time tabular" title={fill(copy.stageTime, { time: formatElapsed(seconds) })}>

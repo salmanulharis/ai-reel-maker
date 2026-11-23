@@ -4,6 +4,7 @@ import { WatchFolderPanel } from "../components/WatchFolderPanel";
 import { api, formatBytes } from "../services/api";
 import { fill, messages } from "../i18n";
 import { Alert, InlineStatus, PageLoader, Spinner } from "../components/Feedback";
+import { TransferProgress } from "../components/Progress";
 import { DocLink } from "./Docs";
 import type { DocArticleId } from "../docs/content";
 import type {
@@ -14,7 +15,6 @@ import type {
   OptimizationGoal,
   OptimizationItem,
   OptimizationPlan,
-  PullStatus,
   RuntimeStatus,
   TimeEstimate,
 } from "../types";
@@ -660,7 +660,7 @@ export default function Settings() {
               </button>
             )}
           </div>
-          {embedPull?.state === "running" && <PullBar pull={embedPull} />}
+          {embedPull?.state === "running" && <TransferProgress status={embedPull} label={copy.installing} />}
           {embedPull?.state === "error" && embedPull.error && <p className="error-text">{embedPull.error}</p>}
         </div>
 
@@ -836,6 +836,7 @@ export default function Settings() {
                     </button>
                   )}
                 </div>
+                {downloading && <TransferProgress status={ollama?.whisper_download} label={copy.downloading} />}
                 {ollama?.whisper_download?.model === model.name && ollama?.whisper_download?.error && (
                   <p className="error-text">{ollama.whisper_download.error}</p>
                 )}
@@ -1213,7 +1214,7 @@ function ModelFileRow({
           {status?.installed
             ? copy.imageModelReady
             : downloading
-              ? fill(copy.imageModelDownloading, { done: status?.files_done ?? 0, total: status?.files_total ?? 3 })
+              ? copy.downloading
               : fill(copy.imageModelMissing, { size: status?.size_mb ?? sizeMb })}
         </span>
         {!status?.installed && (
@@ -1223,6 +1224,7 @@ function ModelFileRow({
           </button>
         )}
       </div>
+      {downloading && <TransferProgress status={status} label={copy.downloading} />}
       {status?.runtime === false && <p className="hint">{noRuntime}</p>}
       {status?.state === "error" && status.error && <p className="error-text">{status.error}</p>}
     </div>
@@ -1408,37 +1410,13 @@ function ModelGroup({
                   </button>
                 )}
               </div>
-              {running && <PullBar pull={pull} />}
+              {running && <TransferProgress status={pull} label={copy.installing} />}
               {pull?.state === "error" && pull.error && <p className="error-text">{pull.error}</p>}
             </article>
           );
         })}
       </div>
     </>
-  );
-}
-
-function PullBar({ pull }: { pull?: PullStatus }) {
-  const total = Number(pull?.total || 0);
-  const completed = Number(pull?.completed || 0);
-  const pct = total > 0 ? Math.min(100, Math.round((completed / total) * 100)) : 0;
-  return (
-    <div>
-      <div
-        className="progress-line"
-        role="progressbar"
-        aria-label={copy.installing}
-        aria-valuemin={0}
-        aria-valuemax={100}
-        aria-valuenow={total > 0 ? pct : undefined}
-      >
-        <span style={{ width: `${pct}%` }} />
-      </div>
-      <p className="hint">
-        {copy.installing}
-        {total > 0 ? ` ${pct}% · ${formatBytes(completed)} / ${formatBytes(total)}` : ""}
-      </p>
-    </div>
   );
 }
 

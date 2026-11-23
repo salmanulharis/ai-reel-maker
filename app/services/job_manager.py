@@ -308,27 +308,19 @@ class JobManager:
         finally:
             session.close()
 
-    def set_stage(self, job_id: str, name: str, status: str, detail: str = "") -> None:
+    def set_stage(
+        self,
+        job_id: str,
+        name: str,
+        status: str,
+        detail: str = "",
+        done: float = 0.0,
+        total: float = 0.0,
+        unit: str = "",
+    ) -> None:
         session = get_session()
         try:
-            stage = (
-                session.query(JobStage)
-                .filter(JobStage.job_id == job_id, JobStage.name == name)
-                .one_or_none()
-            )
-            if stage is None:
-                stage = JobStage(job_id=job_id, name=name)
-                session.add(stage)
-            now = utcnow()
-            if status == "running" and stage.status != "running":
-                # A new run of this stage (first time, another video, or a retry).
-                stage.started_at = now
-                stage.finished_at = None
-            elif status in _STAGE_FINISHED:
-                _close_stage_run(stage, now)
-                stage.finished_at = now
-            stage.status = status
-            stage.detail = detail
+            _apply_stage(session, job_id, name, status, detail, done, total, unit)
             job = session.get(Job, job_id)
             if job:
                 job.last_stage = name
@@ -337,11 +329,46 @@ class JobManager:
         finally:
             session.close()
 
+    def record_progress(
+        self,
+        job_id: str,
+        overall: float,
+        eta: float | None = None,
+        stage: str = "",
+        status: str = "",
+        detail: str = "",
+        done: float = 0.0,
+        total: float = 0.0,
+        unit: str = "",
+        source_index: int | None = None,
+        source_count: int | None = None,
+    ) -> None:
+        """One progress update: the job's figure and time left, and its stage, in one write."""
+        session = get_session()
+        try:
+            job = session.get(Job, job_id)
+            if job is None:
+                return
+            job.progress = max(0.0, min(100.0, float(overall or 0)))
+            job.eta_seconds = None if eta is None else max(0.0, float(eta))
+            job.progress_at = utcnow()
+            if source_index is not None:
+                job.source_index = int(source_index)
+            if source_count is not None:
+                job.source_count = int(source_count)
+            if stage:
+                job.last_stage = stage
+                if status:
+                    _apply_stage(session, job_id, stage, status, detail, done, total, unit)
+            session.commit()
+        finally:
+            session.close()
+
     def stages(self, job_id: str) -> list[dict]:
         session = get_session()
         try:
             rows = session.query(JobStage).filter(JobStage.job_id == job_id).all()
-            order = {name: index for index, name in enumerate(ANALYSIS_STAGES + ["rendering"])}
+            order = {name: index for index, name in enumerate(["prepare", *ANALYSIS_STAGES, "rendering"])}
             rows.sort(key=lambda row: order.get(row.name, len(order)))
             return [
                 {
@@ -351,6 +378,9 @@ class JobManager:
                     # Finished time in this stage; a running stage adds now - started_at.
                     "seconds": round(float(r.seconds or 0), 3),
                     "started_at": _iso(r.started_at) if r.status == "running" else None,
+                    "done": round(float(r.done or 0), 2),
+                    "total": round(float(r.total or 0), 2),
+                    "unit": r.unit or "",
                 }
                 for r in rows
             ]
@@ -603,6 +633,9 @@ class JobManager:
             "min_duration": job.min_duration,
             "max_duration": job.max_duration,
             "progress": job.progress,
+            "eta_seconds": _time_left(job),
+            "source_index": int(job.source_index or 0),
+            "source_count": int(job.source_count or 0),
             "last_stage": job.last_stage,
             "processing_seconds": job.processing_seconds,
             "timing": self.timing(job),
@@ -664,6 +697,7 @@ def _close_attempt(session, job: Job, end, outcome: str) -> float:
     job.attempt_started_at = None
     job.attempt_seen_at = None
     job.attempt_outcome = outcome
+    job.eta_seconds = None
     final_status = _STAGE_ON_OUTCOME.get(outcome, "error")
     running = session.query(JobStage).filter(JobStage.job_id == job.id, JobStage.status == "running").all()
     for stage in running:
@@ -673,6 +707,39 @@ def _close_attempt(session, job: Job, end, outcome: str) -> float:
         if final_status == "pending":
             stage.started_at = None
     return seconds
+
+
+def _apply_stage(
+    session, job_id: str, name: str, status: str, detail: str, done: float, total: float, unit: str
+) -> None:
+    stage = session.query(JobStage).filter(JobStage.job_id == job_id, JobStage.name == name).one_or_none()
+    if stage is None:
+        stage = JobStage(job_id=job_id, name=name)
+        session.add(stage)
+    now = utcnow()
+    if status == "running" and stage.status != "running":
+        # A new run of this stage (first time, another video, or a retry).
+        stage.started_at = now
+        stage.finished_at = None
+    elif status in _STAGE_FINISHED:
+        _close_stage_run(stage, now)
+        stage.finished_at = now
+    stage.status = status
+    stage.detail = detail
+    if status == "done" and total:
+        done = total
+    stage.done = max(0.0, float(done or 0))
+    stage.total = max(0.0, float(total or 0))
+    stage.unit = (unit or "")[:16]
+
+
+def _time_left(job: Job) -> float | None:
+    """Seconds left for the running attempt: the last estimate less the time since it was made."""
+    if job.attempt_started_at is None or job.eta_seconds is None:
+        return None
+    made = as_utc(job.progress_at)
+    passed = (utcnow() - made).total_seconds() if made else 0.0
+    return round(max(0.0, float(job.eta_seconds) - max(0.0, passed)), 1)
 
 
 def _close_stage_run(stage: JobStage, now) -> None:

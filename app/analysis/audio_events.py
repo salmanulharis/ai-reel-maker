@@ -166,9 +166,13 @@ def release_sound_matcher() -> bool:
 
 
 def embed_recording(
-    matcher: SoundMatcher, wav_path: Path, check_cancel: Callable[[], None] | None = None
+    matcher: SoundMatcher,
+    wav_path: Path,
+    check_cancel: Callable[[], None] | None = None,
+    on_progress: Callable[[int, int], None] | None = None,
 ) -> tuple[list[float], np.ndarray]:
-    """Window start times and one unit vector per window of a 48 kHz 16-bit WAV."""
+    """Window start times and one unit vector per window of a 48 kHz 16-bit WAV.
+    ``on_progress(done, total)`` receives the number of windows embedded so far."""
     starts: list[float] = []
     vectors: list[np.ndarray] = []
     with wave.open(str(wav_path), "rb") as handle:
@@ -191,6 +195,8 @@ def embed_recording(
                 windows.append(samples)
                 starts.append(round(position / rate, 3))
             vectors.append(matcher.embed_audio(windows))
+            if on_progress:
+                on_progress(len(starts), len(positions))
     if not vectors:
         return [], np.zeros((0, 512), dtype=np.float32)
     return starts, np.concatenate(vectors)

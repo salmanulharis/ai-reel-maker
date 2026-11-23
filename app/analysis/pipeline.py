@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import threading
 import time
 
 import numpy as np
@@ -31,6 +32,7 @@ from app.analysis import avoid as leave_out
 from app.analysis.avoid import picture_avoid_texts, speech_avoid_text, vision_avoid_text
 from app.analysis.candidates import generate_candidates, populate_candidate_audio_metrics, rescore_candidate
 from app.analysis.optimizer import ClipOptimizer
+from app.analysis.progress import STAGES, PipelineProgress  # noqa: F401 - STAGES is re-exported
 from app.analysis.repetition import RepetitionAnalyzer
 from app.analysis.scenes import detect_scenes
 from app.analysis.scorer import HighlightScorer
@@ -50,26 +52,12 @@ from app.analysis.visual import (
 from app.config import Settings
 from app.models.schemas import CandidateScore, HighlightConfig, Scene, Transcript
 from app.services.run_plan import RunPlan
-from app.video.ffmpeg_runner import CancelledError, FFmpegRunner
+from app.video.ffmpeg_runner import CancelledError, FFmpegRunner, report_progress
 from app.utils.timefmt import format_duration
 from app.utils.atomic import atomic_write_json, part_path, read_json, replace_file
 from app.video.sources import save_sources, tag_candidates, working_path
 
 
-STAGES = [
-    ("metadata", "Video metadata"),
-    ("scenes", "Scene detection"),
-    ("audio", "Audio extraction"),
-    ("transcript", "Transcription"),
-    ("silence", "Silence detection"),
-    ("frames", "Keyframe extraction"),
-    ("sounds", "Understanding sounds"),
-    ("content", "Finding important moments"),
-    ("visual", "Visual AI analysis"),
-    ("repetition", "Removing repetition"),
-    ("director", "Planning with AI"),
-    ("planning", "Planning highlight"),
-]
 
 # Candidate moments kept for planning: the configured number, or more for long videos so
 # their later parts are not crowded out (one per ~8 s), up to this ceiling.
@@ -94,54 +82,6 @@ SOUND_VECTORS_FILE = "sound_vectors.npy"
 # A scene whose picture matches the request at least this well (0-1, relative to the video) is
 # always given to the vision model in prompt mode.
 _PROMPT_MATCH_SHORTLIST = 0.7
-
-
-class PipelineProgress:
-    def __init__(self, emit):
-        self.emit = emit
-        self.started = time.time()
-        # Seconds spent in each stage that actually ran (cached stages are not counted).
-        self.timings: dict[str, float] = {}
-        self._running: dict[str, float] = {}
-        # Model work per AI stage ("vision", "text"), summed over every source video.
-        self.usage: dict[str, dict[str, float]] = {}
-        # What had to be adjusted while running (for example after running out of memory).
-        self.adjustments: list[str] = []
-
-    def log(self, message: str, level: str = "INFO") -> None:
-        self.emit("log", {"level": level, "message": message, "ts": time.time()})
-
-    def _time_stage(self, name: str, status: str) -> None:
-        now = time.perf_counter()
-        if status == "running":
-            self._running.setdefault(name, now)
-        elif status == "done" and name in self._running:
-            spent = now - self._running.pop(name)
-            self.timings[name] = round(self.timings.get(name, 0.0) + spent, 2)
-
-    def timing_summary(self) -> str:
-        labels = dict(STAGES)
-        parts = [f"{labels.get(name, name)} {seconds:.1f}s" for name, seconds in self.timings.items() if seconds >= 0.05]
-        return ", ".join(parts)
-
-    def stage(self, name: str, status: str, detail: str = "", index: int = 0, total: int = 1) -> None:
-        self._time_stage(name, status)
-        elapsed = time.time() - self.started
-        known = [s[0] for s in STAGES]
-        pos = known.index(name) if name in known else 0
-        overall = ((pos + (0.5 if status == "running" else 1 if status == "done" else 0)) / max(len(known), 1)) * 90
-        self.emit(
-            "progress",
-            {
-                "stage": name,
-                "status": status,
-                "detail": detail,
-                "index": index,
-                "total": total,
-                "overall": round(overall, 1),
-                "elapsed": elapsed,
-            },
-        )
 
 
 class VideoAnalyzer:
@@ -196,11 +136,17 @@ class VideoAnalyzer:
             progress.stage("metadata", "done")
         cache["metadata"] = meta
         source_duration = float(meta.get("duration") or 0)
+        progress.source_duration(source_duration)
 
         scenes = cache.get("scenes")
         if not scenes:
             progress.stage("scenes", "running")
-            detected = detect_scenes(source, self.settings.scene_threshold, self.runner)
+            detected = detect_scenes(
+                source,
+                self.settings.scene_threshold,
+                self.runner,
+                on_progress=progress.share("scenes", "time", source_duration),
+            )
             scenes = [s.model_dump() for s in detected]
             _write(job_dir / "scenes.json", scenes)
             progress.log(f"{len(scenes)} scenes detected")
@@ -211,13 +157,15 @@ class VideoAnalyzer:
         # Speech can be turned off for the whole app or for one highlight. Audio is still
         # extracted when the video has sound: loudness and pauses come from it.
         want_speech = bool(self.settings.enable_whisper) and bool(getattr(config, "use_speech", True))
+        self._plan_progress(progress, cache, config, meta, wav, want_speech)
         if not wav.exists() and meta.get("has_audio", True):
             progress.stage("audio", "running")
             # Written under another name and renamed when complete: a cancel or a power cut
             # mid-file must never leave a partial file that is reused as finished audio.
             pending_wav = part_path(wav)
             try:
-                extract_audio(self.runner, source, pending_wav)
+                with report_progress(self.runner, source_duration, progress.share("audio", "time", source_duration)):
+                    extract_audio(self.runner, source, pending_wav)
                 replace_file(pending_wav, wav)
                 progress.log("Audio extracted")
             except CancelledError:
@@ -244,7 +192,9 @@ class VideoAnalyzer:
             if wav.exists():
                 if self.run_plan.free_gpu_for_speech:
                     self._unload_models(None)
-                transcript_data, transcribed = self._transcribe(wav, progress, job_dir / TRANSCRIPT_PARTIAL)
+                transcript_data, transcribed = self._transcribe(
+                    wav, progress, job_dir / TRANSCRIPT_PARTIAL, duration=source_duration
+                )
                 if self.run_plan.one_at_a_time or self.run_plan.free_gpu_for_speech:
                     release_whisper_models()
             else:
@@ -265,9 +215,10 @@ class VideoAnalyzer:
         if silences is None:
             progress.stage("silence", "running")
             target = wav if wav.exists() else source
-            silences = detect_silence(
-                self.runner, target, self.settings.silence_threshold_db, self.settings.silence_min_duration
-            )
+            with report_progress(self.runner, source_duration, progress.share("silence", "time", source_duration)):
+                silences = detect_silence(
+                    self.runner, target, self.settings.silence_threshold_db, self.settings.silence_min_duration
+                )
             _write(job_dir / "silences.json", silences)
             progress.stage("silence", "done")
         cache["silences"] = silences
@@ -407,25 +358,28 @@ class VideoAnalyzer:
                 f"Visual AI: analyzing {ai_scene_count} scene(s) in up to {batch_count} batched call(s) "
                 f"({self.settings.ollama_vision_max_pixels}px frames, model {self.settings.ollama_vision_model})"
             )
-            progress.stage("visual", "running", "Preparing batched visual analysis", 0, batch_count)
+            ai_scenes = ai_scene_count if vision_ready else 0
+            progress.expect("visual", progress.vision_seconds(ai_scenes) if ai_scenes else 2.0)
+            # Scenes handed to the vision model so far (every batch that has started).
+            sent = {"scenes": 0}
+            if ai_scenes:
+                progress.step("visual", 0, ai_scenes, "scenes")
             self._check_cancel()
 
             def _visual_batch_progress(batch_no: int, total: int, size: int) -> None:
                 self._check_cancel()
                 progress.log(f"Visual AI: batch {batch_no}/{total} ({size} scene{'s' if size != 1 else ''})")
-                progress.stage(
-                    "visual",
-                    "running",
-                    f"Visual batch {batch_no}/{total}",
-                    batch_no,
-                    total,
-                )
+                if ai_scenes:
+                    progress.step("visual", min(sent["scenes"], ai_scenes), ai_scenes, "scenes")
+                sent["scenes"] += size
 
             if self.run_plan.one_at_a_time and ai_scene_count:
                 # The speech model has finished; its memory goes to the video model.
                 self._unload_models(self.settings.ollama_vision_model)
 
             def _save_visual_progress(done: dict, reasons: dict) -> None:
+                if ai_scenes:
+                    progress.step("visual", min(sent["scenes"], ai_scenes), ai_scenes, "scenes")
                 added = False
                 for scene_id, result in done.items():
                     if scene_id not in reasons and str(scene_id) not in saved_scenes:
@@ -471,7 +425,7 @@ class VideoAnalyzer:
             for message in errors:
                 progress.log(message, "WARNING")
             self._log_usage(progress, "Visual AI", usage_before)
-            progress.stage("visual", "done", f"Analyzed {len(results)} scene(s)", batch_count, batch_count)
+            progress.stage("visual", "done", f"Analyzed {len(results)} scene(s)")
             _write(job_dir / "visual_analysis.json", visual)
             progress.log("Visual analysis completed")
         elif saved_scenes:
@@ -579,7 +533,12 @@ class VideoAnalyzer:
         multi = len(sources) > 1
         combined_meta: dict = cache.get("metadata") or {}
         piece_metas: list[dict] = []
+        progress.configure_sources(
+            [_file_size(working_path(source)) for source in sources],
+            [source.get("duration") for source in sources],
+        )
         for index, source in enumerate(sources):
+            progress.begin_source(index)
             label = source.get("filename") or f"video {index + 1}"
             if multi:
                 progress.log(f"Analyzing {label} ({index + 1}/{len(sources)})")
@@ -679,6 +638,36 @@ class VideoAnalyzer:
             _write(job_dir / "analysis_timings.json", progress.timings)
         return cache
 
+    def _plan_progress(
+        self, progress: PipelineProgress, cache: dict, config: HighlightConfig, meta: dict, wav: Path, want_speech: bool
+    ) -> None:
+        """Tell the progress which steps will not run for this video (finished earlier, or off)
+        and which AI steps only use quick scoring, so the bar moves by the work that is left."""
+        skip = []
+        if wav.exists() or not meta.get("has_audio", True):
+            skip.append("audio")
+        if not want_speech or cache.get("transcript") is not None:
+            skip.append("transcript")
+        if cache.get("silences") is not None:
+            skip.append("silence")
+        if config.mode != "prompt" or not want_speech:
+            skip.append("sounds")
+        if not want_speech:
+            skip.append("content")
+        if config.mode != "prompt":
+            skip.append("director")
+        progress.skip(*skip)
+        if self.ollama is None or not self.text_enabled:
+            progress.expect("content", 2.0)
+        vision = (
+            self.ollama is not None
+            and self.vision_enabled
+            and self.settings.enable_visual_analysis
+            and bool(getattr(config, "use_visuals", True))
+        )
+        if not vision:
+            progress.expect("visual", 2.0)
+
     def _scene_quality(self, job_dir: Path, scenes: list[dict], frame_map: dict, cache: dict) -> dict[int, dict]:
         """Picture quality per scene from its sampled frames; cached with the analysis."""
         cached = cache.get("scene_quality")
@@ -733,11 +722,20 @@ class VideoAnalyzer:
         if matcher is None:
             return {}
         started = time.perf_counter()
+        progress.stage("frames", "running", "Matching pictures")
         try:
-            result = score_scenes(matcher, frames, texts, avoid_texts)
+            result = score_scenes(
+                matcher,
+                frames,
+                texts,
+                avoid_texts,
+                on_progress=lambda done, total: progress.step("frames", done, total, "frames", "Matching pictures"),
+            )
         except Exception as exc:  # noqa: BLE001 - a ranking aid, never a requirement
             progress.log(f"Image matching skipped ({exc})", "WARNING")
+            progress.stage("frames", "done")
             return {}
+        progress.stage("frames", "done")
         duplicates = sum(1 for item in result.values() if item.get("duplicate_of") is not None)
         progress.log(
             f"Image matching ({matcher.device}): {len(result)} scenes in {time.perf_counter() - started:.1f}s"
@@ -783,7 +781,9 @@ class VideoAnalyzer:
                 vectors = np.load(vectors_path).astype(np.float32)
                 labels = [item.get("labels") or {} for item in cached.get("windows") or []]
             else:
-                starts, vectors = self._embed_sounds(job_dir, source, matcher)
+                starts, vectors = self._embed_sounds(
+                    job_dir, source, matcher, progress, float(meta.get("duration") or 0)
+                )
                 labels = audio_events.label_windows(matcher, vectors)
                 if len(starts):
                     np.save(vectors_path, vectors.astype(np.float16))
@@ -819,14 +819,32 @@ class VideoAnalyzer:
         progress.stage("sounds", "done")
         return events
 
-    def _embed_sounds(self, job_dir: Path, source: Path, matcher) -> tuple[list[float], np.ndarray]:
-        """Sound vectors from a 48 kHz copy of the sound, removed afterwards."""
+    def _embed_sounds(
+        self,
+        job_dir: Path,
+        source: Path,
+        matcher,
+        progress: PipelineProgress | None = None,
+        duration: float = 0.0,
+    ) -> tuple[list[float], np.ndarray]:
+        """Sound vectors from a 48 kHz copy of the sound, removed afterwards. Copying the sound
+        counts as the first fifth of the step, listening to it as the rest."""
         wav48 = job_dir / "source" / "audio48k.wav"
         pending = part_path(wav48)
+
+        def copy_share(fraction: float) -> None:
+            if progress is not None:
+                progress.step("sounds", 20 * fraction, 100)
+
+        def listen_share(done: int, total: int) -> None:
+            if progress is not None and total:
+                progress.step("sounds", 20 + 80 * done / total, 100)
+
         try:
-            self.runner.extract_audio(source, pending, sample_rate=audio_events.SAMPLE_RATE)
+            with report_progress(self.runner, duration, copy_share):
+                self.runner.extract_audio(source, pending, sample_rate=audio_events.SAMPLE_RATE)
             replace_file(pending, wav48)
-            return audio_events.embed_recording(matcher, wav48, self._check_cancel)
+            return audio_events.embed_recording(matcher, wav48, self._check_cancel, on_progress=listen_share)
         finally:
             pending.unlink(missing_ok=True)
             if not self.settings.debug_analysis:
@@ -884,12 +902,24 @@ class VideoAnalyzer:
         unique: dict[Path, float] = {}
         for _, stamp, out in planned:
             unique.setdefault(out, stamp)
+        finished = {"count": 0}
+        counter = threading.Lock()
+
+        def extract_counted(stamp: float, out: Path) -> str | None:
+            try:
+                return extract(stamp, out)
+            finally:
+                with counter:
+                    finished["count"] += 1
+                    done = finished["count"]
+                progress.step("frames", done, len(unique), "frames")
+
         workers = frame_extract_workers(len(unique))
         if workers > 1:
             with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="frames") as pool:
-                outcomes = list(pool.map(lambda item: extract(item[1], item[0]), unique.items()))
+                outcomes = list(pool.map(lambda item: extract_counted(item[1], item[0]), unique.items()))
         else:
-            outcomes = [extract(stamp, out) for out, stamp in unique.items()]
+            outcomes = [extract_counted(stamp, out) for out, stamp in unique.items()]
         self._check_cancel()
         failures = dict(zip(unique, outcomes))
 
@@ -906,11 +936,15 @@ class VideoAnalyzer:
                 frame_map[scene_id].append({"timestamp": stamp, "image_path": str(out)})
         return frame_map
 
-    def _transcribe(self, wav: Path, progress: PipelineProgress, partial: Path | None = None) -> tuple[dict, bool]:
+    def _transcribe(
+        self, wav: Path, progress: PipelineProgress, partial: Path | None = None, duration: float = 0.0
+    ) -> tuple[dict, bool]:
         """Transcript data, and whether it is worth caching. A failed run is not cached, so the
         next analysis tries again instead of reusing an empty transcript. Finished segments are
         saved to ``partial`` as they come, and a later run continues after them."""
         extra: dict = {"check_cancel": self._check_cancel}
+        if duration > 0:
+            extra["on_position"] = lambda seconds: progress.step("transcript", seconds, duration, "time")
         if self.run_plan.whisper_gpu_compute:
             extra["gpu_compute"] = self.run_plan.whisper_gpu_compute
         if partial is not None:
@@ -1000,19 +1034,15 @@ class VideoAnalyzer:
         batches = [[pending[position] for position in batch] for batch in batches]
         unreachable = False
         out_of_memory = False
+        progress.expect("content", progress.text_seconds(len(pending)))
+        scored_count = 0
+        progress.step("content", 0, len(pending), "segments")
         for batch_no, indexes in enumerate(batches, start=1):
             self._check_cancel()
             batch = [segments[index] for index in indexes]
             progress.log(
                 f"Scoring transcript batch {batch_no}/{len(batches)} "
                 f"({len(batch)} segment{'s' if len(batch) != 1 else ''})"
-            )
-            progress.stage(
-                "content",
-                "running",
-                f"Scoring speech {batch_no}/{len(batches)}",
-                batch_no,
-                len(batches),
             )
             if unreachable or out_of_memory:
                 scored = [_heuristic_segment(seg, score_source.AI_FAILED) for seg in batch]
@@ -1044,6 +1074,8 @@ class VideoAnalyzer:
                 results[index] = item
             if partial is not None:
                 atomic_write_json(partial, {"key": key, "scores": results})
+            scored_count += len(indexes)
+            progress.step("content", scored_count, len(pending), "segments")
         return results, True
 
     def refine(self, job_dir: Path, config: HighlightConfig, progress: PipelineProgress, cache: dict) -> dict:
@@ -1051,6 +1083,7 @@ class VideoAnalyzer:
         the Review page. Nothing is analyzed again."""
         if not cache.get("candidates_all") and not cache.get("candidates"):
             raise ValueError("This highlight has no analysis to plan from. Start the analysis again.")
+        progress.only("director", "planning")
         pool, _note, _embedding = planning_pool(cache, config, self.settings)
         previous = [
             str(clip.get("candidate_id"))
@@ -1099,6 +1132,7 @@ class VideoAnalyzer:
             cached=cache.get("director_plan"),
             check_cancel=self._check_cancel,
             log=progress.log,
+            on_part=lambda done, total: progress.step("director", done, total, "parts"),
         )
         self._log_usage(progress, "AI editor", usage_before)
         if plan is None:
@@ -1652,6 +1686,13 @@ def _restore_partial_visual(visual: dict, saved, focus: list[str], scenes: list[
     }
     visual.update(restored)
     return restored
+
+
+def _file_size(path) -> float:
+    try:
+        return float(Path(path).stat().st_size)
+    except (OSError, TypeError, ValueError):
+        return 0.0
 
 
 def _write(path: Path, data) -> None:

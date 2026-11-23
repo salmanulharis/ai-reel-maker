@@ -13,6 +13,8 @@ import threading
 from pathlib import Path
 from typing import Any
 
+from app.services.download_progress import HubWatcher, hub_missing_bytes, transfer_fields
+
 _log = logging.getLogger(__name__)
 
 GPU_PROVIDERS = ("CUDAExecutionProvider", "DmlExecutionProvider")
@@ -63,7 +65,13 @@ class HubModel:
         self.size_mb = size_mb
         self.label = label
         self.lock = threading.Lock()
-        self.state: dict[str, Any] = {"state": "idle", "files_done": 0, "files_total": len(files), "error": None}
+        self.state: dict[str, Any] = {
+            "state": "idle",
+            "files_done": 0,
+            "files_total": len(files),
+            "error": None,
+            **transfer_fields(),
+        }
 
     def cached_path(self, filename: str) -> str | None:
         try:
@@ -89,19 +97,29 @@ class HubModel:
         with self.lock:
             if self.state.get("state") == "running":
                 return False
-            self.state.update({"state": "running", "files_done": 0, "error": None})
+            self.state.update({"state": "running", "files_done": 0, "error": None, **transfer_fields(phase="starting")})
             return True
 
     def download(self) -> None:
+        def update(fields: dict[str, Any]) -> None:
+            with self.lock:
+                self.state.update(fields)
+
         try:
             from huggingface_hub import hf_hub_download
 
-            for index, name in enumerate(self.files, start=1):
-                hf_hub_download(self.repo, name)
-                with self.lock:
-                    self.state["files_done"] = index
-            result = {"state": "done", "error": None}
+            total = hub_missing_bytes(self.repo, files=self.files)
+            with HubWatcher(self.repo, total, update) as watcher:
+                for index, name in enumerate(self.files, start=1):
+                    hf_hub_download(self.repo, name)
+                    with self.lock:
+                        self.state["files_done"] = index
+                written = watcher.written()
+            result = {"state": "done", "error": None, **transfer_fields(written, total or written, "done")}
         except Exception as exc:  # noqa: BLE001
-            result = {"state": "error", "error": f"Could not download the {self.label}: {exc}"[:300]}
-        with self.lock:
-            self.state.update(result)
+            result = {
+                "state": "error",
+                "error": f"Could not download the {self.label}: {exc}"[:300],
+                **transfer_fields(phase="error"),
+            }
+        update(result)

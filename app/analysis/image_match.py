@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import logging
 import threading
-from typing import Any
+from typing import Any, Callable
 
 import numpy as np
 
@@ -190,21 +190,43 @@ def _spread(values: np.ndarray) -> np.ndarray:
     return np.clip((values - low) / (high - low), 0.0, 1.0)
 
 
+# Frames read per progress report when progress is wanted.
+_PROGRESS_CHUNK = 32
+
+
+def _embed_frames(matcher, paths: list[str], on_progress: Callable[[int, int], None] | None):
+    """``matcher.embed_images`` over ``paths``, in parts when progress is reported."""
+    if on_progress is None or len(paths) <= _PROGRESS_CHUNK:
+        result = matcher.embed_images(paths)
+        if on_progress:
+            on_progress(len(paths), len(paths))
+        return result
+    vectors, readable = [], []
+    for start in range(0, len(paths), _PROGRESS_CHUNK):
+        part_vectors, part_readable = matcher.embed_images(paths[start : start + _PROGRESS_CHUNK])
+        vectors.append(part_vectors)
+        readable.extend(part_readable)
+        on_progress(min(len(paths), start + _PROGRESS_CHUNK), len(paths))
+    return np.concatenate(vectors), readable
+
+
 def score_scenes(
     matcher: ImageMatcher,
     scene_frames: dict[int, str],
     focus: str | list[str] = "",
     avoid_texts: dict | None = None,
+    on_progress: Callable[[int, int], None] | None = None,
 ) -> dict[int, dict]:
     """Per scene: interest (0-1, relative to this video), focus match (0-1, or None without a
     focus), the scene it duplicates, if any, and with ``avoid_texts`` how strongly it shows each
-    kind of content to leave out. Several focus texts count by the best match."""
+    kind of content to leave out. Several focus texts count by the best match.
+    ``on_progress(done, total)`` receives the number of frames read so far."""
     texts = [focus] if isinstance(focus, str) else list(focus or [])
     texts = [text.strip() for text in texts if text and text.strip()]
     scene_ids = list(scene_frames)
     if not scene_ids:
         return {}
-    vectors, readable = matcher.embed_images([scene_frames[scene_id] for scene_id in scene_ids])
+    vectors, readable = _embed_frames(matcher, [scene_frames[scene_id] for scene_id in scene_ids], on_progress)
     keep = [i for i, ok in enumerate(readable) if ok]
     if not keep:
         return {}

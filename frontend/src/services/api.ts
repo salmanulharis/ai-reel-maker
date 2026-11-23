@@ -49,11 +49,51 @@ export interface SpeakerData {
   note?: string;
 }
 
+/** Upload progress callback and a way to stop the upload. */
+export interface UploadOptions {
+  onProgress?: (loaded: number, total: number) => void;
+  signal?: AbortSignal;
+}
+
+/**
+ * POST a form with upload progress. fetch cannot report how much of a request body was sent,
+ * so this uses XMLHttpRequest. A stopped upload rejects with an AbortError.
+ */
+function sendForm<T>(path: string, body: FormData, options: UploadOptions = {}): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    const { onProgress, signal } = options;
+    if (signal?.aborted) {
+      reject(new DOMException("Upload cancelled", "AbortError"));
+      return;
+    }
+    xhr.open("POST", path);
+    if (onProgress) {
+      xhr.upload.onprogress = (event) => onProgress(event.loaded, event.lengthComputable ? event.total : 0);
+    }
+    xhr.onload = () => {
+      let data: unknown = {};
+      try {
+        data = JSON.parse(xhr.responseText || "{}");
+      } catch {
+        data = {};
+      }
+      if (xhr.status >= 200 && xhr.status < 300) resolve(data as T);
+      else reject(new Error(friendlyError(xhr.status, (data as { error?: string }).error)));
+    };
+    // Like fetch: a network failure means the server could not be reached at all.
+    xhr.onerror = () => reject(new Error(messages.errors.offline));
+    xhr.onabort = () => reject(new DOMException("Upload cancelled", "AbortError"));
+    signal?.addEventListener("abort", () => xhr.abort(), { once: true });
+    xhr.send(body);
+  });
+}
+
 /** Send one file to the API as a form upload. */
-function upload<T>(path: string, file: File): Promise<T> {
+function upload<T>(path: string, file: File, options?: UploadOptions): Promise<T> {
   const form = new FormData();
   form.append("file", file);
-  return http<T>(path, { method: "POST", body: form });
+  return sendForm<T>(path, form, options);
 }
 
 /** Download a file from the API, with a readable error instead of a JSON page when it fails. */
@@ -245,12 +285,12 @@ export function configPayload(form: HighlightForm) {
 export const api = {
   jobs: () => http<{ jobs: Job[] }>("/api/jobs"),
   job: (id: string) => http<Job>(`/api/jobs/${id}`),
-  createJob: async (files: File | File[], form: HighlightForm) => {
+  createJob: async (files: File | File[], form: HighlightForm, options?: UploadOptions) => {
     const body = new FormData();
     const list = Array.isArray(files) ? files : [files];
     for (const file of list) body.append("file", file);
     body.append("config", JSON.stringify(configPayload(form)));
-    return http<Job>("/api/jobs", { method: "POST", body });
+    return sendForm<Job>("/api/jobs", body, options);
   },
   analyze: (id: string, form: HighlightForm) =>
     http<Job>(`/api/jobs/${id}/analyze`, {
@@ -313,7 +353,8 @@ export const api = {
       method: "POST",
     }),
   music: (id: string) => http<{ name: string | null }>(`/api/jobs/${encodeURIComponent(id)}/music`),
-  uploadMusic: (id: string, file: File) => upload<{ name: string }>(`/api/jobs/${encodeURIComponent(id)}/music`, file),
+  uploadMusic: (id: string, file: File, options?: UploadOptions) =>
+    upload<{ name: string }>(`/api/jobs/${encodeURIComponent(id)}/music`, file, options),
   deleteMusic: (id: string) => http(`/api/jobs/${encodeURIComponent(id)}/music`, { method: "DELETE" }),
   renderOptions: (id: string, options: { music_volume?: number; music_duck?: boolean }) =>
     http(`/api/jobs/${encodeURIComponent(id)}/render-options`, {
@@ -328,7 +369,7 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ clips }),
     }),
-  uploadLogo: (file: File) => upload<{ logo: boolean }>("/api/brand/logo", file),
+  uploadLogo: (file: File, options?: UploadOptions) => upload<{ logo: boolean }>("/api/brand/logo", file, options),
   deleteLogo: () => http("/api/brand/logo", { method: "DELETE" }),
   watchFolder: () => http<{ enabled: boolean; folder: string; preset: string }>("/api/watch-folder"),
   saveWatchFolder: (config: { enabled: boolean; folder: string; preset: string }) =>

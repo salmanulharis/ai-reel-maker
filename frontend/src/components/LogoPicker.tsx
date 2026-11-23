@@ -2,6 +2,8 @@ import { useEffect, useRef, useState } from "react";
 import { api } from "../services/api";
 import { messages } from "../i18n";
 import { Alert, Spinner } from "./Feedback";
+import { TransferProgress } from "./Progress";
+import { useUpload } from "../hooks/useUpload";
 
 const copy = messages.config;
 
@@ -12,6 +14,7 @@ export function LogoPicker() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const input = useRef<HTMLInputElement>(null);
+  const sending = useUpload();
 
   useEffect(() => {
     fetch(`/api/brand/logo?v=${version}`, { method: "GET" })
@@ -24,7 +27,7 @@ export function LogoPicker() {
     setBusy(true);
     setError("");
     try {
-      await api.uploadLogo(file);
+      await sending.run(file.size, (options) => api.uploadLogo(file, options));
       setVersion((v) => v + 1);
     } catch (err) {
       setError((err as Error).message);
@@ -69,6 +72,7 @@ export function LogoPicker() {
           </button>
         )}
       </div>
+      {sending.status && <TransferProgress status={sending.status} label={messages.transfer.uploadLabel} />}
       {error && <Alert>{error}</Alert>}
     </div>
   );

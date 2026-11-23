@@ -61,10 +61,12 @@ def run_director(
     cached: dict | None = None,
     check_cancel: Callable[[], None] | None = None,
     log: Callable[[str, str], None] | None = None,
+    on_part: Callable[[int, int], None] | None = None,
 ) -> dict | None:
     """The editor's plan for ``candidates``, or None when it could not make one. ``previous``
     lists the candidate ids of the plan the user asked to change. A ``cached`` plan with the
-    same inputs is returned as is."""
+    same inputs is returned as is. ``on_part(done, total)`` receives the requests answered so
+    far (long videos are read in parts, then a final pick)."""
     log = log or (lambda message, level="INFO": None)
     think = bool(getattr(settings, "director_think", False))
     pool = _pool(candidates, content)
@@ -103,6 +105,9 @@ def run_director(
         return _call(client, model, prompt, options, settings, up_to, think, log)
 
     parts = _parts(alias_list, by_alias, budget)
+    requests = len(parts) + 1 if len(parts) > 1 else 1
+    if on_part:
+        on_part(0, requests)
     if len(parts) > 1:
         log(f"AI editor: reading {len(alias_list)} moments in {len(parts)} parts", "INFO")
         proposals: list[str] = []
@@ -115,11 +120,15 @@ def run_director(
                 chosen = [{"id": alias} for alias in part[:per_part]]
             proposals.extend(item["id"] for item in chosen)
             log(f"AI editor: part {number}/{len(parts)} proposed {len(chosen)} moment(s)", "INFO")
+            if on_part:
+                on_part(number, requests)
         ranked = sorted(dict.fromkeys(proposals), key=alias_list.index)
         final_list = _fit(ranked, by_alias, budget)
     else:
         final_list = alias_list
     reply = ask(final_list, picks, final=True)
+    if on_part:
+        on_part(requests, requests)
     chosen = _valid_picks(reply, set(final_list)) if reply else []
     if not chosen:
         return None

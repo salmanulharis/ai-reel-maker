@@ -714,6 +714,24 @@ details.help p { color: var(--muted); font-size: 13px; }
   transition: width var(--dur-slow) var(--ease);
 }
 .progress-line.lg { height: 8px; margin-bottom: 14px; }
+.progress-line.sm { height: 4px; }
+/* Work whose amount is not known yet: a short bar sliding across. */
+.progress-line.indeterminate span {
+  width: 35%;
+  animation: progress-slide 1.4s var(--ease) infinite;
+}
+@keyframes progress-slide {
+  from { transform: translateX(-100%); }
+  to { transform: translateX(290%); }
+}
+.stage-progress { margin-top: 6px; display: grid; gap: 4px; max-width: 420px; }
+.stage-progress .stage-detail { margin-top: 0; }
+.transfer { display: grid; gap: 4px; min-width: 0; }
+.transfer .hint { margin: 0; }
+.embed-row .transfer { grid-column: 1 / -1; }
+.upload-progress { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin-top: 10px; }
+.upload-progress .transfer { flex: 1 1 260px; }
+.row-progress { margin-top: 6px; min-width: 72px; }
 .stage-list { list-style: none; padding: 0; margin: 0; }
 .stage-list li {
   display: flex;
@@ -1342,6 +1360,12 @@ details.help p { color: var(--muted); font-size: 13px; }
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
     scroll-behavior: auto !important;
+  }
+  /* Work of unknown length shows a still, faint bar instead of sliding. */
+  .progress-line.indeterminate span {
+    animation: none !important;
+    width: 100%;
+    opacity: 0.35;
   }
   /* Spinners still signal work, just slowly, with no sweeping motion elsewhere. */
   .spinner {
