@@ -556,7 +556,9 @@ def test_speech_off_still_extracts_audio_for_loudness(tmp_path, monkeypatch):
     )
     monkeypatch.setattr("app.analysis.pipeline.transcribe_detailed", lambda *a, **k: pytest.fail("transcribed with speech off"))
     result = _analyze(tmp_path, job_dir, cache, enable_whisper=False)
-    assert extracted == [wav]
+    # Written under a temporary name and renamed into place once complete.
+    assert [Path(p).name for p in extracted] == [".audio.part.wav"]
+    assert wav.exists()
     assert result["transcript"]["segments"] == []
     assert result["segment_scores"] == []
 

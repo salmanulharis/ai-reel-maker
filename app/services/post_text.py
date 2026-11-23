@@ -14,6 +14,7 @@ from collections import Counter
 from pathlib import Path
 
 from app.models.schemas import HighlightConfig
+from app.utils.atomic import atomic_write_json
 from app.video.captions import clip_cues, load_transcript
 from app.video.sources import load_sources
 
@@ -211,7 +212,7 @@ def suggest(job, job_dir: Path, clips: list[dict], settings, client=None, short:
         result = {**simple_suggestion(spoken, seen, name), "source": "simple", "note": note}
     path = _result_path(job_dir, short)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
+    atomic_write_json(path, result, ensure_ascii=False, indent=2)
     return result
 
 

@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-import os
-import time
+import hashlib
 from pathlib import Path
 from typing import Callable
 
+from app.utils.atomic import atomic_write_json, read_json, replace_file
 from app.models.schemas import ClipPlan, ClipPlanItem, RenderSettings, VideoMetadata
 from app.video.ffmpeg_runner import CancelledError, FFmpegError, FFmpegRunner
 from app.video.processor import VideoProcessor
@@ -40,6 +40,28 @@ HW_ENCODERS = {
     "h264_amf": "AMD hardware encoding",
     "h264_videotoolbox": "Apple VideoToolbox",
 }
+
+
+# Fingerprints of the clips a render has finished, kept in its work folder.
+CLIP_MANIFEST = "clips_done.json"
+
+
+def _command_fingerprint(cmd: list[str], subtitle_path: Path | None) -> str:
+    """Identifies the exact clip a command makes, including the subtitle text it burns in."""
+    digest = hashlib.sha256("\0".join(str(part) for part in cmd).encode("utf-8"))
+    if subtitle_path is not None:
+        try:
+            digest.update(Path(subtitle_path).read_bytes())
+        except OSError:
+            digest.update(b"<no subtitles>")
+    return digest.hexdigest()
+
+
+def _usable_file(path: Path) -> bool:
+    try:
+        return path.is_file() and path.stat().st_size > 0
+    except OSError:
+        return False
 
 
 class Renderer:
@@ -149,13 +171,13 @@ class Renderer:
             silent = any_audio and not src_meta.has_audio and str(clip_source) not in failed_probes
             return extra, subtitle_path, silent
 
-        def clip_command(i: int, clip, codec: str) -> list[str]:
+        def clip_command(i: int, clip, codec: str, output_path: Path) -> list[str]:
             if i not in prepared:
                 prepared[i] = prepare(i, clip)
             extra, subtitle_path, silent = prepared[i]
             cmd = VideoProcessor.cut_clip_command(
                 clip_sources[i],
-                work_dir / f"clip_{i:03d}.mp4",
+                output_path,
                 clip.start,
                 clip.end,
                 stream_copy=False,
@@ -170,11 +192,36 @@ class Renderer:
                 cmd = self._inject_subtitles(cmd, subtitle_path)
             return cmd
 
+        # Clips finished by an earlier run that was paused or cut off (a power cut, a crash),
+        # by the fingerprint of the exact command that made them. A clip is reused only when
+        # its command is unchanged, so edited clips and changed settings are encoded again.
+        manifest_path = work_dir / CLIP_MANIFEST
+        encoding_dir = work_dir / "encoding"
+        encoding_dir.mkdir(exist_ok=True)
+        finished = read_json(manifest_path, {})
+        if not isinstance(finished, dict):
+            finished = {}
+
         def encode_all(codec: str) -> list[Path]:
             files = []
             for i, clip in enumerate(clips):
-                self.runner.run(clip_command(i, clip, codec))
-                files.append(work_dir / f"clip_{i:03d}.mp4")
+                target = work_dir / f"clip_{i:03d}.mp4"
+                # Encoded in a side folder and moved into place when complete, so a stopped
+                # command never leaves a partial clip that looks finished.
+                pending_clip = encoding_dir / target.name
+                cmd = clip_command(i, clip, codec, pending_clip)
+                fingerprint = _command_fingerprint(cmd, prepared[i][1])
+                if finished.get(target.name) != fingerprint or not _usable_file(target):
+                    try:
+                        self.runner.run(cmd)
+                        if pending_clip.exists():
+                            replace_file(pending_clip, target)
+                    except BaseException:
+                        pending_clip.unlink(missing_ok=True)
+                        raise
+                    finished[target.name] = fingerprint
+                    atomic_write_json(manifest_path, finished)
+                files.append(target)
             return files
 
         try:
@@ -213,7 +260,7 @@ class Renderer:
             validation = validate_output(probe, metadata, pending, canvas=canvas, settings=settings)
             if not validation["ok"]:
                 raise FFmpegError(validation["error"])
-            _replace(pending, output)
+            replace_file(pending, output)
         except BaseException:
             # Failed, cancelled, or could not be moved into place: never leave a partial file.
             pending.unlink(missing_ok=True)
@@ -418,19 +465,6 @@ def build_clip_srt(clip, segments: list[dict], dest: Path) -> bool:
         return False
     _write_srt(entries, dest)
     return True
-
-
-def _replace(pending: Path, output: Path) -> None:
-    """Move the verified file into place. On Windows the old file can be briefly held open
-    (for example while it is being streamed), so a few retries are allowed."""
-    for attempt in range(10):
-        try:
-            os.replace(pending, output)
-            return
-        except PermissionError:
-            if attempt == 9:
-                raise
-            time.sleep(0.5)
 
 
 def _srt_ts(seconds: float) -> str:

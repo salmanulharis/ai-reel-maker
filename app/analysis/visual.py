@@ -137,12 +137,14 @@ def analyze_scenes_visual(
     shortlist: set[int] | None = None,
     avoid: str = "",
     on_memory_error: Callable[[], None] | None = None,
+    on_batch_done: Callable[[dict[int, VisualAnalysis], dict[int, str]], None] | None = None,
 ) -> tuple[dict[int, VisualAnalysis], list[str], dict[int, str]]:
     """Score scenes with the vision model, falling back to motion scoring per scene.
 
     ``avoid`` lists content the user wants left out; the model then also rates how clearly
     each scene shows it. ``on_memory_error`` frees memory when the model runs out of it; the
-    request is then retried in smaller parts.
+    request is then retried in smaller parts. ``on_batch_done`` receives the scores and fallback
+    reasons so far after every batch, so finished batches can be saved as they complete.
 
     Returns the scores, log messages, and the fallback reason for every scene that did not get
     an AI score (see app.analysis.score_source)."""
@@ -207,6 +209,8 @@ def analyze_scenes_visual(
         if unreachable or out_of_memory:
             for scene_model, _, _, fallback in batch:
                 use_fallback(scene_model, fallback, score_source.AI_FAILED)
+            if on_batch_done:
+                on_batch_done(results, reasons)
             continue
         try:
             by_id = _score_visual_batch(client, model, batch, custom_focus, cfg, avoid, on_memory_error, limit)
@@ -240,6 +244,8 @@ def analyze_scenes_visual(
                 errors.append(f"Visual batch {batch_index}/{batch_count} failed ({detail}); using motion fallback.")
             for scene_model, _, _, fallback in batch:
                 use_fallback(scene_model, fallback, score_source.AI_FAILED)
+        if on_batch_done:
+            on_batch_done(results, reasons)
 
     return results, errors, reasons
 

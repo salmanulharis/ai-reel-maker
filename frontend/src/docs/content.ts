@@ -329,6 +329,30 @@ export const DOC_ARTICLES = {
     ],
   },
 
+  "pause-resume": {
+    title: "Pause, power cuts, and continuing later",
+    summary: "Pause a highlight, turn the computer off, and continue where it stopped.",
+    keywords: "pause resume continue battery power cut crash shutdown restart hibernate interrupted",
+    blocks: [
+      { kind: "p", text: "Press **Pause** on the progress page to stop a highlight that is being analyzed or created. Press **Resume** to continue. A paused highlight stays paused when you close the app or turn off the computer." },
+      { kind: "p", text: "Pausing finishes and saves the current step first, so it can take a minute or two on a computer without a graphics card. Nothing finished is lost." },
+      { kind: "h", text: "If the power goes off" },
+      { kind: "p", text: "Work is saved as it goes. When you start the app again, a highlight that was interrupted continues by itself. At most this is redone:" },
+      {
+        kind: "list",
+        items: [
+          "About 20 seconds of **writing down what is said**.",
+          "One batch of AI scoring for speech or for scenes.",
+          "One clip while **creating your video**.",
+          "The quick final steps, which take seconds.",
+        ],
+      },
+      { kind: "p", text: "After a restart, the app may start before Ollama. An interrupted highlight waits up to 3 minutes for Ollama before it continues without AI; anything scored without AI is redone on a later run." },
+      { kind: "tip", text: "On a laptop, set Windows to hibernate when the battery is almost empty (Control Panel → Power Options → Change plan settings → Change advanced power settings → Battery → Critical battery action → Hibernate). The computer then keeps everything as it was, and the highlight simply continues when you turn it on again." },
+      { kind: "note", text: "Start the app again after the power comes back: nothing runs while it is closed." },
+    ],
+  },
+
   fallbacks: {
     title: "What happens when something fails",
     summary: "How the app keeps working when a model or the graphics card is unavailable.",
@@ -339,6 +363,7 @@ export const DOC_ARTICLES = {
         head: ["When this fails", "The app does this"],
         rows: [
           ["Ollama is not running", "Scores speech by simple rules and pictures by motion, sound, and quality"],
+          ["The computer turns off or the app closes mid-run", "Continues where it stopped when the app starts again"],
           ["The video model fails on a scene", "Uses quick scoring for that scene; trying again later redoes only those scenes"],
           ["Whisper on the graphics card", "Transcribes on the processor instead"],
           ["Fast picture matching on the graphics card", "Runs on the processor instead"],
@@ -427,7 +452,7 @@ export const DOC_ARTICLES = {
 export type DocArticleId = keyof typeof DOC_ARTICLES;
 
 export const DOC_CATEGORIES: Array<{ title: string; articles: DocArticleId[] }> = [
-  { title: "Getting started", articles: ["how-it-works", "requirements", "setup-ollama", "leave-out"] },
+  { title: "Getting started", articles: ["how-it-works", "requirements", "setup-ollama", "leave-out", "pause-resume"] },
   { title: "Speed without a graphics card", articles: ["cpu-speed", "where-time-goes", "choose-models", "threads-memory", "ollama-tuning"] },
   { title: "Lightweight AI models", articles: ["setup-whisper", "setup-image-matching", "setup-embeddings"] },
   { title: "Graphics cards", articles: ["hardware-detection", "gpu-setup", "fallbacks", "remote-gpu"] },

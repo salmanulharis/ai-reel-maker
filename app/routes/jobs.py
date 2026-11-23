@@ -26,6 +26,7 @@ from app.services.post_text import PostTextError
 from app.services.post_text import saved as saved_post_text
 from app.services.post_text import suggest as suggest_post_text
 from app.services.storage import delete_job_files
+from app.utils.atomic import atomic_write_json
 from app.utils.security import valid_job_id
 from app.video.sources import load_sources
 from app.workers.worker import load_cache
@@ -194,6 +195,32 @@ def cancel_job(job_id: str):
     return jsonify(get_job_manager().serialize(job))
 
 
+@jobs_bp.post("/jobs/<job_id>/pause")
+def pause_job(job_id: str):
+    manager = get_job_manager()
+    job = manager.get(job_id)
+    if not job:
+        return jsonify({"error": "not found"}), 404
+    if job.status == "paused":
+        return jsonify(manager.serialize(job))
+    if not manager.can_pause(job):
+        return jsonify({"error": "Only a job that is waiting or working can be paused."}), 409
+    return jsonify(manager.serialize(manager.pause(job_id)))
+
+
+@jobs_bp.post("/jobs/<job_id>/resume")
+def resume_job(job_id: str):
+    manager = get_job_manager()
+    job = manager.get(job_id)
+    if not job:
+        return jsonify({"error": "not found"}), 404
+    if job.status != "paused":
+        return jsonify({"error": "This job is not paused."}), 409
+    if manager.has_runners(job_id):
+        return jsonify({"error": STILL_STOPPING}), 409
+    return jsonify(manager.serialize(manager.resume(job_id)))
+
+
 @jobs_bp.post("/jobs/<job_id>/retry")
 def retry_job(job_id: str):
     if get_job_manager().has_runners(job_id):
@@ -225,7 +252,7 @@ def render_job(job_id: str):
         if plan_path.exists():
             plan = json.loads(plan_path.read_text(encoding="utf-8"))
             plan["clips"] = clips
-            plan_path.write_text(json.dumps(plan, indent=2), encoding="utf-8")
+            atomic_write_json(plan_path, plan, indent=2)
     job = manager.update(job_id, status="queued", render_status="queued", cancelled=False, error=None)
     return jsonify(manager.serialize(job))
 
@@ -275,7 +302,7 @@ def regenerate_job(job_id: str):
     if cache.get("candidates"):
         plan = plan_from_cache(cache, config, get_settings())
         plan_path = manager.job_dir(job_id) / "clip_plan.json"
-        plan_path.write_text(json.dumps(plan, indent=2), encoding="utf-8")
+        atomic_write_json(plan_path, plan, indent=2)
         manager.save_plan(job_id, plan.get("clips") or [])
         manager.update(job_id, status="planning", **common)
         return jsonify({"job": manager.serialize(manager.get(job_id)), "plan": plan})
@@ -550,7 +577,7 @@ def update_clips(job_id: str):
     plan = json.loads(plan_path.read_text(encoding="utf-8")) if plan_path.exists() else {"clips": []}
     plan["clips"] = clips
     plan["estimated_duration"] = sum(max(0, c["end"] - c["start"]) for c in clips)
-    plan_path.write_text(json.dumps(plan, indent=2), encoding="utf-8")
+    atomic_write_json(plan_path, plan, indent=2)
     return jsonify({"clips": clips, "estimated_duration": plan["estimated_duration"]})
 
 
@@ -561,7 +588,10 @@ def job_logs(job_id: str):
     if not path.exists():
         return jsonify({"logs": []})
     logs = []
-    for line in path.read_text(encoding="utf-8").splitlines():
+    # A power cut while a line was being appended can leave it cut off mid-character.
+    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+        if not line.strip():
+            continue
         try:
             logs.append(json.loads(line))
         except json.JSONDecodeError:

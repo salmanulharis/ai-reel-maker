@@ -246,6 +246,8 @@ export const api = {
     }),
   cancel: (id: string) => http<Job>(`/api/jobs/${id}/cancel`, { method: "POST" }),
   retry: (id: string) => http<Job>(`/api/jobs/${id}/retry`, { method: "POST" }),
+  pause: (id: string) => http<Job>(`/api/jobs/${id}/pause`, { method: "POST" }),
+  resume: (id: string) => http<Job>(`/api/jobs/${id}/resume`, { method: "POST" }),
   regenerate: (id: string, preset: string) =>
     http<{ job: Job; plan: unknown }>(`/api/jobs/${id}/regenerate`, {
       method: "POST",

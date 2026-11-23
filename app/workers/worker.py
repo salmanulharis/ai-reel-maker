@@ -10,7 +10,7 @@ from pathlib import Path
 from flask import Flask
 
 from app.ai.ollama import OllamaError
-from app.analysis.pipeline import PipelineProgress, VideoAnalyzer
+from app.analysis.pipeline import PARTIAL_FILES, PipelineProgress, VideoAnalyzer
 from app.analysis.tighten import tighten_clips
 from app.config import get_settings
 from app.services.ollama_runtime import get_ollama_client
@@ -25,12 +25,19 @@ from app.video.captions import load_transcript, sequence_srt, write_clip_subtitl
 from app.video.renderer import Renderer
 from app.video.audio_mix import find_music, music_mix_command
 from app.video.overlays import Extras, brand_logo
+from app.utils.atomic import atomic_write_json
 from app.utils.timefmt import format_elapsed
 from app.video.sources import fallback_source, load_sources, save_sources
 
 _worker_started = False
 _lock = threading.Lock()
 _log = logging.getLogger(__name__)
+
+# How often a running job records that it is still running (see JobManager.touch_attempt).
+HEARTBEAT_SECONDS = 15.0
+# How long a job interrupted by a crash or a power cut waits for Ollama to start again.
+OLLAMA_RESUME_WAIT_SECONDS = 180.0
+OLLAMA_RESUME_POLL_SECONDS = 10.0
 
 
 def start_worker(app: Flask) -> None:
@@ -70,8 +77,16 @@ def _recover_orphaned_jobs() -> None:
             elif job.status == "rendering":
                 job.status = "queued"
                 job.render_status = "queued"
-        if stuck:
+        # Paused while it was still stopping: it stays paused until it is resumed.
+        paused = session.query(Job).filter(Job.status == "paused").all()
+        for job in paused:
+            if job.analysis_status == "running":
+                job.analysis_status = "pending"
+            if job.render_status == "running":
+                job.render_status = "paused"
+        if stuck or paused:
             session.commit()
+        if stuck:
             _log.warning("Re-queued %s job(s) left mid-run after a restart", len(stuck))
         get_job_manager().recover_interrupted()
     except Exception:
@@ -109,15 +124,65 @@ def _tick(app: Flask) -> None:
         session.close()
     if not job_id:
         return
+    stop_heartbeat = threading.Event()
+    threading.Thread(
+        target=_heartbeat, args=(job_id, stop_heartbeat), daemon=True, name=f"heartbeat-{job_id}"
+    ).start()
     try:
         if render_only:
             _run_render(app, job_id)
         else:
             _run_analysis(app, job_id)
     finally:
+        stop_heartbeat.set()
         # Never leave a timer running: an attempt that ended without being closed (an error
         # before the attempt's own handling) is closed here as failed.
         get_job_manager().finish_attempt(job_id, "failed", only_if_running=True)
+
+
+def _heartbeat(job_id: str, stop: threading.Event) -> None:
+    """Record now and then that the job is still running, so a run cut off by a crash or a
+    power cut still counts the time it ran."""
+    manager = get_job_manager()
+    while not stop.wait(HEARTBEAT_SECONDS):
+        try:
+            manager.touch_attempt(job_id)
+        except Exception:  # noqa: BLE001 - timing only; never disturbs the job
+            _log.debug("Could not record that job %s is running", job_id, exc_info=True)
+
+
+def _start_run(manager, job_id: str) -> threading.Event:
+    """The stop signal for a new run. A cancel of an earlier run must not stop this one, but a
+    pause asked for while the job was being picked up does."""
+    cancel = manager.cancel_event(job_id)
+    cancel.clear()
+    if manager.pause_requested(job_id):
+        cancel.set()
+    return cancel
+
+
+def _wait_for_ollama(client, health: dict, cancel: threading.Event, progress: PipelineProgress) -> dict:
+    """After a crash or a power cut the app can start before Ollama. A resumed job waits a
+    little for it instead of quietly using quick scoring for everything. Returns the newest
+    health report; a pause or stop ends the wait (the pipeline then stops at its first check)."""
+    progress.log("Waiting for Ollama to start: this job was interrupted and is continuing…")
+    deadline = time.monotonic() + OLLAMA_RESUME_WAIT_SECONDS
+    while time.monotonic() < deadline:
+        if cancel.wait(OLLAMA_RESUME_POLL_SECONDS):
+            return health
+        try:
+            health = client.health()
+        except Exception:  # noqa: BLE001 - still starting
+            continue
+        if health.get("connected"):
+            progress.log("Ollama is ready")
+            return health
+    progress.log(
+        f"Ollama did not start within {format_elapsed(OLLAMA_RESUME_WAIT_SECONDS)}; continuing without it. "
+        "Scenes scored without AI are analyzed again on a later run.",
+        "WARNING",
+    )
+    return health
 
 
 def _emit(app: Flask, job_id: str, event: str, payload: dict) -> None:
@@ -133,10 +198,11 @@ def _run_analysis(app: Flask, job_id: str) -> None:
     job = manager.get(job_id)
     if not job:
         return
+    # Cut off by a crash or a power cut last time (see JobManager.recover_interrupted).
+    resumed = job.attempt_outcome == "interrupted"
     manager.update(job_id, status="analyzing", analysis_status="running", error=None)
     manager.start_attempt(job_id, "analysis")
-    cancel = manager.cancel_event(job_id)
-    cancel.clear()
+    cancel = _start_run(manager, job_id)
     runner = FFmpegRunner(cancel)
     job_dir = manager.job_dir(job_id)
     original = Path(job.input_path)
@@ -151,7 +217,7 @@ def _run_analysis(app: Flask, job_id: str) -> None:
             if stage and status:
                 mapped = {"running": "running", "done": "done"}.get(status, status)
                 manager.set_stage(job_id, stage, mapped, payload.get("detail", ""))
-                if mapped == "running" and stage == "planning":
+                if mapped == "running" and stage == "planning" and not cancel.is_set():
                     manager.update(job_id, status="planning")
         _emit(app, job_id, f"job_{kind}", payload)
 
@@ -162,6 +228,8 @@ def _run_analysis(app: Flask, job_id: str) -> None:
     try:
         client = get_ollama_client(settings)
         health = client.health()
+        if not health.get("connected") and resumed:
+            health = _wait_for_ollama(client, health, cancel, progress)
         if health.get("connected"):
             ollama = client
             vision_enabled = bool(health.get("vision_ready", health.get("vision_present")))
@@ -199,6 +267,7 @@ def _run_analysis(app: Flask, job_id: str) -> None:
         if cancel.is_set():
             # Cancelled during the last steps, which have no cancel point of their own.
             raise CancelledError("Job cancelled")
+        manager.take_pause_request(job_id)
         plan = cache.get("clip_plan") or {}
         save_sources(job_dir, cache.get("sources") or sources)
         manager.save_plan(job_id, plan.get("clips") or [])
@@ -224,10 +293,16 @@ def _run_analysis(app: Flask, job_id: str) -> None:
             _log.debug("Could not record performance history", exc_info=True)
         _emit(app, job_id, "job_complete", {"phase": "analysis", "plan": plan})
     except CancelledError:
-        manager.update(job_id, status="cancelled", cancelled=True)
-        took = manager.finish_attempt(job_id, "cancelled")
-        progress.log(f"Analysis stopped after {format_elapsed(took)}", "WARNING")
-        _emit(app, job_id, "job_failed", {"error": "cancelled"})
+        if manager.take_pause_request(job_id):
+            manager.update(job_id, status="paused", analysis_status="pending")
+            took = manager.finish_attempt(job_id, "paused")
+            progress.log(f"Analysis paused after {format_elapsed(took)}. Finished work is kept; resume to continue.")
+            _emit(app, job_id, "job_paused", {"phase": "analysis"})
+        else:
+            manager.update(job_id, status="cancelled", cancelled=True)
+            took = manager.finish_attempt(job_id, "cancelled")
+            progress.log(f"Analysis stopped after {format_elapsed(took)}", "WARNING")
+            _emit(app, job_id, "job_failed", {"error": "cancelled"})
     except Exception as exc:  # noqa: BLE001
         manager.update(job_id, status="failed", error=str(exc), analysis_status="failed")
         took = manager.finish_attempt(job_id, "failed")
@@ -246,9 +321,7 @@ def _run_render(app: Flask, job_id: str) -> None:
         return
     manager.update(job_id, status="rendering", render_status="running")
     manager.start_attempt(job_id, "render")
-    cancel = manager.cancel_event(job_id)
-    # A cancel of an earlier run must not stop this one before it starts.
-    cancel.clear()
+    cancel = _start_run(manager, job_id)
     runner = FFmpegRunner(cancel)
     manager.register_runner(job_id, runner)
     job_dir = manager.job_dir(job_id)
@@ -467,6 +540,7 @@ def _run_render(app: Flask, job_id: str) -> None:
             except Exception as exc:  # noqa: BLE001 - the videos are still in the app
                 emit_log(f"Could not copy the videos to the watched folder: {exc}", "WARNING")
         manager.set_stage(job_id, "rendering", "done")
+        manager.take_pause_request(job_id)
         took = manager.finish_attempt(job_id, "completed")
         manager.update(job_id, status="completed", render_status="completed", progress=100)
         what = "Highlight" if len(groups) == 1 else f"{len(groups)} shorts"
@@ -477,10 +551,16 @@ def _run_render(app: Flask, job_id: str) -> None:
             if tmp.exists():
                 shutil.rmtree(tmp, ignore_errors=True)
     except CancelledError:
-        manager.update(job_id, status="cancelled", cancelled=True, render_status="cancelled")
-        took = manager.finish_attempt(job_id, "cancelled")
-        emit_log(f"Creating the video stopped after {format_elapsed(took)}", "WARNING")
-        _emit(app, job_id, "job_failed", {"error": "cancelled"})
+        if manager.take_pause_request(job_id):
+            manager.update(job_id, status="paused", render_status="paused")
+            took = manager.finish_attempt(job_id, "paused")
+            emit_log(f"Creating the video paused after {format_elapsed(took)}. Finished clips are kept; resume to continue.")
+            _emit(app, job_id, "job_paused", {"phase": "render"})
+        else:
+            manager.update(job_id, status="cancelled", cancelled=True, render_status="cancelled")
+            took = manager.finish_attempt(job_id, "cancelled")
+            emit_log(f"Creating the video stopped after {format_elapsed(took)}", "WARNING")
+            _emit(app, job_id, "job_failed", {"error": "cancelled"})
     except Exception as exc:  # noqa: BLE001
         manager.update(job_id, status="failed", error=str(exc), render_status="failed")
         manager.set_stage(job_id, "rendering", "error", str(exc))
@@ -635,6 +715,7 @@ def _clip_subtitle_writer(subtitle_dir: Path, transcript_for, config: HighlightC
 
 ANALYSIS_VIDEO = "analysis.mp4"
 _CACHE_FILES = (
+    *PARTIAL_FILES,
     "metadata.json",
     "scenes.json",
     "transcript.json",
@@ -718,7 +799,7 @@ def _crop_one(
             crf=settings.output_crf,
         )
     )
-    stamp.write_text(json.dumps(payload), encoding="utf-8")
+    atomic_write_json(stamp, payload)
     cropped_meta = runner.probe(cropped)
     progress.log(f"Analysis will use the cropped {cropped_meta.width}×{cropped_meta.height} video for {original.name}.")
     return cropped, True

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import time
@@ -48,6 +49,8 @@ from app.config import Settings
 from app.models.schemas import CandidateScore, HighlightConfig, Scene, Transcript
 from app.services.run_plan import RunPlan
 from app.video.ffmpeg_runner import CancelledError, FFmpegRunner
+from app.utils.timefmt import format_duration
+from app.utils.atomic import atomic_write_json, part_path, read_json, replace_file
 from app.video.sources import save_sources, tag_candidates, working_path
 
 
@@ -73,6 +76,13 @@ _SECONDS_PER_CANDIDATE = 8.0
 # pretty-prints the JSON and was measured at 42-46 tokens per segment; a lower budget cuts
 # full batches off, and each cut-off reply is generated again as two halves.
 _TEXT_TOKENS_PER_SEGMENT = 48
+
+# Progress of the slow steps, saved while they run so a pause, crash, or power cut loses at
+# most one batch. Each is removed when its step finishes; nothing else reads them.
+TRANSCRIPT_PARTIAL = "transcript.partial.json"
+SEGMENT_SCORES_PARTIAL = "segment_scores.partial.json"
+VISUAL_PARTIAL = "visual_analysis.partial.json"
+PARTIAL_FILES = (TRANSCRIPT_PARTIAL, SEGMENT_SCORES_PARTIAL, VISUAL_PARTIAL)
 
 
 class PipelineProgress:
@@ -192,15 +202,18 @@ class VideoAnalyzer:
         want_speech = bool(self.settings.enable_whisper) and bool(getattr(config, "use_speech", True))
         if not wav.exists() and meta.get("has_audio", True):
             progress.stage("audio", "running")
+            # Written under another name and renamed when complete: a cancel or a power cut
+            # mid-file must never leave a partial file that is reused as finished audio.
+            pending_wav = part_path(wav)
             try:
-                extract_audio(self.runner, source, wav)
+                extract_audio(self.runner, source, pending_wav)
+                replace_file(pending_wav, wav)
                 progress.log("Audio extracted")
             except CancelledError:
-                # A cancel stops FFmpeg mid-file; a partial file would be reused as finished audio.
-                wav.unlink(missing_ok=True)
+                pending_wav.unlink(missing_ok=True)
                 raise
             except Exception as exc:  # noqa: BLE001
-                wav.unlink(missing_ok=True)
+                pending_wav.unlink(missing_ok=True)
                 progress.log(f"Audio extraction failed: {exc}", "WARNING")
             progress.stage("audio", "done")
         elif not wav.exists():
@@ -220,7 +233,7 @@ class VideoAnalyzer:
             if wav.exists():
                 if self.run_plan.free_gpu_for_speech:
                     self._unload_models(None)
-                transcript_data, transcribed = self._transcribe(wav, progress)
+                transcript_data, transcribed = self._transcribe(wav, progress, job_dir / TRANSCRIPT_PARTIAL)
                 if self.run_plan.one_at_a_time or self.run_plan.free_gpu_for_speech:
                     release_whisper_models()
             else:
@@ -230,6 +243,7 @@ class VideoAnalyzer:
                 progress.log("No transcript available; continuing with visual/scene analysis", "WARNING")
             if transcribed:
                 _write(job_dir / "transcript.json", transcript_data)
+                (job_dir / TRANSCRIPT_PARTIAL).unlink(missing_ok=True)
             progress.stage(
                 "transcript", "done", "" if transcribed or not wav.exists() else "Transcription failed"
             )
@@ -280,11 +294,12 @@ class VideoAnalyzer:
             progress.stage("content", "running")
             usage_before = self._usage()
             segment_scores, scores_changed = self._score_transcript(
-                transcript, config, progress, cache.get("segment_scores")
+                transcript, config, progress, cache.get("segment_scores"), job_dir / SEGMENT_SCORES_PARTIAL
             )
             self._log_usage(progress, "Transcript AI", usage_before)
             if scores_changed:
                 _write(job_dir / "segment_scores.json", segment_scores)
+            (job_dir / SEGMENT_SCORES_PARTIAL).unlink(missing_ok=True)
             progress.stage("content", "done")
         else:
             # Saved speech scores stay on disk for when speech is turned back on.
@@ -300,6 +315,11 @@ class VideoAnalyzer:
         if _stored_visual_focus(cache.get("visual_connection_focus")) != connection_focus:
             cache["visual"] = {}
         visual = dict(cache.get("visual") or {})
+        visual_partial = job_dir / VISUAL_PARTIAL
+        # Scenes the vision model scored before a pause or an interruption.
+        saved_scenes = _restore_partial_visual(visual, read_json(visual_partial), connection_focus, scenes)
+        if saved_scenes:
+            progress.log(f"Visual AI: {len(saved_scenes)} scene(s) were analyzed before the interruption")
         ollama_ok = bool(self.ollama)
         vision_ok = ollama_ok and self.vision_enabled
         vision_ready = vision_ok and self.settings.enable_visual_analysis
@@ -377,6 +397,16 @@ class VideoAnalyzer:
             if self.run_plan.one_at_a_time and ai_scene_count:
                 # The speech model has finished; its memory goes to the video model.
                 self._unload_models(self.settings.ollama_vision_model)
+
+            def _save_visual_progress(done: dict, reasons: dict) -> None:
+                added = False
+                for scene_id, result in done.items():
+                    if scene_id not in reasons and str(scene_id) not in saved_scenes:
+                        saved_scenes[str(scene_id)] = score_source.tag(result.model_dump())
+                        added = True
+                if added:
+                    atomic_write_json(visual_partial, {"focus": connection_focus, "scenes": saved_scenes})
+
             usage_before = self._usage()
             results, errors, fallback_reasons = analyze_scenes_visual(
                 self.ollama,
@@ -393,6 +423,7 @@ class VideoAnalyzer:
                 on_memory_error=lambda: self._relieve_memory(
                     self.settings.ollama_vision_model, progress, "The video model"
                 ),
+                on_batch_done=_save_visual_progress,
             )
             for scene in pending_scenes:
                 scene_id = int(scene["scene_id"])
@@ -406,9 +437,13 @@ class VideoAnalyzer:
             progress.stage("visual", "done", f"Analyzed {len(results)} scene(s)", batch_count, batch_count)
             _write(job_dir / "visual_analysis.json", visual)
             progress.log("Visual analysis completed")
+        elif saved_scenes:
+            # Every scene was scored before the interruption: keep those scores with the analysis.
+            _write(job_dir / "visual_analysis.json", visual)
         cache["visual"] = visual
         cache["visual_connection_focus"] = connection_focus
         _write(job_dir / "visual_connection_focus.json", connection_focus)
+        visual_partial.unlink(missing_ok=True)
 
         visual_by_scene = _with_image_match({int(k): v for k, v in visual.items()}, match)
         candidates = generate_candidates(
@@ -700,13 +735,18 @@ class VideoAnalyzer:
         def extract(stamp: float, out: Path) -> str | None:
             if out.exists():
                 return None
+            # Renamed into place when complete: a stopped command or a power cut can leave a
+            # partial image, which a later run must not reuse.
+            pending = part_path(out)
             try:
-                self.runner.extract_frame(source, out, stamp, duration=source_duration)
+                self.runner.extract_frame(source, pending, stamp, duration=source_duration)
+                if pending.exists():
+                    replace_file(pending, out)
             except CancelledError:
-                # A stopped command can leave a partial image that a later run would reuse.
-                out.unlink(missing_ok=True)
+                pending.unlink(missing_ok=True)
                 raise
             except Exception as ext:  # noqa: BLE001
+                pending.unlink(missing_ok=True)
                 return f"Frame extract failed at {stamp:.2f}s: {ext}"
             return None
 
@@ -736,12 +776,22 @@ class VideoAnalyzer:
                 frame_map[scene_id].append({"timestamp": stamp, "image_path": str(out)})
         return frame_map
 
-    def _transcribe(self, wav: Path, progress: PipelineProgress) -> tuple[dict, bool]:
+    def _transcribe(self, wav: Path, progress: PipelineProgress, partial: Path | None = None) -> tuple[dict, bool]:
         """Transcript data, and whether it is worth caching. A failed run is not cached, so the
-        next analysis tries again instead of reusing an empty transcript."""
-        extra = {}
+        next analysis tries again instead of reusing an empty transcript. Finished segments are
+        saved to ``partial`` as they come, and a later run continues after them."""
+        extra: dict = {"check_cancel": self._check_cancel}
         if self.run_plan.whisper_gpu_compute:
             extra["gpu_compute"] = self.run_plan.whisper_gpu_compute
+        if partial is not None:
+            resume = read_json(partial)
+            if isinstance(resume, dict) and resume.get("segments"):
+                progress.log(
+                    f"Continuing transcription from {format_duration(float(resume.get('until') or 0))} "
+                    "(saved before the interruption)"
+                )
+                extra["resume"] = resume
+            extra["on_progress"] = lambda state: atomic_write_json(partial, state)
         try:
             transcript, info = transcribe_detailed(
                 wav,
@@ -751,6 +801,8 @@ class VideoAnalyzer:
                 num_workers=self.settings.whisper_num_workers,
                 **extra,
             )
+        except CancelledError:
+            raise
         except Exception as exc:  # noqa: BLE001
             transcript, info = Transcript(), {"ok": False, "error": str(exc)}
         if not info.get("ok"):
@@ -772,10 +824,12 @@ class VideoAnalyzer:
         config: HighlightConfig,
         progress: PipelineProgress,
         existing: list[dict] | None = None,
+        partial: Path | None = None,
     ) -> tuple[list[dict], bool]:
         """Score every transcript segment, reusing cached scores.
 
-        Cached fallback scores are redone when the text model is ready. Returns the scores and
+        Cached fallback scores are redone when the text model is ready. Scores are saved to
+        ``partial`` after every batch, and a later run reuses them. Returns the scores and
         whether they differ from ``existing``."""
         segments = transcript.segments
         if not segments:
@@ -783,13 +837,17 @@ class VideoAnalyzer:
         cached = existing if isinstance(existing, list) and len(existing) == len(segments) else None
         text_ready = self.ollama is not None and self.text_enabled
         results: list[dict | None] = list(cached) if cached is not None else [None] * len(segments)
+        key = _segments_key(segments) if partial is not None else ""
+        restored = _restore_partial_scores(results, read_json(partial) if partial is not None else None, key)
+        if restored:
+            progress.log(f"Transcript AI: {restored} segment(s) were scored before the interruption")
         pending = [
             index
             for index, item in enumerate(results)
             if item is None or (text_ready and score_source.needs_ai(item))
         ]
         if not pending:
-            return results, False
+            return results, bool(restored)
         if not text_ready:
             if self.ollama is None:
                 progress.log("Text model unavailable; using heuristic transcript scores.", "WARNING")
@@ -854,6 +912,8 @@ class VideoAnalyzer:
                     scored = [_heuristic_segment(seg, score_source.AI_FAILED) for seg in batch]
             for index, item in zip(indexes, scored):
                 results[index] = item
+            if partial is not None:
+                atomic_write_json(partial, {"key": key, "scores": results})
         return results, True
 
     def _unload_models(self, keep: str | None) -> None:
@@ -1328,8 +1388,49 @@ def frame_extract_workers(frame_count: int) -> int:
     return max(1, min(4, cpus // 2, frame_count))
 
 
+def _segments_key(segments) -> str:
+    """Identifies a transcript, so saved scores are only reused for the transcript they belong to."""
+    digest = hashlib.sha1()
+    for seg in segments:
+        digest.update(f"{float(seg.start):.3f}|{float(seg.end):.3f}|{seg.text}\n".encode("utf-8"))
+    return digest.hexdigest()
+
+
+def _restore_partial_scores(results: list, saved, key: str) -> int:
+    """Fill ``results`` with segment scores saved by an interrupted run; returns how many."""
+    if not key or not isinstance(saved, dict) or saved.get("key") != key:
+        return 0
+    scores = saved.get("scores")
+    if not isinstance(scores, list) or len(scores) != len(results):
+        return 0
+    restored = 0
+    for index, item in enumerate(scores):
+        if not isinstance(item, dict) or score_source.needs_ai(item):
+            continue
+        current = results[index]
+        if current is None or score_source.needs_ai(current):
+            results[index] = item
+            restored += 1
+    return restored
+
+
+def _restore_partial_visual(visual: dict, saved, focus: list[str], scenes: list[dict]) -> dict[str, dict]:
+    """Vision-model scores saved by an interrupted run with the same focus. They are added to
+    ``visual`` and returned, so the run keeps saving on top of them."""
+    if not isinstance(saved, dict) or saved.get("focus") != focus or not isinstance(saved.get("scenes"), dict):
+        return {}
+    known = {str(scene["scene_id"]) for scene in scenes}
+    restored = {
+        scene_id: entry
+        for scene_id, entry in saved["scenes"].items()
+        if scene_id in known and isinstance(entry, dict) and not score_source.needs_ai(entry)
+    }
+    visual.update(restored)
+    return restored
+
+
 def _write(path: Path, data) -> None:
-    path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    atomic_write_json(path, data, indent=2)
 
 
 def _cleanup_frames(frames_dir: Path) -> None:

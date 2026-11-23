@@ -6,7 +6,8 @@ export type JobStatus =
   | "rendering"
   | "completed"
   | "failed"
-  | "cancelled";
+  | "cancelled"
+  | "paused";
 
 export interface VideoMeta {
   duration?: number;

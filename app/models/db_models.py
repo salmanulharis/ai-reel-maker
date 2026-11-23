@@ -59,6 +59,9 @@ class Job(Base):
     attempt_phase: Mapped[str] = mapped_column(String(16), default="")
     attempt_seconds: Mapped[float] = mapped_column(Float, default=0)
     attempt_outcome: Mapped[str] = mapped_column(String(16), default="")
+    # Last sign of life of the attempt in progress, so an attempt cut off by a crash or a power
+    # cut still counts the time it ran.
+    attempt_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     analysis_seconds: Mapped[float] = mapped_column(Float, default=0)
     render_seconds: Mapped[float] = mapped_column(Float, default=0)
 
@@ -207,6 +210,7 @@ def _ensure_columns() -> None:
             ("attempt_outcome", "VARCHAR(16) DEFAULT ''"),
             ("analysis_seconds", "FLOAT DEFAULT 0"),
             ("render_seconds", "FLOAT DEFAULT 0"),
+            ("attempt_seen_at", "DATETIME"),
         ):
             if column not in jobs:
                 conn.execute(text(f"ALTER TABLE jobs ADD COLUMN {column} {ddl}"))

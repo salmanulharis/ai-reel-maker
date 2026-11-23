@@ -11,6 +11,8 @@ import json
 import logging
 from pathlib import Path
 
+from app.utils.atomic import atomic_write_json
+
 _log = logging.getLogger(__name__)
 BATCH = 20
 SCHEMA = {
@@ -80,7 +82,7 @@ def translated_transcript(
     mapping = translate_lines(needed, language, client, model, cache) if needed else {}
     try:
         cache_path.parent.mkdir(parents=True, exist_ok=True)
-        cache_path.write_text(json.dumps(cache, ensure_ascii=False), encoding="utf-8")
+        atomic_write_json(cache_path, cache, ensure_ascii=False)
     except OSError:
         pass
     out = []
