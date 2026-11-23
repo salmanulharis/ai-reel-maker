@@ -1,4 +1,4 @@
-import { useEffect, useId, useState, type ReactNode } from "react";
+import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { useSearchParams } from "react-router-dom";
 import { WatchFolderPanel } from "../components/WatchFolderPanel";
 import { api, formatBytes } from "../services/api";
@@ -6,7 +6,17 @@ import { fill, messages } from "../i18n";
 import { Alert, InlineStatus, PageLoader, Spinner } from "../components/Feedback";
 import { DocLink } from "./Docs";
 import type { DocArticleId } from "../docs/content";
-import type { AiTestResult, ModelSpec, OllamaStatus, OptimizationItem, OptimizationPlan, PullStatus, RuntimeStatus } from "../types";
+import type {
+  AiTestResult,
+  ModelSpec,
+  OllamaStatus,
+  OptimizationGoal,
+  OptimizationItem,
+  OptimizationPlan,
+  PullStatus,
+  RuntimeStatus,
+  TimeEstimate,
+} from "../types";
 
 type Info = {
   hardware?: Record<string, unknown>;
@@ -50,6 +60,9 @@ const SECTION_HELP: Partial<Record<SectionId, DocArticleId>> = {
   connection: "remote-gpu",
 };
 const opt = copy.optimize;
+const GOALS: OptimizationGoal[] = ["quality", "balanced", "fast"];
+// Ollama model settings, whose recommended value may need a download first.
+const MODEL_KEYS = new Set(["ollama_vision_model", "ollama_text_model"]);
 // Model choices are saved only when changed, so an untouched form never switches to custom mode.
 const INFERENCE_KEYS = new Set([
   "whisper_device",
@@ -101,14 +114,25 @@ export default function Settings() {
   const whisperBusy = ollama?.whisper_download?.state === "running";
   const imageBusy = ollama?.image_model?.state === "running";
   const whisperState = ollama?.whisper_download?.state;
+  const measure = ollama?.measure || plan?.measurement;
+  const measureBusy = measure?.state === "running" || busy === "measure";
+  const measureState = ollama?.measure?.state;
 
   useEffect(() => {
-    if (!pullBusy && !testBusy && !whisperBusy && !imageBusy) return;
+    if (!pullBusy && !testBusy && !whisperBusy && !imageBusy && !measureBusy) return;
     const id = setInterval(() => {
       api.ollama().then(setOllama).catch(() => undefined);
     }, 1000);
     return () => clearInterval(id);
-  }, [pullBusy, testBusy, whisperBusy, imageBusy]);
+  }, [pullBusy, testBusy, whisperBusy, imageBusy, measureBusy]);
+
+  // A finished download or measurement changes what is recommended and estimated.
+  const backgroundBusy = pullBusy || measureState === "running";
+  const wasBusy = useRef(false);
+  useEffect(() => {
+    if (wasBusy.current && !backgroundBusy) api.optimization().then(setPlan).catch(() => undefined);
+    wasBusy.current = backgroundBusy;
+  }, [backgroundBusy]);
 
   useEffect(() => {
     if (whisperState !== "done") return;
@@ -188,6 +212,29 @@ export default function Settings() {
       setPlan(await api.setOptimization(enabled));
       await load();
       flashSaved("optimize");
+    });
+  }
+
+  async function setGoal(goal: OptimizationGoal) {
+    await act("goal", async () => {
+      setPlan(await api.setOptimizationGoal(goal));
+      await load();
+      flashSaved("goal");
+    });
+  }
+
+  /** Hand a setting chosen by hand back to automatic optimization. */
+  async function useRecommendedValue(key: string) {
+    await act(`pin:${key}`, async () => {
+      setPlan(await api.pinSetting(key, false));
+      await load();
+    });
+  }
+
+  async function startMeasure() {
+    await act("measure", async () => {
+      await api.startMeasure();
+      setOllama(await api.ollama());
     });
   }
 
@@ -278,6 +325,9 @@ export default function Settings() {
 
   const enabled = Boolean(plan?.enabled);
   const lastRun = plan?.history?.[0];
+  const toDownload = (plan?.items || [])
+    .filter((item) => item.needs_download && MODEL_KEYS.has(item.key))
+    .map((item) => String(item.recommended));
   const views: Record<SectionId, ReactNode> = {
     optimize: !plan ? (
       <p className="hint">{messages.common.loading}</p>
@@ -302,6 +352,32 @@ export default function Settings() {
           {busy === "optimize" && <InlineStatus busy>{messages.common.working}</InlineStatus>}
           {saved === "optimize" && <InlineStatus ok>{copy.saved}</InlineStatus>}
         </div>
+
+        <fieldset className="choice-group">
+          <legend>{opt.goal}</legend>
+          {GOALS.map((goal) => (
+            <label key={goal} className="check">
+              <input
+                type="radio"
+                name="optimize-goal"
+                value={goal}
+                checked={plan.goal === goal}
+                disabled={busy === "goal" || busy === "optimize"}
+                aria-describedby={`goal-${goal}-hint`}
+                onChange={() => void setGoal(goal)}
+              />
+              <span>
+                {opt.goals[goal]}
+                <span className="field-hint block" id={`goal-${goal}-hint`}>
+                  {opt.goalHints[goal]}
+                </span>
+              </span>
+            </label>
+          ))}
+          {!enabled && <p className="hint">{opt.goalOffHint}</p>}
+          {busy === "goal" && <InlineStatus busy>{messages.common.working}</InlineStatus>}
+          {saved === "goal" && <InlineStatus ok>{copy.saved}</InlineStatus>}
+        </fieldset>
 
         {reviewing && (
           <div className="review-box reveal" role="region" aria-label={opt.reviewTitle}>
@@ -333,6 +409,16 @@ export default function Settings() {
             {opt.checkAgain}
           </button>
         </p>
+        {(plan.hardware.details || []).length > 0 && (
+          <details className="hardware-details">
+            <summary>{opt.details}</summary>
+            <ul className="plain-list">
+              {(plan.hardware.details || []).map((line) => (
+                <li key={line}>{line}</li>
+              ))}
+            </ul>
+          </details>
+        )}
 
         {plan.warnings.length > 0 && (
           <>
@@ -346,7 +432,23 @@ export default function Settings() {
         {enabled ? (
           <>
             <h4 className="group-title">{opt.chosen}</h4>
-            <ChangeList items={plan.items} showCurrentOnly />
+            <ChangeList
+              items={plan.items}
+              showCurrentOnly
+              busy={busy}
+              onUseRecommended={(key) => void useRecommendedValue(key)}
+            />
+            {toDownload.length > 0 && (
+              <div className="storage-action panel-actions">
+                <button className="btn primary" disabled={pullBusy} aria-busy={pullBusy} aria-describedby="download-hint" onClick={() => install(toDownload)}>
+                  {pullBusy && <Spinner />}
+                  {opt.downloadRecommended}
+                </button>
+                <span className="hint" id="download-hint">
+                  {opt.downloadHint}
+                </span>
+              </div>
+            )}
           </>
         ) : (
           !reviewing && (
@@ -380,6 +482,23 @@ export default function Settings() {
             </ul>
           </>
         )}
+
+        <h4 className="group-title">{opt.estimateTitle}</h4>
+        <EstimateView estimate={plan.estimate} />
+        <div className="storage-action panel-actions">
+          <button className="btn" disabled={measureBusy} aria-busy={measureBusy} aria-describedby="measure-hint" onClick={() => void startMeasure()}>
+            {measureBusy && <Spinner />}
+            {measureBusy ? opt.measuring : opt.measure}
+          </button>
+          <span className="hint" id="measure-hint" role="status">
+            {measureBusy && measure?.step
+              ? opt.measureSteps[measure.step]
+              : measure?.result?.ts
+                ? `${fill(opt.measuredAt, { when: new Date(measure.result.ts * 1000).toLocaleString() })} ${opt.measureHint}`
+                : opt.measureHint}
+          </span>
+        </div>
+        {measure?.state === "error" && measure.error && <p className="error-text">{measure.error}</p>}
 
         <h4 className="group-title">{opt.tips}</h4>
         {lastRun ? (
@@ -928,16 +1047,46 @@ function showValue(item: OptimizationItem, value: OptimizationItem["current"]) {
   return String(value);
 }
 
-/** Settings with their values and the reason for each. */
-function ChangeList({ items, showCurrentOnly = false }: { items: OptimizationItem[]; showCurrentOnly?: boolean }) {
+/** Settings with their values and the reason for each. With ``onUseRecommended``, a setting
+ * chosen by hand offers to go back to the recommended value. */
+function ChangeList({
+  items,
+  showCurrentOnly = false,
+  busy = "",
+  onUseRecommended,
+}: {
+  items: OptimizationItem[];
+  showCurrentOnly?: boolean;
+  busy?: string;
+  onUseRecommended?: (key: string) => void;
+}) {
   return (
     <ul className="change-list">
       {items.map((item) => (
         <li key={item.key}>
           <div className="change-head">
-            <span className="change-label">{item.label}</span>
+            <span className="change-label">
+              {item.label}
+              {item.pinned && <span className="tag accent">{opt.yourChoice}</span>}
+              {item.needs_download && !item.pinned && <span className="tag">{opt.needsDownload}</span>}
+            </span>
             {showCurrentOnly ? (
-              <strong>{showValue(item, item.current)}</strong>
+              <span className="change-values">
+                <strong>{showValue(item, item.current)}</strong>
+                {item.pinned && item.changed && onUseRecommended && (
+                  <button
+                    type="button"
+                    className="btn sm ghost"
+                    disabled={busy === `pin:${item.key}`}
+                    aria-busy={busy === `pin:${item.key}`}
+                    title={`${opt.recommended}: ${showValue(item, item.recommended)}`}
+                    onClick={() => onUseRecommended(item.key)}
+                  >
+                    {busy === `pin:${item.key}` && <Spinner />}
+                    {opt.useRecommended}
+                  </button>
+                )}
+              </span>
             ) : (
               <span className="change-values">
                 <span className="muted" aria-label={opt.current}>
@@ -948,10 +1097,33 @@ function ChangeList({ items, showCurrentOnly = false }: { items: OptimizationIte
               </span>
             )}
           </div>
-          {item.reason && <p className="hint">{item.reason}</p>}
+          {item.managed === false ? (
+            <p className="hint">{opt.notManaged}</p>
+          ) : (
+            item.reason && <p className="hint">{item.reason}</p>
+          )}
         </li>
       ))}
     </ul>
+  );
+}
+
+/** Expected analysis time for a ten-minute video, split by step. */
+function EstimateView({ estimate }: { estimate?: TimeEstimate | null }) {
+  if (!estimate) return null;
+  const parts = Object.entries(estimate.parts) as Array<[keyof typeof opt.estimateParts, number]>;
+  return (
+    <>
+      <p className="hint">{fill(opt.estimate, { time: formatDuration(estimate.seconds) })}</p>
+      <ul className="plain-list">
+        {parts.map(([key, seconds]) => (
+          <li key={key}>
+            {opt.estimateParts[key]}: {formatDuration(seconds)}
+          </li>
+        ))}
+      </ul>
+      {!estimate.complete && <p className="hint">{opt.estimatePartial}</p>}
+    </>
   );
 }
 

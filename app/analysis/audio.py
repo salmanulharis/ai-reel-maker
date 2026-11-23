@@ -112,6 +112,7 @@ def transcribe_detailed(
     device: str = "auto",
     cpu_threads: int = 6,
     num_workers: int = 1,
+    gpu_compute: str | None = None,
 ) -> tuple[Transcript, dict]:
     try:
         from faster_whisper import WhisperModel  # noqa: F401
@@ -119,7 +120,7 @@ def transcribe_detailed(
         empty = Transcript(segments=[], words=[], language=None)
         return empty, {"ok": False, "error": "faster-whisper is not installed", "device": "cpu", "compute_type": None}
 
-    chosen_device, compute = _select_whisper_device(device)
+    chosen_device, compute = _select_whisper_device(device, gpu_compute)
     try:
         transcript = _transcribe_with(wav_path, model_size, chosen_device, compute, cpu_threads, num_workers)
         return transcript, {"ok": True, "device": chosen_device, "compute_type": compute, "fallback": None, "error": None}
@@ -154,19 +155,28 @@ def transcribe_detailed(
             }
 
 
-def _select_whisper_device(device: str) -> tuple[str, str]:
+def _select_whisper_device(device: str, gpu_compute: str | None = None) -> tuple[str, str]:
+    """(device, compute type). "auto" uses an NVIDIA card when faster-whisper's engine can see
+    one. ``gpu_compute`` overrides the precision on the card (int8_float16 uses less memory)."""
     if device == "auto":
-        try:
-            import torch
+        from app.services.hardware import whisper_cuda_available
 
-            if torch.cuda.is_available():
-                return "cuda", "float16"
-        except Exception:
-            return "cpu", "int8"
-        return "cpu", "int8"
+        device = "cuda" if whisper_cuda_available() else "cpu"
     if device == "cuda":
-        return "cuda", "float16"
+        return "cuda", gpu_compute or "float16"
     return "cpu", "int8"
+
+
+def release_whisper_models() -> int:
+    """Drop loaded Whisper models so their memory is free for the AI models. Returns how many."""
+    import gc
+
+    with _whisper_lock:
+        count = len(_whisper_models)
+        _whisper_models.clear()
+    if count:
+        gc.collect()
+    return count
 
 
 def _transcribe_with(

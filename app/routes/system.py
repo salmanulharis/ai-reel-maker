@@ -12,7 +12,7 @@ from app.ai.ollama import OllamaError, OllamaPullError
 from app.ai.registry_pull import models_root
 from app.config import get_settings
 from app.analysis import image_match
-from app.services import auto_tune
+from app.services import auto_tune, calibration
 from app.services.ai_profile import apply_recommendation, resolve_runtime, sync_hardware_profile
 from app.services.ai_test import (
     explain_ai_error,
@@ -77,7 +77,7 @@ def system_info():
 def apply_recommended():
     settings = get_settings()
     profile = sync_hardware_profile(settings, refresh=True)
-    summary = apply_recommendation(settings, profile.get("recommendation") or {})
+    summary = apply_recommendation(settings, profile.get("recommendation") or {}, profile.get("ollama"))
     profile["profile"]["auto_summary"] = summary
     profile["profile"]["mode"] = "auto"
     profile["profile"]["applied_now"] = True
@@ -100,12 +100,37 @@ def optimization_plan():
 
 @system_bp.post("/system/ai/optimization")
 def set_optimization():
+    """One change per request: turn it on or off ({"enabled"}), choose its goal ({"goal"}), or
+    keep / release one setting ({"pin": {"key", "pinned"}})."""
     payload = request.get_json(silent=True) or {}
+    settings = get_settings()
+    try:
+        if "goal" in payload:
+            return jsonify(auto_tune.set_goal(str(payload["goal"]), settings))
+        if "pin" in payload:
+            pin = payload["pin"] if isinstance(payload["pin"], dict) else {}
+            if not isinstance(pin.get("pinned"), bool):
+                return jsonify({"error": "pinned must be true or false"}), 400
+            return jsonify(auto_tune.set_pin(str(pin.get("key") or ""), pin["pinned"], settings))
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
     if not isinstance(payload.get("enabled"), bool):
         return jsonify({"error": "enabled must be true or false"}), 400
-    settings = get_settings()
     plan = auto_tune.enable(settings) if payload["enabled"] else auto_tune.disable(settings)
     return jsonify(plan)
+
+
+@system_bp.post("/system/ai/measure")
+def start_measure():
+    try:
+        return jsonify(calibration.start(get_settings()))
+    except RuntimeError as exc:
+        return jsonify({"error": str(exc)}), 409
+
+
+@system_bp.get("/system/ai/measure")
+def read_measure():
+    return jsonify(calibration.status())
 
 
 @system_bp.post("/system/ai/optimization/undo")
@@ -162,6 +187,7 @@ def ollama_status():
     health["test"] = test_status()
     health["whisper_download"] = whisper_download_status()
     health["image_model"] = image_match.download_status()
+    health["measure"] = calibration.status()
     return jsonify(health)
 
 

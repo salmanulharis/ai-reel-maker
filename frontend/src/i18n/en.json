@@ -57,7 +57,11 @@
     "noResults": "No matching topics",
     "noResultsHint": "Try fewer or simpler words, for example \"slow\", \"memory\", or \"graphics card\".",
     "learnMore": "Learn more",
-    "callouts": { "tip": "Tip:", "note": "Note:", "warning": "Warning:" }
+    "callouts": {
+      "tip": "Tip:",
+      "note": "Note:",
+      "warning": "Warning:"
+    }
   },
   "aiStatus": {
     "checking": "Checking AI…",
@@ -665,7 +669,7 @@
       "recommended": "Recommended",
       "upToDate": "Your settings already match what this computer runs best.",
       "offNote": "Automatic optimization is off. Your settings stay exactly as they are until you change them.",
-      "managedNote": "Automatic optimization is on. Changing a setting here turns it off, and your choice is kept.",
+      "managedNote": "Automatic optimization is on. A setting you change here is kept as your choice; the others stay automatic.",
       "tradeoffs": "Trade-offs for this computer",
       "warnings": "Before you start",
       "undo": "Undo last optimization",
@@ -674,7 +678,44 @@
       "tips": "Suggestions from your recent highlights",
       "tipsHint": "Based on how fast your last analysis ran. These are only suggestions; nothing changes unless you change it.",
       "lastRun": "Last analysis: {video} of video took {time}.",
-      "noHistory": "After your first highlight, suggestions based on its actual speed appear here."
+      "noHistory": "After your first highlight, suggestions based on its actual speed appear here.",
+      "goal": "Aim for",
+      "goals": {
+        "quality": "Best quality",
+        "balanced": "Balanced",
+        "fast": "Fastest"
+      },
+      "goalHints": {
+        "quality": "The largest models this computer can hold. Analysis takes longer.",
+        "balanced": "Strong models that keep analysis to a reasonable time on this computer.",
+        "fast": "Smaller models for the quickest analysis. They understand a little less."
+      },
+      "goalOffHint": "Applies when automatic optimization is on. The recommendation below follows your choice.",
+      "yourChoice": "Your choice",
+      "useRecommended": "Use recommended",
+      "keepMine": "Keep my choice",
+      "needsDownload": "Download to use",
+      "downloadHint": "The recommended model is not downloaded yet, so the current one stays in use until it is.",
+      "downloadRecommended": "Download recommended models",
+      "notManaged": "Set on the computer that runs Ollama",
+      "details": "Details",
+      "measure": "Measure this computer",
+      "measuring": "Measuring…",
+      "measureHint": "Runs each model once (about a minute) to measure real speed. Not possible while a video is being processed.",
+      "measureSteps": {
+        "text": "Measuring speech understanding…",
+        "vision": "Measuring video understanding…",
+        "whisper": "Measuring speech to text…"
+      },
+      "measuredAt": "Last measured {when}.",
+      "estimateTitle": "Expected time",
+      "estimate": "A 10-minute video takes about {time} to analyze with these settings.",
+      "estimatePartial": "Parts not measured yet are not included; measure this computer to complete the estimate.",
+      "estimateParts": {
+        "speech_to_text": "Speech to text",
+        "speech_understanding": "Speech understanding",
+        "video_understanding": "Video understanding"
+      }
     },
     "navLabel": "Settings sections",
     "navGeneral": "General",

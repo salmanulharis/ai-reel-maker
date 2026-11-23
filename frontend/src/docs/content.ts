@@ -83,7 +83,7 @@ export const DOC_ARTICLES = {
       {
         kind: "steps",
         items: [
-          "Turn on **Automatically optimize for my system**. It picks models, threads, and memory sizes that fit your computer and explains each choice.",
+          "Turn on **Automatically optimize for my system** and choose what to **Aim for**. It picks models, threads, and memory sizes that fit your computer and explains each choice. **Measure this computer** shows how long a 10-minute video takes with your settings.",
           "Keep **Which scenes the video model looks at** on **Only scenes that could make the highlight**. The video model is the slowest step (about 30 seconds per scene on a typical processor), so looking only at promising scenes saves the most time.",
           "Download **Fast picture matching**. It ranks scenes in about a third of a second each, so the shortlist picks better scenes for the video model.",
           "For talks, interviews, and lectures, turn off **Understand what is on screen**. Speech is still analyzed; pictures are judged by quick checks. Analysis often drops from minutes to seconds.",
@@ -137,13 +137,13 @@ export const DOC_ARTICLES = {
     summary: "Which AI models fit your memory and graphics card.",
     keywords: "qwen3 qwen3-vl 2b 4b 8b 30b model size ram vram",
     blocks: [
-      { kind: "p", text: "With automatic optimization on, the app chooses for you using these rules. To choose yourself, click **Use this model** on a model card in AI models (this turns automatic optimization off)." },
+      { kind: "p", text: "With automatic optimization on, the app chooses for you using these rules (with **Aim for** set to **Balanced**). To choose yourself, click **Use this model** on a model card in AI models. Your choice is kept, and the other settings stay automatic." },
       {
         kind: "table",
         head: ["Your computer", "Video model", "Speech model", "Speech to text"],
         rows: [
           ["No graphics card, under 16 GB memory", "qwen3-vl:2b-instruct", "qwen3:4b-instruct-2507-q4_K_M", "tiny or base"],
-          ["No graphics card, 16 GB or more", "qwen3-vl:4b-instruct", "qwen3:4b-instruct-2507-q4_K_M", "base"],
+          ["No graphics card, 16 GB or more (Windows may show 15.8 GB)", "qwen3-vl:4b-instruct", "qwen3:4b-instruct-2507-q4_K_M", "base"],
           ["Graphics card with under 6 GB free", "qwen3-vl:2b-instruct or :4b-instruct", "qwen3:4b-instruct-2507-q4_K_M", "base on the processor"],
           ["Graphics card with about 6-10 GB", "qwen3-vl:4b-instruct", "qwen3:4b-instruct-2507-q4_K_M", "small"],
           ["Graphics card with 10 GB or more", "qwen3-vl:8b-instruct", "qwen3:8b", "small or large-v3-turbo"],
@@ -151,7 +151,8 @@ export const DOC_ARTICLES = {
         ],
       },
       { kind: "warning", text: "Always use the **-instruct** video models. The plain `qwen3-vl:2b`, `:4b`, `:8b` and `:latest` models are \"thinking\" versions: they spend their whole answer thinking and return no scores, so every scene falls back to quick scoring after a long wait. Settings warns you if one is selected." },
-      { kind: "tip", text: "Lots of memory but no graphics card does not make the 8B models a good idea: they fit, but run about twice as slowly as the 4B ones." },
+      { kind: "tip", text: "Lots of memory but no graphics card does not make the 8B models a good idea on **Balanced**: they fit, but run about twice as slowly as the 4B ones. **Best quality** chooses them anyway when they fit (8B speech model from 16 GB, 8B video model from 32 GB), and on a graphics card it moves one size up, even if a small part has to run on the processor. **Fastest** moves one size down." },
+      { kind: "p", text: "A recommended model that is not downloaded yet is not switched to: the current one keeps working, and **Download recommended models** in Automatic optimization gets it. Once the download finishes, it is used automatically." },
       { kind: "settings", section: "ai", label: "Open AI models" },
     ],
   },
@@ -161,18 +162,19 @@ export const DOC_ARTICLES = {
     summary: "What the Speed and memory settings do, and when to change them.",
     keywords: "cpu threads context num_ctx batch memory ram out of memory",
     blocks: [
-      { kind: "p", text: "These are set for you by automatic optimization. Change them only if you see a problem; changing one turns automatic optimization off." },
+      { kind: "p", text: "These are set for you by automatic optimization. Change them only if you see a problem: a changed value is kept as **Your choice** while the others stay automatic. **Use recommended** in Automatic optimization hands it back." },
       {
         kind: "table",
         head: ["Setting", "What it does", "When to change"],
         rows: [
-          ["Processor threads for AI", "How many processor threads the AI may use", "Default is your core count minus one (at most 8), so your computer stays responsive. Use all cores only if nothing else runs."],
-          ["Scenes per AI request", "Scenes sent to the video model at once", "Lower it if the log says the context window filled up. The app also lowers it automatically when it would not fit."],
+          ["Processor threads for AI", "How many processor threads the AI may use", "Default is your core count minus one (at most 8), so your computer stays responsive. On processors with performance and efficiency cores, only performance cores are counted. Use all cores only if nothing else runs."],
+          ["Scenes per AI request", "Scenes sent to the video model at once", "On the processor 1 is fastest. Lower it if the log says the context window filled up. The app also lowers it automatically when it would not fit, or after running out of memory."],
           ["Video model memory (tokens)", "Working memory for the video model", "Each picture needs about 1,100 tokens. 2048 fits 1 scene, 4096 fits 2. Higher uses more RAM."],
           ["Speech model memory (tokens)", "Working memory for the speech model", "Raise it (for example to 4096) if the log says speech requests ran out of room and you have 16 GB or more."],
         ],
       },
       { kind: "note", text: "Making pictures smaller does not speed up the video model: it enlarges every picture to the same size before reading it." },
+      { kind: "p", text: "When a highlight starts, the app checks how much memory is free. If the models would not fit side by side, each one is unloaded as soon as its step is done, and the log says so. If a model still runs out of memory, the others are unloaded and the request is retried in smaller parts; scenes that still fail use quick scoring and are analyzed again the next time." },
       { kind: "settings", section: "performance", label: "Open Speed and memory" },
     ],
   },
@@ -300,7 +302,7 @@ export const DOC_ARTICLES = {
     blocks: [
       { kind: "p", text: "When the app starts, it reads your processor, memory, free disk space, and graphics card. NVIDIA cards are read with `nvidia-smi`, AMD cards with `rocm-smi`, Apple Silicon from the system, and other cards by name only." },
       { kind: "list", items: ["See the result in **Settings → This computer**. Click **Check computer again** after changing hardware or drivers.", "The badge at the top of **AI models** shows where models actually run: **GPU-accelerated**, **Partial GPU** (part of the model did not fit), or **CPU-only**.", "**Test AI** measures this for real by loading each model."] },
-      { kind: "note", text: "If a graphics card's memory cannot be read (common with Intel and some AMD cards on Windows), the app assumes the processor and suggests running Test AI." },
+      { kind: "note", text: "On Windows, the memory of AMD and Intel cards is read from the system. Ollama supports only some of these cards, so larger models are recommended once a model has been seen running on the card: click **Test AI**. Built-in graphics share system memory, so model sizes follow your computer's memory. **Details** under This computer lists every graphics adapter, the processor's core types, and temperature where available." },
       { kind: "settings", section: "system", label: "Open This computer" },
     ],
   },
@@ -390,7 +392,7 @@ export const DOC_ARTICLES = {
         kind: "table",
         head: ["Problem", "Fix"],
         rows: [
-          ["\"does not fit in memory\" or the computer freezes", "Choose the next smaller model, close other programs, or turn on automatic optimization."],
+          ["\"does not fit in memory\" or the computer freezes", "Choose the next smaller model, close other programs, or turn on automatic optimization. The app already unloads unused models and retries in smaller parts; scenes that still fail are analyzed again next time."],
           ["Partial GPU in AI models", "Part of the model did not fit in graphics memory. Choose a smaller video model for full speed."],
           ["\"filled the model's context window\" in the log", "Lower Scenes per AI request, or raise the model memory if you have 16 GB or more."],
           ["Analysis is very slow", "Follow Fastest settings without a graphics card, and check which step is slow."],

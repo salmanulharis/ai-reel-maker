@@ -14,24 +14,25 @@ import time
 from typing import Any
 
 from app.config import Settings, get_settings
-from app.services.ai_profile import apply_recommendation, sync_hardware_profile
-from app.services.model_catalog import catalog_entry
+from app.services import calibration
+from app.services.ai_profile import (
+    FIELD_SOURCES,
+    apply_recommendation,
+    goal_of,
+    installed_models,
+    managed_now,
+    pinned_fields,
+    save_pins,
+    sync_hardware_profile,
+    waits_for_download,
+)
+from app.services.model_catalog import GOALS, model_memory_gb
 from app.services.ollama_runtime import get_ollama_client
+from app.services.run_plan import BASE_MEMORY_GB
 from app.services.settings_store import apply_values, read_setting, write_setting
 
-# The settings automatic optimization manages, and where each comes from in a recommendation.
-# Nothing else (video quality, format, visual analysis, connection, frame rate) is ever changed.
-MANAGED: dict[str, str] = {
-    "ollama_vision_model": "vision_model",
-    "ollama_text_model": "text_model",
-    "whisper_model": "whisper_model",
-    "whisper_device": "whisper_device",
-    "ollama_vision_batch_size": "vision_batch_size",
-    "ollama_vision_num_ctx": "vision_num_ctx",
-    "ollama_text_num_ctx": "text_num_ctx",
-    "ollama_num_thread": "num_thread",
-    "whisper_cpu_threads": "whisper_threads",
-}
+# The settings automatic optimization manages (see ai_profile.FIELD_SOURCES).
+MANAGED = FIELD_SOURCES
 
 LABELS = {
     "ollama_vision_model": "Video understanding model",
@@ -48,8 +49,6 @@ LABELS = {
 _SNAPSHOT_KEY = "auto_tune_previous"
 _HISTORY_KEY = "perf_history"
 _HISTORY_SIZE = 5
-# Memory the app, Whisper and the operating system need besides the loaded AI model.
-_BASE_MEMORY_GB = 2.0
 _LOW_DISK_GB = 10.0
 # Thresholds for suggestions from recent runs.
 _SLOW_VISION_SECONDS = 20.0
@@ -65,6 +64,9 @@ def build_plan(settings: Settings | None = None, *, refresh: bool = False) -> di
     recommendation = profile.get("recommendation") or {}
     mode = (profile.get("profile") or {}).get("mode") or "auto"
     runtime = profile.get("runtime") or {}
+    installed = installed_models(profile.get("ollama"))
+    pinned = pinned_fields(settings) if mode == "auto" else set()
+    managed = managed_now(settings)
 
     items = []
     for key, rec_key in MANAGED.items():
@@ -80,6 +82,12 @@ def build_plan(settings: Settings | None = None, *, refresh: bool = False) -> di
                 "recommended": recommended,
                 "changed": str(current) != str(recommended),
                 "reason": _reason(key, recommendation, hardware),
+                # The user's own choice, kept while the other settings stay automatic.
+                "pinned": key in pinned,
+                # The recommended model is not downloaded yet; the current one stays in use.
+                "needs_download": waits_for_download(settings, key, recommended, installed),
+                # False for Ollama settings when Ollama runs on another computer.
+                "managed": key in managed or key in pinned,
             }
         )
     snapshot = read_snapshot()
@@ -87,37 +95,83 @@ def build_plan(settings: Settings | None = None, *, refresh: bool = False) -> di
     graphics = builtin_graphics_note(hardware, runtime, settings)
     if graphics:
         notes.append(graphics)
+    if hardware.get("gpu_unconfirmed") and hardware.get("vram_note"):
+        notes.append(f"{hardware.get('gpu')} ({hardware.get('vram_gb')} GB): {hardware['vram_note']}")
+    history = read_history()
+    goal = goal_of(settings)
+    speeds = calibration.current_speeds(settings, history)
     return {
         "enabled": mode == "auto",
+        "goal": goal,
         "hardware": hardware_summary(hardware),
         "items": items,
-        "changes": [item for item in items if item["changed"]],
+        "changes": [item for item in items if item["changed"] and item["managed"] and not item["pinned"]],
         "tradeoffs": tradeoffs(recommendation, hardware),
         "warnings": warnings(recommendation, hardware, runtime, settings),
         "notes": notes,
         "can_undo": bool(snapshot and snapshot.get("values")),
         "undo_saved_at": (snapshot or {}).get("saved_at"),
-        "history": read_history(),
-        "tips": tips(read_history(), settings, hardware),
+        "history": history,
+        "tips": tips(history, settings, hardware) + calibration.suggestions(settings, hardware, goal, speeds),
+        "estimate": calibration.estimate(speeds, settings),
+        "measurement": calibration.status(),
     }
 
 
 def enable(settings: Settings | None = None) -> dict[str, Any]:
     """Turn automatic optimization on: remember the current values, then apply the recommendation."""
     settings = settings or get_settings()
+    if settings.ai_config_mode != "auto":
+        # Choices made by hand while it was off are replaced; pins only exist while it is on.
+        save_pins(settings, set())
     profile = sync_hardware_profile(settings, refresh=True)
+    _apply(settings, profile)
+    return build_plan(settings)
+
+
+def _apply(settings: Settings, profile: dict[str, Any]) -> None:
+    """Apply the profile's recommendation, keeping an undo point when anything will change."""
     recommendation = profile.get("recommendation") or {}
     current = {key: getattr(settings, key, None) for key in MANAGED}
-    if any(str(current[key]) != str(recommendation.get(rec_key)) for key, rec_key in MANAGED.items()):
+    allowed = managed_now(settings)
+    if any(str(current[key]) != str(recommendation.get(MANAGED[key])) for key in allowed):
         _save_snapshot(current)
-    apply_recommendation(settings, recommendation)
-    return build_plan(settings)
+    apply_recommendation(settings, recommendation, profile.get("ollama"))
 
 
 def disable(settings: Settings | None = None) -> dict[str, Any]:
     """Turn it off. Current values stay as they are; from now on they are only changed by hand."""
     settings = settings or get_settings()
     apply_values({"ai_config_mode": "custom"}, settings)
+    save_pins(settings, set())
+    return build_plan(settings)
+
+
+def set_goal(goal: str, settings: Settings | None = None) -> dict[str, Any]:
+    """Choose what automatic optimization aims for. While it is on, the new recommendation is
+    applied at once (with an undo point); while it is off, only the recommendation changes."""
+    settings = settings or get_settings()
+    if goal not in GOALS:
+        raise ValueError("goal must be quality, balanced or fast")
+    apply_values({"ai_goal": goal}, settings)
+    profile = sync_hardware_profile(settings, refresh=True)
+    if settings.ai_config_mode == "auto":
+        _apply(settings, profile)
+    return build_plan(settings)
+
+
+def set_pin(key: str, pinned: bool, settings: Settings | None = None) -> dict[str, Any]:
+    """Keep one managed setting as the user's own choice, or hand it back to automatic
+    optimization (which then applies the recommended value)."""
+    settings = settings or get_settings()
+    if key not in MANAGED:
+        raise ValueError("unknown setting")
+    pins = pinned_fields(settings)
+    pins = pins | {key} if pinned else pins - {key}
+    save_pins(settings, pins)
+    if not pinned and settings.ai_config_mode == "auto":
+        profile = sync_hardware_profile(settings)
+        apply_recommendation(settings, profile.get("recommendation") or {}, profile.get("ollama"))
     return build_plan(settings)
 
 
@@ -128,6 +182,7 @@ def undo(settings: Settings | None = None) -> dict[str, Any]:
     values = dict((snapshot or {}).get("values") or {})
     restore = {key: value for key, value in values.items() if key in MANAGED and value is not None}
     apply_values({**restore, "ai_config_mode": "custom"}, settings)
+    save_pins(settings, set())
     write_setting(_SNAPSHOT_KEY, "")
     return build_plan(settings)
 
@@ -159,6 +214,7 @@ def hardware_summary(hardware: dict[str, Any]) -> dict[str, Any]:
         parts.append("no graphics card the AI can use")
     return {
         "text": ", ".join(parts),
+        "details": hardware_details(hardware),
         "system": hardware.get("system"),
         "cpu": hardware.get("cpu"),
         "cores": hardware.get("cpu_cores"),
@@ -170,6 +226,31 @@ def hardware_summary(hardware: dict[str, Any]) -> dict[str, Any]:
         "vram_gb": vram,
         "uses_gpu": uses_gpu,
     }
+
+
+def hardware_details(hardware: dict[str, Any]) -> list[str]:
+    """Finer points of what was detected, for people who want to check it."""
+    found = []
+    if hardware.get("cpu"):
+        found.append(str(hardware["cpu"]))
+    fast, slow = hardware.get("cpu_performance_cores"), hardware.get("cpu_efficiency_cores")
+    if fast and slow:
+        found.append(f"{fast} performance cores and {slow} efficiency cores; AI uses the performance cores")
+    features = [name.upper().replace("AVX512", "AVX-512") for name in hardware.get("cpu_features") or [] if name != "avx"]
+    if features:
+        found.append("Fast math instructions: " + ", ".join(features))
+    for gpu in hardware.get("gpus") or []:
+        if gpu.get("gpu_integrated"):
+            found.append(f"{gpu.get('gpu')}: built-in graphics, shares system memory")
+        elif gpu.get("vram_gb"):
+            found.append(f"{gpu.get('gpu')}: {gpu['vram_gb']} GB graphics memory")
+        elif gpu.get("gpu"):
+            found.append(f"{gpu['gpu']}: memory could not be read")
+    if hardware.get("gpu_temp_c") is not None:
+        found.append(f"Graphics card temperature: {hardware['gpu_temp_c']:.0f} °C")
+    if hardware.get("on_battery"):
+        found.append("Running on battery")
+    return found
 
 
 def _reason(key: str, rec: dict[str, Any], hw: dict[str, Any]) -> str:
@@ -219,7 +300,7 @@ def warnings(rec: dict[str, Any], hw: dict[str, Any], runtime: dict[str, Any], s
     """Conditions that could make processing slow or unstable right now."""
     found = []
     available = hw.get("ram_available_gb")
-    need = _model_memory_gb(rec) + _BASE_MEMORY_GB
+    need = _model_memory_gb(rec) + BASE_MEMORY_GB
     if available is not None and float(available) < need:
         found.append(
             f"Only {available} GB of memory is free right now, and analysis needs about {need:.0f} GB. "
@@ -257,12 +338,7 @@ def builtin_graphics_note(hw: dict[str, Any], runtime: dict[str, Any], settings:
 
 def _model_memory_gb(rec: dict[str, Any]) -> float:
     """Approximate memory for the largest of the two models, since only one is loaded at a time on CPU."""
-    sizes = []
-    for name in (rec.get("vision_model"), rec.get("text_model")):
-        entry = catalog_entry(str(name or ""))
-        if entry:
-            sizes.append(float(entry.get("disk_gb") or 0) * 1.25)
-    return max(sizes, default=0.0)
+    return max((model_memory_gb(rec.get(key)) for key in ("vision_model", "text_model")), default=0.0)
 
 
 # Learning from real runs (suggestions only)
@@ -285,7 +361,12 @@ def record_run(progress: Any, cache: dict[str, Any], settings: Settings | None =
         "text_model": settings.ollama_text_model,
         "vision": _usage_summary(usage.get("vision")),
         "text": _usage_summary(usage.get("text")),
+        "adjustments": list(getattr(progress, "adjustments", []) or [])[:3],
     }
+    if entry["vision"]:
+        vision = usage["vision"]
+        busy = float(vision.get("prompt_sec") or 0) + float(vision.get("output_sec") or 0)
+        entry["vision"]["seconds_per_image"] = round(busy / calibration.images_in(vision), 1)
     history = [entry, *read_history()][:_HISTORY_SIZE]
     write_setting(_HISTORY_KEY, json.dumps(history))
 
@@ -315,6 +396,11 @@ def tips(history: list[dict[str, Any]], settings: Settings, hw: dict[str, Any]) 
         return []
     last = history[0]
     found = []
+    if last.get("adjustments"):
+        found.append(
+            "The last analysis ran out of memory and had to free other models and retry. "
+            "Closing other programs, or a smaller model in AI models, avoids the delay."
+        )
     vision = last.get("vision") or {}
     text = last.get("text") or {}
     if (

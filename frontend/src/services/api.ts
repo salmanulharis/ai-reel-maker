@@ -1,5 +1,5 @@
 import { messages } from "../i18n";
-import type { HighlightForm, Job, Moment, OllamaStatus, OptimizationPlan } from "../types";
+import type { HighlightForm, Job, Moment, MeasureStatus, OllamaStatus, OptimizationGoal, OptimizationPlan } from "../types";
 import type { Preset } from "./presets";
 import { coverUrl } from "./cover";
 
@@ -351,7 +351,20 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ enabled }),
     }),
+  setOptimizationGoal: (goal: OptimizationGoal) =>
+    http<OptimizationPlan>("/api/system/ai/optimization", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ goal }),
+    }),
+  pinSetting: (key: string, pinned: boolean) =>
+    http<OptimizationPlan>("/api/system/ai/optimization", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ pin: { key, pinned } }),
+    }),
   undoOptimization: () => http<OptimizationPlan>("/api/system/ai/optimization/undo", { method: "POST" }),
+  startMeasure: () => http<MeasureStatus>("/api/system/ai/measure", { method: "POST" }),
   startAiTest: () => http("/api/system/ai/test", { method: "POST" }),
   downloadImageModel: () => http("/api/system/image-model/download", { method: "POST" }),
   downloadWhisper: (model: string) =>

@@ -68,7 +68,7 @@ def test_fast_detect_skips_encoder_probe(monkeypatch):
     monkeypatch.setattr("app.services.hardware._nvidia_gpus", lambda: [])
     monkeypatch.setattr("app.services.hardware._apple_gpu", lambda _ram: None)
     monkeypatch.setattr("app.services.hardware._rocm_gpu", lambda: None)
-    monkeypatch.setattr("app.services.hardware._windows_gpu", lambda: None)
+    monkeypatch.setattr("app.services.hardware._windows_gpus", lambda: [])
     monkeypatch.setattr("app.services.hardware._sysfs_gpu", lambda: None)
     monkeypatch.setattr(
         "app.services.hardware._memory",
@@ -88,7 +88,7 @@ def test_encode_status_is_separate_from_inference(monkeypatch):
     monkeypatch.setattr("app.services.hardware._nvidia_gpus", lambda: [])
     monkeypatch.setattr("app.services.hardware._apple_gpu", lambda _ram: None)
     monkeypatch.setattr("app.services.hardware._rocm_gpu", lambda: None)
-    monkeypatch.setattr("app.services.hardware._windows_gpu", lambda: None)
+    monkeypatch.setattr("app.services.hardware._windows_gpus", lambda: [])
     monkeypatch.setattr("app.services.hardware._sysfs_gpu", lambda: None)
     monkeypatch.setattr(
         "app.services.hardware._memory",

@@ -2,6 +2,29 @@ from __future__ import annotations
 
 from typing import Any
 
+from app.ai.context_fit import vision_ctx_for_batch
+
+GOALS = ("quality", "balanced", "fast")
+DEFAULT_GOAL = "balanced"
+# Memory sizes computers are sold with. Windows reports a little less than the label (15.8 GB
+# for 16 GB, about 14.8 GB when built-in graphics reserve a share), so a reading just under a
+# size counts as that size.
+_RAM_SIZES = (4, 8, 12, 16, 24, 32, 48, 64, 96, 128, 192, 256)
+_RAM_TOLERANCE = 0.9
+# Approximate memory a loaded Whisper model uses.
+WHISPER_MEMORY_GB = {
+    "tiny": 0.4,
+    "base": 0.5,
+    "small": 1.0,
+    "medium": 2.6,
+    "large-v3-turbo": 2.6,
+    "distil-large-v3": 2.4,
+    "large-v3": 4.5,
+}
+# The share of a model that must sit in graphics memory before a split between the graphics
+# card and the processor is worth choosing (Best quality only).
+_SPLIT_MIN_FRACTION = 0.6
+
 
 def recommended_threads(count: int | None) -> int:
     if not count or count < 1:
@@ -170,68 +193,135 @@ def catalog_entry(name: str) -> dict[str, Any] | None:
     return None
 
 
+def nominal_ram_gb(ram_gb: float | None) -> float:
+    """Installed memory as the size on the label, for comparing against requirements."""
+    ram = float(ram_gb or 0)
+    for size in _RAM_SIZES:
+        if size * _RAM_TOLERANCE <= ram < size:
+            return float(size)
+    return ram
+
+
+def model_memory_gb(name: str | None) -> float:
+    """Approximate memory an Ollama model needs once loaded (weights plus working memory)."""
+    entry = catalog_entry(str(name or ""))
+    if not entry or entry.get("kind") == "whisper":
+        return 0.0
+    return round(float(entry.get("disk_gb") or 0) * 1.15 + 0.6, 1)
+
+
+def whisper_memory_gb(name: str | None) -> float:
+    return WHISPER_MEMORY_GB.get(str(name or ""), 1.0)
+
+
+def next_larger(name: str | None) -> str | None:
+    """The next model up in the same family, or None for the largest or an unknown model."""
+    for items in (VISION_MODELS, TEXT_MODELS):
+        names = [item["name"] for item in items]
+        if name in names:
+            position = names.index(name)
+            return names[position + 1] if position + 1 < len(names) else None
+    return None
+
+
+def normalize_goal(goal: str | None) -> str:
+    value = str(goal or "").strip().lower()
+    return value if value in GOALS else DEFAULT_GOAL
+
+
 def recommend_setup(
     vram_gb: float | None,
     ram_gb: float | None,
     free_vram_gb: float | None = None,
     cpu_threads: int | None = None,
+    *,
+    goal: str = DEFAULT_GOAL,
+    whisper_cuda: bool | None = None,
 ) -> dict[str, Any]:
-    """Pick models from GPU memory. System RAM never selects 8B or 30B by itself."""
+    """Pick models and speed settings for this computer.
+
+    ``goal`` chooses between the best quality that fits, a balance, and the fastest setup.
+    Models come from GPU memory: system RAM never selects 30B, and selects 8B only for Best
+    quality. ``whisper_cuda`` is False when speech to text cannot use the graphics card
+    (None: not checked)."""
     total = float(vram_gb or 0)
     free = float(free_vram_gb) if free_vram_gb is not None else total
     budget = free if free > 0 else total
     threads = recommended_threads(cpu_threads)
-    ram = float(ram_gb or 0)
+    ram = nominal_ram_gb(ram_gb)
+    goal = normalize_goal(goal)
     if total < 2 and budget < 2:
-        return _cpu_setup(ram, threads)
-    return _gpu_setup(total, budget, threads)
+        setup = _cpu_setup(ram, threads, goal)
+    else:
+        setup = _gpu_setup(total, budget, threads, goal, ram)
+    if whisper_cuda is False and setup["whisper_device"] == "cuda":
+        setup["whisper_device"] = "cpu"
+        if setup["whisper_model"] not in {"tiny", "base", "small"}:
+            setup["whisper_model"] = "small"
+        setup["notes"].append(
+            "Speech to text runs on the processor: its graphics card support (CUDA 12 with cuDNN) was not found."
+        )
+    setup["goal"] = goal
+    return setup
 
 
-def _cpu_setup(ram: float, threads: int) -> dict[str, Any]:
-    if ram < 16:
-        vision = "qwen3-vl:2b-instruct"
-        whisper = "tiny" if ram < 8 else "base"
-        batch, vision_ctx, text_ctx = 1, 2048, 2048
-        notes = [
-            "CPU-only. Highlights still run. Vision is slower, and you can turn it off if you want a faster pass.",
-        ]
+def _cpu_setup(ram: float, threads: int, goal: str) -> dict[str, Any]:
+    low = ram < 16
+    vision = "qwen3-vl:2b-instruct" if low else "qwen3-vl:4b-instruct"
+    text = TEXT_4B
+    whisper = "tiny" if ram < 8 else "base"
+    notes: list[str] = []
+    if low:
+        notes.append(
+            "CPU-only. Highlights still run. Vision is slower, and you can turn it off if you want a faster pass."
+        )
         alternatives = {
             "vision": ["qwen3-vl:4b-instruct"] if ram >= 12 else [],
             "text": [],
             "whisper": ["base"] if whisper == "tiny" else ["small"],
         }
-        suggest_disable = True
     else:
-        vision = "qwen3-vl:4b-instruct"
-        whisper = "base"
-        batch, vision_ctx, text_ctx = 2, 2048, 4096
-        notes = [
-            "CPU-only. The 4B vision model is the default. Larger models stay available, and they are slow without a GPU.",
-        ]
-        alternatives = {
-            "vision": ["qwen3-vl:8b-instruct"],
-            "text": ["qwen3:8b"],
-            "whisper": ["small"],
-        }
-        suggest_disable = False
+        notes.append(
+            "CPU-only. The 4B vision model is the default. Larger models stay available, and they are slow without a GPU."
+        )
+        alternatives = {"vision": ["qwen3-vl:8b-instruct"], "text": ["qwen3:8b"], "whisper": ["small"]}
+
+    if goal == "quality":
+        if ram >= 32:
+            vision, text, whisper = "qwen3-vl:8b-instruct", "qwen3:8b", "medium"
+        elif ram >= 16:
+            text, whisper = "qwen3:8b", "small"
+        elif ram >= 12:
+            vision, whisper = "qwen3-vl:4b-instruct", "small"
+        if ram >= 12:
+            notes.append(
+                "Best quality: larger models are chosen because they fit in this computer's memory. "
+                "On the processor they take noticeably longer."
+            )
+    elif goal == "fast":
+        if vision != "qwen3-vl:2b-instruct":
+            vision = "qwen3-vl:2b-instruct"
+            notes.append("Fastest: the smallest video model is chosen. It is weaker at reading small on-screen text.")
+
     return _pack(
         inference_mode="cpu",
         vision=vision,
-        text=TEXT_4B,
+        text=text,
         whisper=whisper,
         whisper_device="cpu",
-        batch=batch,
-        vision_ctx=vision_ctx,
-        text_ctx=text_ctx,
+        # One frame per request: on the processor a larger batch saves no time.
+        batch=1,
+        vision_ctx=vision_ctx_for_batch(1),
+        text_ctx=2048 if low else 4096,
         threads=threads,
         warm_both=False,
-        suggest_disable_vision=suggest_disable,
+        suggest_disable_vision=low and goal != "quality",
         notes=notes,
         alternatives=alternatives,
     )
 
 
-def _gpu_setup(total: float, budget: float, threads: int) -> dict[str, Any]:
+def _gpu_setup(total: float, budget: float, threads: int, goal: str, ram: float = 0.0) -> dict[str, Any]:
     notes: list[str] = []
     alternatives: dict[str, list[str]] = {"vision": [], "text": [], "whisper": []}
     if total >= 24 and budget >= VISION_FIT_GB["qwen3-vl:30b-a3b-instruct"]:
@@ -260,21 +350,34 @@ def _gpu_setup(total: float, budget: float, threads: int) -> dict[str, Any]:
         text = TEXT_4B
         notes.append("Very little free VRAM. The smallest vision model is selected.")
 
+    split = False
+    if goal == "quality":
+        vision, text, split = _quality_step(vision, text, budget, ram, notes)
+    elif goal == "fast":
+        vision, text = _fast_step(vision, text, notes)
+
     whisper, whisper_device, whisper_alts = _whisper_choice(vision, total, budget)
-    alternatives["whisper"] = whisper_alts
+    if goal == "quality" and not split and total >= 6 and budget >= 4 and whisper not in {"large-v3-turbo", "large-v3"}:
+        # Speech to text finishes before the AI models load, so it can have the card to itself.
+        whisper, whisper_device = "large-v3-turbo", "cuda"
+        notes.append(
+            "Best quality: speech to text uses a large model on the graphics card and is unloaded before the AI models need the memory."
+        )
+    alternatives["whisper"] = [name for name in whisper_alts if name != whisper]
     if whisper_device == "cpu" and total >= 6:
         notes.append("Whisper stays on CPU so it does not compete with the vision model for VRAM.")
 
-    warm_both = total >= 20 and "30b" not in vision and "30b" not in text
-    tight = budget < 8
+    warm_both = total >= 20 and "30b" not in vision and "30b" not in text and not split
+    tight = budget < 8 or split
+    batch = 1 if tight else 2
     return _pack(
         inference_mode="gpu",
         vision=vision,
         text=text,
         whisper=whisper,
         whisper_device=whisper_device,
-        batch=2 if tight else 4,
-        vision_ctx=2048 if tight else 4096,
+        batch=batch,
+        vision_ctx=vision_ctx_for_batch(batch) if tight else max(4096, vision_ctx_for_batch(batch)),
         text_ctx=4096,
         threads=threads,
         warm_both=warm_both,
@@ -282,6 +385,39 @@ def _gpu_setup(total: float, budget: float, threads: int) -> dict[str, Any]:
         notes=notes,
         alternatives=alternatives,
     )
+
+
+def _quality_step(vision: str, text: str, budget: float, ram: float, notes: list[str]) -> tuple[str, str, bool]:
+    """Best quality on a graphics card: one model size up when it fits, or when most of it fits
+    and the rest can sit in system memory."""
+    larger = next_larger(vision)
+    if not larger or "30b" in larger:
+        return vision, text, False
+    need = VISION_FIT_GB[larger]
+    if budget >= need:
+        notes.append(f"Best quality: {larger} fits in the free graphics memory, so it is chosen over the smaller default.")
+        return larger, _text_for_quality(larger, text), False
+    if budget >= need * _SPLIT_MIN_FRACTION and ram >= 16:
+        notes.append(
+            f"Best quality: {larger} is chosen. About {round(budget / need * 100)}% of it fits in graphics memory "
+            "and the rest runs on the processor, which is slower than a model that fits completely."
+        )
+        return larger, _text_for_quality(larger, text), True
+    return vision, text, False
+
+
+def _text_for_quality(vision: str, text: str) -> str:
+    # The models run one at a time, so the text model can match the vision model's size.
+    return "qwen3:8b" if "8b" in vision and text == TEXT_4B else text
+
+
+def _fast_step(vision: str, text: str, notes: list[str]) -> tuple[str, str]:
+    """Fastest on a graphics card: one model size down, never below 4B unless already there."""
+    smaller = {"qwen3-vl:30b-a3b-instruct": "qwen3-vl:8b-instruct", "qwen3-vl:8b-instruct": "qwen3-vl:4b-instruct"}
+    if vision in smaller:
+        notes.append(f"Fastest: {smaller[vision]} is chosen over {vision}. It understands a little less.")
+        return smaller[vision], (TEXT_4B if smaller[vision] == "qwen3-vl:4b-instruct" else text)
+    return vision, text
 
 
 def _whisper_choice(vision: str, total: float, budget: float) -> tuple[str, str, list[str]]:
