@@ -17,6 +17,8 @@ from pathlib import Path
 
 import numpy as np
 
+from app.utils.atomic import atomic_write_json
+
 RESULT_FILE = "speakers.json"
 VERSION = 1
 SAMPLE_RATE = 16000
@@ -240,7 +242,7 @@ def job_speakers(job_dir: Path, runner=None, refresh: bool = False) -> dict:
         result["segments"].extend(part["segments"])
     if not result["segments"]:
         result["note"] = "no speech"
-    cached.write_text(json.dumps(result), encoding="utf-8")
+    atomic_write_json(cached, result)
     return result
 
 

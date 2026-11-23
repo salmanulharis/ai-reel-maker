@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from app.utils.atomic import atomic_write_json
+
 SOURCES_FILE = "sources.json"
 
 
@@ -12,7 +14,7 @@ def source_id_for(index: int) -> str:
 
 def save_sources(job_dir: Path, sources: list[dict]) -> None:
     path = Path(job_dir) / SOURCES_FILE
-    path.write_text(json.dumps(sources, indent=2), encoding="utf-8")
+    atomic_write_json(path, sources, indent=2)
 
 
 def load_sources(job_dir: Path) -> list[dict]:

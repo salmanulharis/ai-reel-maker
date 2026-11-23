@@ -19,6 +19,7 @@ from pathlib import Path
 from app.models.schemas import HighlightConfig
 from app.services.presets import list_presets
 from app.services.settings_store import read_setting, write_setting
+from app.utils.atomic import atomic_write_json
 from app.utils.security import is_allowed_extension, sanitize_filename
 
 _log = logging.getLogger(__name__)
@@ -82,7 +83,7 @@ class WatchState:
     def mark(self, file: Path, stat, job_id: str) -> None:
         self.data[str(file)] = f"{stat.st_size}:{int(stat.st_mtime)}"
         self.data[f"job:{job_id}"] = str(file)
-        self.path.write_text(json.dumps(self.data, indent=1), encoding="utf-8")
+        atomic_write_json(self.path, self.data, indent=1)
 
     def ready(self, file: Path, size: int) -> bool:
         """True once the size is the same as on the previous look (copying has finished)."""

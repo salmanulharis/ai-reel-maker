@@ -375,6 +375,13 @@
     "failedHint": "Finished steps are kept, so trying again continues where it stopped.",
     "cancelled": "Stopped",
     "cancelledHint": "Start again to continue. Finished steps are kept.",
+    "pause": "Pause",
+    "pausing": "Pausing…",
+    "pausingHint": "The current step is being finished and saved. This can take a minute or two on a computer without a graphics card.",
+    "resume": "Resume",
+    "resuming": "Resuming…",
+    "paused": "Paused",
+    "pausedHint": "Everything finished so far is kept, even if you close the app or turn off the computer. Resume to continue where it stopped.",
     "waiting": "Waiting to start…",
     "stages": {
       "metadata": "Reading the video",
@@ -891,7 +898,8 @@
       "rendering": "Creating video",
       "completed": "Done",
       "failed": "Failed",
-      "cancelled": "Stopped"
+      "cancelled": "Stopped",
+      "paused": "Paused"
     }
   }
 }

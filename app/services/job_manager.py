@@ -40,7 +40,13 @@ def _short_index(value) -> int:
 # Stage states that end a run of the stage.
 _STAGE_FINISHED = {"done", "error", "skipped", "cancelled"}
 # How a stage left running ends when its attempt ends.
-_STAGE_ON_OUTCOME = {"completed": "done", "failed": "error", "cancelled": "cancelled", "interrupted": "pending"}
+_STAGE_ON_OUTCOME = {
+    "completed": "done",
+    "failed": "error",
+    "cancelled": "cancelled",
+    "interrupted": "pending",
+    "paused": "pending",
+}
 
 ANALYSIS_STAGES = [
     "metadata",
@@ -62,6 +68,8 @@ class JobManager:
         self._cancel_events: dict[str, threading.Event] = {}
         # FFmpeg runners working on a job, so a cancel can stop the command that is running.
         self._runners: dict[str, list[FFmpegRunner]] = {}
+        # Jobs asked to pause: their run stops like a cancel but ends as "paused".
+        self._pause_requests: set[str] = set()
         self._lock = threading.Lock()
 
     def register_runner(self, job_id: str, runner: FFmpegRunner) -> None:
@@ -278,6 +286,10 @@ class JobManager:
             session.close()
 
     def update(self, job_id: str, **fields) -> Job | None:
+        if fields.get("status") == "queued":
+            # Queued again (resume, retry, a new render): an earlier pause request is over.
+            with self._lock:
+                self._pause_requests.discard(job_id)
         session = get_session()
         try:
             job = session.get(Job, job_id)
@@ -347,8 +359,21 @@ class JobManager:
             if job is None:
                 return
             job.attempt_started_at = utcnow()
+            job.attempt_seen_at = job.attempt_started_at
             job.attempt_phase = phase
             job.attempt_outcome = "running"
+            session.commit()
+        finally:
+            session.close()
+
+    def touch_attempt(self, job_id: str) -> None:
+        """Record that the attempt in progress is still running (see recover_interrupted)."""
+        session = get_session()
+        try:
+            job = session.get(Job, job_id)
+            if job is None or job.attempt_started_at is None:
+                return
+            job.attempt_seen_at = utcnow()
             session.commit()
         finally:
             session.close()
@@ -362,41 +387,22 @@ class JobManager:
             job = session.get(Job, job_id)
             if job is None or (only_if_running and job.attempt_started_at is None):
                 return 0.0
-            now = utcnow()
-            started = as_utc(job.attempt_started_at)
-            seconds = max(0.0, (now - started).total_seconds()) if started else 0.0
-            if started:
-                job.attempt_seconds = round(seconds, 3)
-                job.processing_seconds = round(float(job.processing_seconds or 0) + seconds, 3)
-                if job.attempt_phase == "render":
-                    job.render_seconds = round(float(job.render_seconds or 0) + seconds, 3)
-                else:
-                    job.analysis_seconds = round(float(job.analysis_seconds or 0) + seconds, 3)
-            job.attempt_started_at = None
-            job.attempt_outcome = outcome
-            final_status = _STAGE_ON_OUTCOME.get(outcome, "error")
-            running = session.query(JobStage).filter(JobStage.job_id == job_id, JobStage.status == "running").all()
-            for stage in running:
-                _close_stage_run(stage, now)
-                stage.finished_at = now
-                stage.status = final_status
+            seconds = _close_attempt(session, job, utcnow(), outcome)
             session.commit()
             return seconds
         finally:
             session.close()
 
     def recover_interrupted(self) -> int:
-        """After a restart, clear attempts that were cut off. Their length is unknown, so it is
-        not added to any total; their stages go back to pending so they run again."""
+        """After a restart, close attempts that were cut off (a crash or a power cut). They
+        count up to their last sign of life; their stages go back to pending so they run again."""
         session = get_session()
         try:
             jobs = session.query(Job).filter(Job.attempt_started_at.isnot(None)).all()
             for job in jobs:
-                job.attempt_started_at = None
-                job.attempt_outcome = "interrupted"
-                for stage in session.query(JobStage).filter(JobStage.job_id == job.id, JobStage.status == "running"):
-                    stage.status = "pending"
-                    stage.started_at = None
+                # Older rows have no sign of life: their length is unknown and not counted.
+                seen = as_utc(job.attempt_seen_at) or as_utc(job.attempt_started_at)
+                _close_attempt(session, job, seen, "interrupted")
             session.commit()
             return len(jobs)
         finally:
@@ -449,14 +455,58 @@ class JobManager:
         finally:
             session.close()
 
-    def cancel(self, job_id: str) -> Job | None:
+    def _stop_run(self, job_id: str) -> None:
+        """Signal a running job to stop and end the commands it is running."""
         self.cancel_event(job_id).set()
         with self._lock:
             runners = list(self._runners.get(job_id) or [])
         for runner in runners:
             # Stopping a process can take a few seconds; the request does not wait for it.
             threading.Thread(target=runner.cancel, daemon=True, name=f"cancel-{job_id}").start()
+
+    def cancel(self, job_id: str) -> Job | None:
+        with self._lock:
+            self._pause_requests.discard(job_id)
+        self._stop_run(job_id)
         return self.update(job_id, status="cancelled", cancelled=True)
+
+    @staticmethod
+    def can_pause(job: Job) -> bool:
+        """Waiting or working on analysis or rendering (not on the Review page or finished)."""
+        if job.status in {"queued", "analyzing", "rendering"}:
+            return True
+        return job.status == "planning" and job.analysis_status == "running"
+
+    def pause(self, job_id: str) -> Job | None:
+        """Stop the job at the next safe point and keep everything finished so far. A paused
+        job stays paused across restarts until it is resumed."""
+        with self._lock:
+            self._pause_requests.add(job_id)
+        self._stop_run(job_id)
+        return self.update(job_id, status="paused")
+
+    def pause_requested(self, job_id: str) -> bool:
+        with self._lock:
+            return job_id in self._pause_requests
+
+    def take_pause_request(self, job_id: str) -> bool:
+        """Whether the job was asked to pause; the request is used up."""
+        with self._lock:
+            if job_id in self._pause_requests:
+                self._pause_requests.discard(job_id)
+                return True
+            return False
+
+    def resume(self, job_id: str) -> Job | None:
+        """Queue a paused job again; it continues after its finished steps."""
+        with self._lock:
+            self._pause_requests.discard(job_id)
+        job = self.get(job_id)
+        if job and job.analysis_status == "completed" and job.render_status not in {"queued", "running", "paused"}:
+            # Analysis finished just as the pause arrived and no video was asked for: back to
+            # the Review page instead of starting a render nobody asked for.
+            return self.update(job_id, status="planning", error=None, cancelled=False)
+        return self.retry(job_id)
 
     def retry(self, job_id: str) -> Job | None:
         self.cancel_event(job_id).clear()
@@ -567,6 +617,32 @@ class JobManager:
                 for o in outputs
             ],
         }
+
+
+def _close_attempt(session, job: Job, end, outcome: str) -> float:
+    """End ``job``'s attempt at ``end``: add its length to the totals, keep it as the last
+    attempt's length, and close the stages it left running. Returns the attempt's seconds."""
+    started = as_utc(job.attempt_started_at)
+    seconds = max(0.0, (end - started).total_seconds()) if started else 0.0
+    if started:
+        job.attempt_seconds = round(seconds, 3)
+        job.processing_seconds = round(float(job.processing_seconds or 0) + seconds, 3)
+        if job.attempt_phase == "render":
+            job.render_seconds = round(float(job.render_seconds or 0) + seconds, 3)
+        else:
+            job.analysis_seconds = round(float(job.analysis_seconds or 0) + seconds, 3)
+    job.attempt_started_at = None
+    job.attempt_seen_at = None
+    job.attempt_outcome = outcome
+    final_status = _STAGE_ON_OUTCOME.get(outcome, "error")
+    running = session.query(JobStage).filter(JobStage.job_id == job.id, JobStage.status == "running").all()
+    for stage in running:
+        _close_stage_run(stage, end)
+        stage.finished_at = end
+        stage.status = final_status
+        if final_status == "pending":
+            stage.started_at = None
+    return seconds
 
 
 def _close_stage_run(stage: JobStage, now) -> None:

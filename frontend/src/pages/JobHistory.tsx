@@ -11,7 +11,7 @@ const ACTIVE = ["queued", "analyzing", "rendering"];
 function statusTone(status: string) {
   if (status === "completed") return "ok";
   if (status === "failed") return "err";
-  if (status === "cancelled") return "warn";
+  if (status === "cancelled" || status === "paused") return "warn";
   if (status === "planning") return "accent";
   if (ACTIVE.includes(status)) return "run";
   return "";
@@ -69,9 +69,11 @@ export default function JobHistory() {
 
   function href(job: Job) {
     if (job.status === "completed") return `/jobs/${job.id}/result`;
-    if (job.analysis_status === "completed" && !ACTIVE.includes(job.status)) return `/jobs/${job.id}/review`;
+    // A paused job opens the progress page, where it can be resumed.
+    if (job.analysis_status === "completed" && !ACTIVE.includes(job.status) && job.status !== "paused")
+      return `/jobs/${job.id}/review`;
     // Failed and stopped jobs open the progress page, where they can be started again.
-    if ([...ACTIVE, "planning", "failed", "cancelled"].includes(job.status)) return `/jobs/${job.id}/analysis`;
+    if ([...ACTIVE, "planning", "failed", "cancelled", "paused"].includes(job.status)) return `/jobs/${job.id}/analysis`;
     return "/";
   }
 

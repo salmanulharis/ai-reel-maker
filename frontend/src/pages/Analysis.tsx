@@ -66,7 +66,7 @@ export default function Analysis() {
   const [job, setJob] = useState<Job | null>(null);
   const [logs, setLogs] = useState<Array<{ level: string; message: string }>>([]);
   const [openLog, setOpenLog] = useState(false);
-  const [action, setAction] = useState<"" | "cancel" | "retry">("");
+  const [action, setAction] = useState<"" | "cancel" | "retry" | "pause" | "resume">("");
   const [actionError, setActionError] = useState("");
   const elapsed = useElapsed(job?.timing);
   const queued = useRef(false);
@@ -79,7 +79,7 @@ export default function Analysis() {
     if (box && stickToBottom.current) box.scrollTop = box.scrollHeight;
   }, [logs, openLog]);
 
-  async function run(kind: "cancel" | "retry", call: () => Promise<Job>) {
+  async function run(kind: "cancel" | "retry" | "pause" | "resume", call: () => Promise<Job>) {
     setAction(kind);
     setActionError("");
     try {
@@ -116,6 +116,9 @@ export default function Analysis() {
     socket.on("job_progress", (payload: { job_id: string }) => {
       if (payload.job_id === id) load();
     });
+    socket.on("job_paused", (payload: { job_id: string }) => {
+      if (payload.job_id === id) load();
+    });
     socket.on("job_log", (payload: { job_id: string; level: string; message: string }) => {
       if (payload.job_id === id) setLogs((cur) => [...cur, payload]);
     });
@@ -139,8 +142,12 @@ export default function Analysis() {
   const percent = Math.max(0, Math.min(100, Math.round(job.progress || 0)));
   const failed = job.status === "failed";
   const cancelled = job.status === "cancelled";
-  const stopped = failed || cancelled;
-  const rendering = job.status === "rendering" || job.render_status === "running";
+  const paused = job.status === "paused";
+  // Paused, but the current step is still being finished and saved.
+  const pausing = paused && job.timing?.attempt_outcome === "running";
+  const stopped = failed || cancelled || paused;
+  const rendering =
+    job.status === "rendering" || job.render_status === "running" || (paused && job.analysis_status === "completed");
   const waiting = job.status === "queued" && !job.last_stage;
   const current = waiting ? copy.waiting : job.last_stage ? LABELS[job.last_stage] || job.last_stage : "";
 
@@ -198,6 +205,11 @@ export default function Analysis() {
             {copy.cancelledHint}
           </Alert>
         )}
+        {paused && (
+          <Alert kind="info">
+            <strong>{pausing ? copy.pausing : copy.paused}.</strong> {pausing ? copy.pausingHint : copy.pausedHint}
+          </Alert>
+        )}
         <ul className="stage-list">
           {(job.stages || []).map((stage) => {
             const running = stage.status === "running" && Boolean(stage.started_at);
@@ -220,7 +232,18 @@ export default function Analysis() {
           })}
         </ul>
         <div className="btn-row panel-actions">
-          {stopped ? (
+          {paused && (
+            <button
+              className="btn primary"
+              disabled={action !== "" || pausing}
+              aria-busy={action === "resume"}
+              onClick={() => run("resume", () => api.resume(id))}
+            >
+              {action === "resume" && <Spinner />}
+              {action === "resume" ? copy.resuming : copy.resume}
+            </button>
+          )}
+          {stopped && !paused && (
             <button
               className="btn primary"
               disabled={action !== ""}
@@ -230,7 +253,19 @@ export default function Analysis() {
               {action === "retry" && <Spinner />}
               {messages.common.retry}
             </button>
-          ) : (
+          )}
+          {!stopped && (
+            <button
+              className="btn"
+              disabled={action !== ""}
+              aria-busy={action === "pause"}
+              onClick={() => run("pause", () => api.pause(id))}
+            >
+              {action === "pause" && <Spinner />}
+              {action === "pause" ? copy.pausing : copy.pause}
+            </button>
+          )}
+          {(!stopped || paused) && (
             <button
               className="btn danger"
               disabled={action !== ""}
