@@ -64,6 +64,12 @@ class Job(Base):
     attempt_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     analysis_seconds: Mapped[float] = mapped_column(Float, default=0)
     render_seconds: Mapped[float] = mapped_column(Float, default=0)
+    # Time left for the run in progress as last estimated, and when (None: not known yet).
+    eta_seconds: Mapped[float | None] = mapped_column(Float, nullable=True)
+    progress_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Which source video the analysis is on (0-based) and how many there are.
+    source_index: Mapped[int] = mapped_column(Integer, default=0)
+    source_count: Mapped[int] = mapped_column(Integer, default=0)
 
 
 class JobStage(Base):
@@ -78,6 +84,10 @@ class JobStage(Base):
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     # Time actually spent in this stage, summed over every run (several videos, retries).
     seconds: Mapped[float] = mapped_column(Float, default=0)
+    # How far the stage's current run is: done of total, in unit ("time" for seconds of video).
+    done: Mapped[float] = mapped_column(Float, default=0)
+    total: Mapped[float] = mapped_column(Float, default=0)
+    unit: Mapped[str] = mapped_column(String(16), default="")
 
 
 class SceneRow(Base):
@@ -215,6 +225,10 @@ def _ensure_columns() -> None:
             ("analysis_seconds", "FLOAT DEFAULT 0"),
             ("render_seconds", "FLOAT DEFAULT 0"),
             ("attempt_seen_at", "DATETIME"),
+            ("eta_seconds", "FLOAT"),
+            ("progress_at", "DATETIME"),
+            ("source_index", "INTEGER DEFAULT 0"),
+            ("source_count", "INTEGER DEFAULT 0"),
         ):
             if column not in jobs:
                 conn.execute(text(f"ALTER TABLE jobs ADD COLUMN {column} {ddl}"))
@@ -222,8 +236,14 @@ def _ensure_columns() -> None:
                     # Before this column, processing_seconds held the analysis time only.
                     conn.execute(text("UPDATE jobs SET analysis_seconds = COALESCE(processing_seconds, 0)"))
         stages = {row[1] for row in conn.execute(text("PRAGMA table_info(job_stages)")).fetchall()}
-        if "seconds" not in stages:
-            conn.execute(text("ALTER TABLE job_stages ADD COLUMN seconds FLOAT DEFAULT 0"))
+        for column, ddl in (
+            ("seconds", "FLOAT DEFAULT 0"),
+            ("done", "FLOAT DEFAULT 0"),
+            ("total", "FLOAT DEFAULT 0"),
+            ("unit", "VARCHAR(16) DEFAULT ''"),
+        ):
+            if column not in stages:
+                conn.execute(text(f"ALTER TABLE job_stages ADD COLUMN {column} {ddl}"))
 
 
 def get_session():

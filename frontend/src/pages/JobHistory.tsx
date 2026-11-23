@@ -3,10 +3,20 @@ import { Link, useSearchParams } from "react-router-dom";
 import { api, formatElapsed, formatTime } from "../services/api";
 import { fill, messages } from "../i18n";
 import { Alert, HistoryIcon, PageLoader, Spinner } from "../components/Feedback";
+import { ProgressBar } from "../components/Progress";
 import type { Job } from "../types";
 
 const copy = messages.history;
 const ACTIVE = ["queued", "analyzing", "rendering"];
+
+/** Analyzing or creating the video right now (planning is the last analysis step). */
+function working(job: Job): boolean {
+  return (
+    job.status === "analyzing" ||
+    job.status === "rendering" ||
+    (job.status === "planning" && job.analysis_status === "running")
+  );
+}
 
 function statusTone(status: string) {
   if (status === "completed") return "ok";
@@ -154,6 +164,11 @@ export default function JobHistory() {
                 </td>
                 <td>
                   <span className={`status-pill ${statusTone(job.status)}`}>{statusLabel(job.status)}</span>
+                  {working(job) && (
+                    <div className="row-progress" title={`${Math.floor(job.progress || 0)}%`}>
+                      <ProgressBar value={job.progress || 0} label={statusLabel(job.status)} size="sm" />
+                    </div>
+                  )}
                 </td>
                 <td>
                   <div className="row-actions">

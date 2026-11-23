@@ -10,7 +10,9 @@ A local-only app that turns a long video into a short highlight. Flask + Socket.
 
 ```bash
 pip install -r requirements.txt
-python run.py                                  # API + built UI on APP_PORT (default 5000)
+python run.py                                  # API + built UI on APP_PORT (default 5000); one copy at a time
+start.bat / stop.bat                           # Windows double-click start (builds UI if missing, opens browser) / stop
+python scripts/stop_app.py                     # stop the running app and its FFmpeg children (data/app.pid)
 cd frontend && npm install && npm run build    # UI served from frontend/dist by Flask
 cd frontend && npm run dev                     # UI on 5173, proxies /api and /socket.io to 5000
 cd frontend && npx tsc --noEmit -p .           # frontend type check (there is no lint setup)

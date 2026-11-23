@@ -12,6 +12,7 @@ from flask import Flask
 from app.ai.ollama import OllamaError
 from app.analysis.director import CONTENT_FILE, DIRECTOR_FILE
 from app.analysis.pipeline import PARTIAL_FILES, SOUND_EVENTS_FILE, SOUND_VECTORS_FILE, PipelineProgress, VideoAnalyzer
+from app.analysis.progress import RenderProgress
 from app.analysis.tighten import tighten_clips
 from app.config import get_settings
 from app.services.ollama_runtime import get_ollama_client
@@ -20,7 +21,7 @@ from app.services.hardware import preferred_hw_encoder
 from app.services.run_plan import RunPlan, build_run_plan
 from app.services.job_manager import get_job_manager
 from app.video.crop import normalize_crop, to_crop_pixels
-from app.video.ffmpeg_runner import CancelledError, FFmpegRunner
+from app.video.ffmpeg_runner import CancelledError, FFmpegRunner, report_progress
 from app.video.processor import VideoProcessor
 from app.video.captions import load_transcript, sequence_srt, write_clip_subtitles
 from app.video.renderer import Renderer
@@ -214,17 +215,26 @@ def _run_analysis(app: Flask, job_id: str) -> None:
         if kind == "log":
             append_log(job_dir, payload)
         if kind == "progress":
-            manager.update(job_id, progress=payload.get("overall", 0), last_stage=payload.get("stage", ""))
-            stage = payload.get("stage")
-            status = payload.get("status")
-            if stage and status:
-                mapped = {"running": "running", "done": "done"}.get(status, status)
-                manager.set_stage(job_id, stage, mapped, payload.get("detail", ""))
-                if mapped == "running" and stage == "planning" and not cancel.is_set():
-                    manager.update(job_id, status="planning")
+            stage = payload.get("stage") or ""
+            status = payload.get("status") or ""
+            manager.record_progress(
+                job_id,
+                payload.get("overall", 0),
+                payload.get("eta"),
+                stage,
+                status,
+                payload.get("detail", ""),
+                payload.get("step_done", 0),
+                payload.get("step_total", 0),
+                payload.get("step_unit", ""),
+                payload.get("source_index"),
+                payload.get("source_count"),
+            )
+            if status == "running" and stage == "planning" and not cancel.is_set():
+                manager.update(job_id, status="planning")
         _emit(app, job_id, f"job_{kind}", payload)
 
-    progress = PipelineProgress(emit)
+    progress = PipelineProgress(emit, speeds=_measured_speeds(settings))
     ollama = None
     vision_enabled = False
     text_enabled = False
@@ -282,7 +292,7 @@ def _run_analysis(app: Flask, job_id: str) -> None:
         fields = {
             "status": "planning",
             "analysis_status": "completed",
-            "progress": 90,
+            "progress": 100,
             "error": None,
         }
         if _wants_auto_render(job_id) and not refining:
@@ -457,15 +467,34 @@ def _run_render(app: Flask, job_id: str) -> None:
             emit_log(f"Using hardware encoder {encoder}")
         else:
             emit_log("Using high-quality CPU encoder libx264 to preserve source detail")
-        manager.set_stage(job_id, "rendering", "running")
         if not groups:
             raise ValueError("No clips to render")
+
+        def emit_progress(payload: dict) -> None:
+            manager.record_progress(
+                job_id,
+                payload["overall"],
+                payload.get("eta"),
+                "rendering",
+                "running",
+                payload.get("detail", ""),
+                payload.get("step_done", 0),
+                payload.get("step_total", 0),
+                payload.get("step_unit", ""),
+            )
+            _emit(app, job_id, "job_progress", payload)
+
+        tracker = RenderProgress(
+            [[max(0.0, c.end - c.start) for c in group["clips"]] for group in groups], music is not None, emit_progress
+        )
+        clip_total = tracker.clip_total
+        manager.record_progress(job_id, 0, None, "rendering", "running", "", 0, clip_total, "clips")
         made: list[dict] = []
         for number, group in enumerate(groups, 1):
             prefix = "" if len(groups) == 1 else f"Short {group['short'] + 1}: "
             if len(groups) > 1:
                 emit_log(f"Creating short {group['short'] + 1} ({number} of {len(groups)})")
-                manager.update(job_id, progress=round(100 * (number - 1) / len(groups), 1))
+                tracker.detail(f"Short {group['short'] + 1} ({number} of {len(groups)})")
             work_dir = job_dir / "tmp_render" / group["label"]
             group_plan = plan.model_copy(
                 update={"clips": group["clips"], "estimated_duration": sum(c.duration for c in group["clips"])}
@@ -488,6 +517,7 @@ def _run_render(app: Flask, job_id: str) -> None:
                 hardware_encoder=encoder,
                 source_lookup=source_lookup,
                 extras=extras,
+                on_clip=lambda index, share, g=number - 1: tracker.clip(g, index, share),
             )
             out_meta = result["metadata"]
             if number == 1 and subtitle_note:
@@ -495,7 +525,18 @@ def _run_render(app: Flask, job_id: str) -> None:
             if result.get("leveled"):
                 emit_log(f"{prefix}Sound levelled in {result['leveled']['clips']} of {result['leveled']['of']} clips")
             if music is not None:
-                out_meta = add_music(runner, group["output"], music, out_meta, config, settings, emit_log, prefix)
+                out_meta = add_music(
+                    runner,
+                    group["output"],
+                    music,
+                    out_meta,
+                    config,
+                    settings,
+                    emit_log,
+                    prefix,
+                    on_progress=lambda share, g=number - 1: tracker.music(g, min(share, 0.99)),
+                )
+                tracker.music(number - 1, 1.0)
             canvas = result.get("canvas") or {}
             encoder_info = result.get("encoder") or {}
             if result.get("frame_rate") and number == 1:
@@ -549,7 +590,7 @@ def _run_render(app: Flask, job_id: str) -> None:
                     emit_log(f"Copied to {copied[0].parent}: " + ", ".join(p.name for p in copied))
             except Exception as exc:  # noqa: BLE001 - the videos are still in the app
                 emit_log(f"Could not copy the videos to the watched folder: {exc}", "WARNING")
-        manager.set_stage(job_id, "rendering", "done")
+        manager.set_stage(job_id, "rendering", "done", "", clip_total, clip_total, "clips")
         manager.take_pause_request(job_id)
         took = manager.finish_attempt(job_id, "completed")
         manager.update(job_id, status="completed", render_status="completed", progress=100)
@@ -603,22 +644,35 @@ def render_extras(config: HighlightConfig, settings) -> Extras:
     )
 
 
-def add_music(runner, output: Path, music: Path, out_meta: dict, config, settings, emit_log, prefix: str = "") -> dict:
-    """Mix the background music into a finished video. On failure the video keeps its own sound."""
+def add_music(
+    runner,
+    output: Path,
+    music: Path,
+    out_meta: dict,
+    config,
+    settings,
+    emit_log,
+    prefix: str = "",
+    on_progress=None,
+) -> dict:
+    """Mix the background music into a finished video. On failure the video keeps its own sound.
+    ``on_progress`` receives the share of the video mixed so far."""
     mixed = output.with_name(f"{output.stem}.music{output.suffix}")
+    duration = float(out_meta.get("duration") or 0)
     try:
-        runner.run(
-            music_mix_command(
-                output,
-                music,
-                mixed,
-                float(out_meta.get("duration") or 0),
-                config.music_volume / 100,
-                config.music_duck,
-                bool(out_meta.get("has_audio", True)),
-                settings.output_audio_bitrate,
+        with report_progress(runner, duration, on_progress):
+            runner.run(
+                music_mix_command(
+                    output,
+                    music,
+                    mixed,
+                    duration,
+                    config.music_volume / 100,
+                    config.music_duck,
+                    bool(out_meta.get("has_audio", True)),
+                    settings.output_audio_bitrate,
+                )
             )
-        )
         mixed.replace(output)
         meta = runner.probe(output).model_dump()
         emit_log(f"{prefix}Background music added ({music.name}{', lowered under speech' if config.music_duck else ''})")
@@ -772,6 +826,7 @@ def _crop_one(
     crop_payload: dict | None,
     runner,
     progress,
+    on_progress=None,
 ) -> tuple[Path, bool]:
     if not normalize_crop(crop_payload) and not cropped.exists() and not stamp.exists():
         return original, False
@@ -803,17 +858,20 @@ def _crop_one(
     # never leave a half-written file that looks like an earlier finished one.
     if stamp.exists():
         stamp.unlink()
-    runner.run(
-        VideoProcessor.crop_command(
-            original,
-            cropped,
-            width=box.width,
-            height=box.height,
-            x=box.x,
-            y=box.y,
-            crf=settings.output_crf,
+    if on_progress is not None:
+        on_progress(0.0)
+    with report_progress(runner, float(source_meta.duration or 0), on_progress):
+        runner.run(
+            VideoProcessor.crop_command(
+                original,
+                cropped,
+                width=box.width,
+                height=box.height,
+                x=box.x,
+                y=box.y,
+                crf=settings.output_crf,
+            )
         )
-    )
     atomic_write_json(stamp, payload)
     cropped_meta = runner.probe(cropped)
     progress.log(f"Analysis will use the cropped {cropped_meta.width}×{cropped_meta.height} video for {original.name}.")
@@ -827,7 +885,13 @@ def _prepare_all_sources(manager, job, original: Path, job_dir: Path, config, ru
     crop_payload = config.crop.model_dump() if config.crop else None
     busted = False
     single = len(sources) == 1
-    for src in sources:
+    cropped_any = {"ran": False}
+    for position, src in enumerate(sources):
+
+        def crop_share(fraction: float, position: int = position, name: str = str(src.get("filename") or "")) -> None:
+            cropped_any["ran"] = True
+            progress.step("prepare", (position + fraction) / len(sources) * 100, 100, "", name)
+
         src_path = Path(src["path"])
         sid = str(src.get("id") or "v0")
         if single:
@@ -836,9 +900,11 @@ def _prepare_all_sources(manager, job, original: Path, job_dir: Path, config, ru
         else:
             dest = src_path.parent / f"{sid}_analysis.mp4"
             stamp = src_path.parent / f"{sid}_crop.json"
-        analysis, changed = _crop_one(src_path, dest, stamp, crop_payload, runner, progress)
+        analysis, changed = _crop_one(src_path, dest, stamp, crop_payload, runner, progress, crop_share)
         src["analysis_path"] = str(analysis)
         busted = busted or changed
+    if cropped_any["ran"]:
+        progress.stage("prepare", "done")
     save_sources(job_dir, sources)
     if busted:
         _clear_analysis_cache(job_dir)
@@ -853,6 +919,18 @@ def _prepare_all_sources(manager, job, original: Path, job_dir: Path, config, ru
             except Exception:
                 pass
     return sources, cache
+
+
+def _measured_speeds(settings) -> dict[str, float]:
+    """Measured model speeds for better time estimates; empty when none are known."""
+    try:
+        from app.services.auto_tune import read_history
+        from app.services.calibration import current_speeds
+
+        return current_speeds(settings, read_history())
+    except Exception:  # noqa: BLE001 - estimates fall back to typical speeds
+        _log.debug("Could not read measured speeds", exc_info=True)
+        return {}
 
 
 def _run_plan(settings, ollama, progress: PipelineProgress) -> RunPlan:

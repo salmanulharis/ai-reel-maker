@@ -6,7 +6,7 @@ from typing import Callable
 
 from app.utils.atomic import atomic_write_json, read_json, replace_file
 from app.models.schemas import ClipPlan, ClipPlanItem, RenderSettings, VideoMetadata
-from app.video.ffmpeg_runner import CancelledError, FFmpegError, FFmpegRunner
+from app.video.ffmpeg_runner import CancelledError, FFmpegError, FFmpegRunner, report_progress
 from app.video.processor import VideoProcessor
 from app.video.reframe import aspect_crop_filter, clip_frames, subject_center, to_canvas
 from app.video.audio_mix import leveling_filters, leveling_gain, measure_command, parse_loudness
@@ -110,6 +110,7 @@ class Renderer:
         source_lookup: dict[str, Path] | None = None,
         extras: Extras | None = None,
         subtitle_segments: dict[str, list[dict]] | list[dict] | None = None,
+        on_clip: Callable[[int, float], None] | None = None,
     ) -> dict:
         """
         Cut, normalize and join the clips into ``output``. Each clip is cut on its own and
@@ -119,6 +120,9 @@ class Renderer:
         None for no subtitles on it. Without that callback, ``subtitle_segments`` (transcript
         segments, per source id or for every clip) are burned in as plain subtitles when
         ``settings.subtitles == "burned"``.
+
+        ``on_clip(index, share)`` receives how far each clip is encoded (1.0 when it is finished
+        or reused from an earlier run).
         """
         work_dir.mkdir(parents=True, exist_ok=True)
         output.parent.mkdir(parents=True, exist_ok=True)
@@ -247,8 +251,13 @@ class Renderer:
                 cmd = clip_command(i, clip, codec, pending_clip)
                 fingerprint = _command_fingerprint(cmd, prepared[i][1])
                 if finished.get(target.name) != fingerprint or not _usable_file(target):
+                    report = None
+                    if on_clip is not None:
+                        # Below 1.0 until the clip is moved into place.
+                        report = lambda share, index=i: on_clip(index, min(share, 0.99))  # noqa: E731
                     try:
-                        self.runner.run(cmd)
+                        with report_progress(self.runner, max(0.05, clip.end - clip.start), report):
+                            self.runner.run(cmd)
                         if pending_clip.exists():
                             replace_file(pending_clip, target)
                     except BaseException:
@@ -256,6 +265,8 @@ class Renderer:
                         raise
                     finished[target.name] = fingerprint
                     atomic_write_json(manifest_path, finished)
+                if on_clip is not None:
+                    on_clip(i, 1.0)
                 files.append(target)
             return files
 

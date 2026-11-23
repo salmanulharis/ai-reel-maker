@@ -390,6 +390,7 @@
     "pausedHint": "Everything finished so far is kept, even if you close the app or turn off the computer. Resume to continue where it stopped.",
     "waiting": "Waiting to start…",
     "stages": {
+      "prepare": "Preparing the cropped video",
       "metadata": "Reading the video",
       "scenes": "Finding scene changes",
       "audio": "Extracting the sound",
@@ -403,6 +404,18 @@
       "director": "Choosing moments with AI",
       "planning": "Choosing the clips",
       "rendering": "Creating your video"
+    },
+    "timeLeft": "About {time} left",
+    "estimating": "Working out the time left",
+    "videoOf": "Video {n} of {total}",
+    "stepCount": "{done} of {total} {unit}",
+    "stepTime": "{done} of {total}",
+    "units": {
+      "scenes": "scenes",
+      "segments": "spoken parts",
+      "frames": "pictures",
+      "parts": "parts",
+      "clips": "clips"
     }
   },
   "review": {
@@ -794,7 +807,6 @@
     "imageMatchingHint": "A small picture model (SigLIP) that ranks scenes in a fraction of a second each, so the slower video model only looks at the best ones. It also spots repeated-looking scenes and matches your focus to pictures. It cannot judge what happens in a scene by itself.",
     "imageModelReady": "Downloaded",
     "imageModelMissing": "Not downloaded ({size} MB)",
-    "imageModelDownloading": "Downloading… file {done} of {total}",
     "imageModelNoRuntime": "Needs onnxruntime and tokenizers. Install the app requirements.",
     "embedTitle": "Meaning matching",
     "embedHint": "A small model that compares meaning, to find repeated ideas said in different words and to match your focus. Optional: without it, word matching is used.",
@@ -992,5 +1004,19 @@
       "reaction": "Reaction",
       "ending": "Ending"
     }
+  },
+  "transfer": {
+    "label": "Download progress",
+    "of": "{done} of {total}",
+    "speed": "{speed}/s",
+    "timeLeft": "about {time} left",
+    "starting": "Starting",
+    "downloading": "Downloading",
+    "verifying": "Checking the download",
+    "finishing": "Finishing",
+    "uploading": "Uploading",
+    "uploadLabel": "Upload progress",
+    "cancelUpload": "Cancel upload",
+    "uploadCancelled": "Upload cancelled."
   }
 }

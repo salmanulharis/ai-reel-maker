@@ -3,8 +3,9 @@ from __future__ import annotations
 import json
 import subprocess
 import threading
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Iterator
 
 from app.models.schemas import VideoMetadata
 from app.utils.timefmt import clamp_timestamp
@@ -17,6 +18,10 @@ class CancelledError(Exception):
 
 class FFmpegError(RuntimeError):
     pass
+
+
+# Where FFmpeg commands run by this thread report how far they are (see report_progress).
+_sink = threading.local()
 
 
 class FFmpegRunner:
@@ -47,6 +52,9 @@ class FFmpegRunner:
     ) -> subprocess.CompletedProcess:
         if self.cancel_event.is_set():
             raise CancelledError("Job cancelled")
+        sink = getattr(_sink, "target", None)
+        if sink is not None and _is_ffmpeg(command):
+            return self._run_reporting(command, timeout, collect_stderr, *sink)
         proc = subprocess.Popen(
             command,
             stdout=subprocess.PIPE,
@@ -75,6 +83,63 @@ class FFmpegRunner:
         if code != 0:
             raise FFmpegError(_short_ffmpeg_error(stderr or stdout or f"exit {code}"))
         return result
+
+    def _run_reporting(
+        self,
+        command: list[str],
+        timeout: int | None,
+        collect_stderr: bool,
+        duration: float,
+        on_progress: Callable[[float], None],
+    ) -> subprocess.CompletedProcess:
+        """Run an FFmpeg command that writes to a file, reading its progress output as it goes."""
+        proc = subprocess.Popen(
+            [command[0], "-progress", "pipe:1", "-nostats", *command[1:]],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE if collect_stderr else subprocess.DEVNULL,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+        with self._procs_lock:
+            self._procs.add(proc)
+        errors: list[str] = []
+        reader = None
+        if collect_stderr:
+            # Read alongside, so a full stderr pipe never blocks FFmpeg.
+            reader = threading.Thread(target=lambda: errors.append(proc.stderr.read()), daemon=True)
+            reader.start()
+        timed_out = threading.Event()
+        timer = None
+        if timeout:
+            timer = threading.Timer(timeout, lambda: (timed_out.set(), proc.kill()))
+            timer.daemon = True
+            timer.start()
+        try:
+            for line in proc.stdout:
+                share = parse_progress_line(line, duration)
+                if share is not None:
+                    try:
+                        on_progress(share)
+                    except Exception:  # noqa: BLE001 - reporting never disturbs the command
+                        pass
+            proc.wait()
+        finally:
+            if timer is not None:
+                timer.cancel()
+            if reader is not None:
+                reader.join(timeout=5)
+            code = proc.returncode
+            with self._procs_lock:
+                self._procs.discard(proc)
+        if timed_out.is_set():
+            raise FFmpegError(f"Command timed out: {command[0]}")
+        if self.cancel_event.is_set():
+            raise CancelledError("Job cancelled")
+        stderr = "".join(errors)
+        if code != 0:
+            raise FFmpegError(_short_ffmpeg_error(stderr or f"exit {code}"))
+        return subprocess.CompletedProcess(command, code, "", stderr)
 
     def probe(self, input_path: str | Path) -> VideoMetadata:
         result = self.run(VideoProcessor.probe_command(input_path))
@@ -115,6 +180,42 @@ class FFmpegRunner:
         except FFmpegError as exc:
             text = str(exc)
         return parse_silence(text)
+
+
+@contextmanager
+def report_progress(runner, duration: float | None, on_progress: Callable[[float], None] | None) -> Iterator[None]:
+    """While active, FFmpeg commands that this thread runs through ``runner`` report the share of
+    ``duration`` (seconds of media) they have written. Only for commands that write to a file or
+    to null: their progress goes to stdout. Other runners (test doubles) are left alone."""
+    if on_progress is None or not duration or duration <= 0 or not isinstance(runner, FFmpegRunner):
+        yield
+        return
+    previous = getattr(_sink, "target", None)
+    _sink.target = (float(duration), on_progress)
+    try:
+        yield
+    finally:
+        _sink.target = previous
+
+
+def parse_progress_line(line: str, duration: float) -> float | None:
+    """The share done from one line of FFmpeg's ``-progress`` output, or None for other lines."""
+    key, _, value = line.strip().partition("=")
+    if key == "progress" and value == "end":
+        return 1.0
+    # out_time_ms is in microseconds too (a long-standing FFmpeg quirk).
+    if key not in {"out_time_us", "out_time_ms"} or duration <= 0:
+        return None
+    try:
+        seconds = int(value) / 1_000_000
+    except ValueError:
+        return None
+    return min(1.0, max(0.0, seconds / duration))
+
+
+def _is_ffmpeg(command: list[str]) -> bool:
+    name = Path(str(command[0])).stem.lower() if command else ""
+    return name.startswith("ffmpeg")
 
 
 def _parse_frame_rate(rate: object) -> float:

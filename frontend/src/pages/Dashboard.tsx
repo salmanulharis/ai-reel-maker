@@ -6,7 +6,10 @@ import { VideoCropPreview } from "../components/VideoCrop";
 import { PresetBar } from "../components/PresetBar";
 import { PromptPanel, understoodForm } from "../components/PromptPanel";
 import { Alert, InlineStatus, Spinner } from "../components/Feedback";
+import { TransferProgress } from "../components/Progress";
+import { useUpload } from "../hooks/useUpload";
 import { api, formatBytes, formatTime } from "../services/api";
+import { isAbort } from "../services/transfer";
 import { fill, messages } from "../i18n";
 import type { HighlightForm, InterpretResult, Job } from "../types";
 
@@ -36,6 +39,7 @@ export default function Dashboard() {
   const [busy, setBusy] = useState(false);
   const [starting, setStarting] = useState(false);
   const [error, setError] = useState("");
+  const upload = useUpload();
   const [aiNotice, setAiNotice] = useState(false);
   // With several videos: one highlight from all of them, or one highlight per video.
   const [separate, setSeparate] = useState(false);
@@ -75,10 +79,18 @@ export default function Dashboard() {
     setError("");
     try {
       if (job) await api.deleteJob(job.id).catch(() => undefined);
-      const created = await api.createJob(next, form);
+      const size = next.reduce((sum, file) => sum + file.size, 0);
+      const created = await upload.run(size, (options) => api.createJob(next, form, options));
       setJob(created);
     } catch (err) {
-      setError((err as Error).message);
+      if (isAbort(err)) {
+        // Nothing was saved: start again from an empty list.
+        setFiles([]);
+        setJob(null);
+        setError(messages.transfer.uploadCancelled);
+      } else {
+        setError((err as Error).message);
+      }
     } finally {
       setBusy(false);
     }
@@ -192,8 +204,16 @@ export default function Dashboard() {
               {messages.upload.sample}
             </button>
           )}
-          {busy && !starting && <InlineStatus busy>{messages.common.preparing}</InlineStatus>}
+          {busy && !starting && !upload.status && <InlineStatus busy>{messages.common.preparing}</InlineStatus>}
         </div>
+        {upload.status && (
+          <div className="upload-progress">
+            <TransferProgress status={upload.status} label={messages.transfer.uploadLabel} />
+            <button className="btn sm ghost" type="button" onClick={upload.cancel}>
+              {messages.transfer.cancelUpload}
+            </button>
+          </div>
+        )}
         {preview && (
           <>
             {files.length > 1 && (

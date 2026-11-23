@@ -22,6 +22,7 @@ from app.services.ai_test import (
     whisper_download_status,
     whisper_installed,
 )
+from app.services.download_progress import LayeredProgress, transfer_fields
 from app.services.hardware import detect_hardware
 from app.services.job_manager import get_job_manager
 from app.services.model_catalog import CATALOG, catalog_entry
@@ -231,16 +232,13 @@ def ollama_pull():
 
 
 def _pull_one(name: str) -> None:
-    _pull_status[name] = {"state": "running", "status": "starting", "completed": 0, "total": 0, "error": None}
+    _pull_status[name] = _pull_state("running", "starting", transfer_fields(phase="starting"))
+    layers = LayeredProgress()
 
     def _progress(progress: dict) -> None:
-        _pull_status[name] = {
-            "state": "running",
-            "status": progress.get("status") or "",
-            "completed": progress.get("completed") or 0,
-            "total": progress.get("total") or 0,
-            "error": None,
-        }
+        status = progress.get("status") or ""
+        fields = layers.update(status, progress.get("digest") or "", progress.get("completed") or 0, progress.get("total") or 0)
+        _pull_status[name] = _pull_state("running", status, fields)
 
     try:
         client = get_ollama_client()
@@ -253,17 +251,25 @@ def _pull_one(name: str) -> None:
             ollama_bin = shutil.which("ollama")
             if not ollama_bin or not client.is_local():
                 raise
-            _pull_status[name]["status"] = "downloading"
+            # The command line gives no progress the app can read: the bar shows activity only.
+            _pull_status[name] = _pull_state("running", "downloading", transfer_fields(phase="downloading"))
             subprocess.run([ollama_bin, "pull", name], check=True, timeout=3600)
-        _pull_status[name] = {"state": "done", "status": "success", "completed": 1, "total": 1, "error": None}
+        done = _pull_status[name].get("bytes_total") or 0
+        _pull_status[name] = _pull_state("done", "success", transfer_fields(done, done, "done"))
     except Exception as exc:  # noqa: BLE001
-        _pull_status[name] = {
-            "state": "error",
-            "status": "error",
-            "completed": 0,
-            "total": 0,
-            "error": explain_ai_error(str(exc)),
-        }
+        _pull_status[name] = _pull_state("error", "error", transfer_fields(phase="error"), explain_ai_error(str(exc)))
+
+
+def _pull_state(state: str, status: str, fields: dict, error: str | None = None) -> dict:
+    """A model download's status. ``completed``/``total`` repeat the byte counts for older pages."""
+    return {
+        "state": state,
+        "status": status,
+        **fields,
+        "completed": fields.get("bytes_done", 0),
+        "total": fields.get("bytes_total", 0),
+        "error": error,
+    }
 
 
 def _valid_model_name(name: str) -> bool:

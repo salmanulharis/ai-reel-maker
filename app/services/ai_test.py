@@ -13,10 +13,12 @@ from app.ai.ollama import OllamaError, describe_placement
 from app.config import Settings, get_settings
 from app.services.ai_profile import resolve_runtime, sync_hardware_profile
 from app.services.ollama_runtime import get_ollama_client
+from app.services.download_progress import HubWatcher, hub_missing_bytes, transfer_fields
+from app.analysis.audio import WHISPER_FILE_PATTERNS
 
 _lock = threading.Lock()
 _state: dict[str, Any] = {"state": "idle", "result": None}
-_whisper_state: dict[str, Any] = {"state": "idle", "model": None, "error": None}
+_whisper_state: dict[str, Any] = {"state": "idle", "model": None, "error": None, **transfer_fields()}
 
 
 def explain_ai_error(message: str, *, gpu_present: bool = False, placement_mode: str | None = None) -> str:
@@ -73,7 +75,7 @@ def start_whisper_download(model: str, settings: Settings | None = None) -> dict
     with _lock:
         if _whisper_state.get("state") == "running":
             return dict(_whisper_state)
-        _whisper_state.update({"state": "running", "model": model, "error": None})
+        _whisper_state.update({"state": "running", "model": model, "error": None, **transfer_fields(phase="starting")})
     thread = threading.Thread(
         target=_download_whisper,
         args=(model, settings),
@@ -220,15 +222,27 @@ def _probe_whisper(settings: Settings) -> dict[str, Any]:
 
 
 def _download_whisper(model: str, settings: Settings) -> None:
-    try:
-        from app.analysis.audio import download_whisper_model
+    def update(fields: dict[str, Any]) -> None:
+        with _lock:
+            _whisper_state.update(fields)
 
-        download_whisper_model(model)
-        state = {"state": "done", "model": model, "error": None}
+    try:
+        from app.analysis.audio import download_whisper_model, whisper_repo
+
+        repo = whisper_repo(model)
+        if repo:
+            total = hub_missing_bytes(repo, patterns=WHISPER_FILE_PATTERNS)
+            with HubWatcher(repo, total, update) as watcher:
+                download_whisper_model(model)
+                written = watcher.written()
+            fields = transfer_fields(written, total or written, "done")
+        else:
+            download_whisper_model(model)
+            fields = transfer_fields(phase="done")
+        state = {"state": "done", "model": model, "error": None, **fields}
     except Exception as exc:  # noqa: BLE001
-        state = {"state": "error", "model": model, "error": explain_ai_error(str(exc))}
-    with _lock:
-        _whisper_state.update(state)
+        state = {"state": "error", "model": model, "error": explain_ai_error(str(exc)), **transfer_fields(phase="error")}
+    update(state)
 
 
 def _sample_image() -> str:

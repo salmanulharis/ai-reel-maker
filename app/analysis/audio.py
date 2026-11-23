@@ -75,11 +75,27 @@ def whisper_model_cached(model: str) -> bool:
     return any((snapshot / "model.bin").exists() for snapshot in snapshots.iterdir())
 
 
+# The files faster-whisper downloads for a model (see faster_whisper.utils.download_model).
+WHISPER_FILE_PATTERNS = ("config.json", "preprocessor_config.json", "model.bin", "tokenizer.json", "vocabulary.*")
+
+
 def download_whisper_model(model: str) -> str:
     """Download model files without loading them into memory."""
     from faster_whisper import download_model
 
     return download_model(model)
+
+
+def whisper_repo(model: str) -> str | None:
+    """The Hugging Face repository faster-whisper downloads ``model`` from, when known."""
+    if "/" in model:
+        return model
+    try:
+        from faster_whisper.utils import _MODELS  # not public; only used for the download size
+    except ImportError:
+        return None
+    repo = _MODELS.get(model) if isinstance(_MODELS, dict) else None
+    return str(repo) if repo else None
 
 
 def extract_audio(runner: FFmpegRunner, video_path: Path, wav_path: Path) -> Path:
@@ -125,11 +141,13 @@ def transcribe_detailed(
     resume: dict | None = None,
     on_progress: Callable[[dict], None] | None = None,
     check_cancel: Callable[[], None] | None = None,
+    on_position: Callable[[float], None] | None = None,
 ) -> tuple[Transcript, dict]:
     """Transcribe ``wav_path``. ``resume`` is a saved partial transcription (see
     ``on_progress``): the audio before its ``until`` time is skipped and its segments are kept.
     ``on_progress`` receives such a partial now and then, so an interrupted run can continue
-    where it stopped. ``check_cancel`` is called between segments and stops the run by raising."""
+    where it stopped. ``check_cancel`` is called between segments and stops the run by raising.
+    ``on_position`` receives the time in the audio reached so far, after every segment."""
     try:
         from faster_whisper import WhisperModel  # noqa: F401
     except ImportError:
@@ -156,6 +174,7 @@ def transcribe_detailed(
             resume=latest["state"],
             on_progress=progress,
             check_cancel=check_cancel,
+            on_position=on_position,
         )
 
     try:
@@ -230,6 +249,7 @@ def _transcribe_with(
     resume: dict | None = None,
     on_progress: Callable[[dict], None] | None = None,
     check_cancel: Callable[[], None] | None = None,
+    on_position: Callable[[float], None] | None = None,
 ) -> Transcript:
     model = _get_whisper_model(model_size, device, compute, cpu_threads, num_workers)
     segments: list[TranscriptSegment] = []
@@ -269,6 +289,8 @@ def _transcribe_with(
                     end=offset + float(word.end),
                 )
             )
+        if on_position:
+            on_position(offset + float(seg.end))
         if on_progress and time.monotonic() - last_saved >= PROGRESS_SAVE_SECONDS:
             last_saved = time.monotonic()
             on_progress(_partial_state(segments, words, language))

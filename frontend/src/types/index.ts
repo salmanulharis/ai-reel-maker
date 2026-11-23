@@ -102,6 +102,10 @@ export interface Stage {
   seconds?: number;
   /** Set while the stage runs: live time is seconds + (now - started_at). */
   started_at?: string | null;
+  /** How far the current run is: done of total in unit ("time" = seconds of video, "" = percent). */
+  done?: number;
+  total?: number;
+  unit?: string;
 }
 
 export interface JobTiming {
@@ -130,6 +134,11 @@ export interface Job {
   min_duration: number;
   max_duration: number;
   progress: number;
+  /** Seconds left for the running step list, or null while it is not known yet. */
+  eta_seconds?: number | null;
+  /** Source video being analyzed (0-based) and how many there are. */
+  source_index?: number;
+  source_count?: number;
   last_stage: string;
   processing_seconds: number;
   timing?: JobTiming;
@@ -243,12 +252,39 @@ export interface RuntimeStatus {
   placement?: Placement;
 }
 
-export interface PullStatus {
+/** Byte progress shared by every model download. */
+export interface TransferFields {
+  bytes_done?: number;
+  /** 0 when the size is not known. */
+  bytes_total?: number;
+  /** Bytes per second; 0 until steady. */
+  speed?: number;
+  /** Seconds left, or null while not known. */
+  eta?: number | null;
+  phase?: string;
+}
+
+export interface PullStatus extends TransferFields {
   state?: string;
   status?: string;
   completed?: number;
   total?: number;
   error?: string | null;
+}
+
+/** A job update sent over the socket while it runs (job_progress). */
+export interface ProgressEvent {
+  job_id: string;
+  stage: string;
+  status: string;
+  detail?: string;
+  step_done?: number;
+  step_total?: number;
+  step_unit?: string;
+  overall: number;
+  eta?: number | null;
+  source_index?: number;
+  source_count?: number;
 }
 
 export interface ProbeResult {
@@ -300,13 +336,13 @@ export interface OllamaStatus {
   pull?: Record<string, PullStatus>;
   runtime?: RuntimeStatus;
   test?: { state?: string; result?: AiTestResult | null };
-  whisper_download?: { state?: string; model?: string | null; error?: string | null };
+  whisper_download?: TransferFields & { state?: string; model?: string | null; error?: string | null };
   image_model?: ImageModelStatus;
   sound_model?: ImageModelStatus;
   measure?: MeasureStatus;
 }
 
-export interface ImageModelStatus {
+export interface ImageModelStatus extends TransferFields {
   state: string;
   files_done: number;
   files_total: number;

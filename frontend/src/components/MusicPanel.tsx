@@ -2,6 +2,9 @@ import { useEffect, useRef, useState } from "react";
 import { api } from "../services/api";
 import { fill, messages } from "../i18n";
 import { Alert, InlineStatus, Spinner } from "./Feedback";
+import { TransferProgress } from "./Progress";
+import { useUpload } from "../hooks/useUpload";
+import { isAbort } from "../services/transfer";
 
 const copy = messages.review.music;
 
@@ -21,6 +24,7 @@ export function MusicPanel({ jobId, volume: initialVolume, duck: initialDuck }: 
   const [error, setError] = useState("");
   const input = useRef<HTMLInputElement>(null);
   const timer = useRef<number>();
+  const sending = useUpload();
 
   useEffect(() => {
     api
@@ -46,9 +50,9 @@ export function MusicPanel({ jobId, volume: initialVolume, duck: initialDuck }: 
     setBusy(true);
     setError("");
     try {
-      setName((await api.uploadMusic(jobId, file)).name);
+      setName((await sending.run(file.size, (options) => api.uploadMusic(jobId, file, options))).name);
     } catch (err) {
-      setError((err as Error).message);
+      if (!isAbort(err)) setError((err as Error).message);
     } finally {
       setBusy(false);
       if (input.current) input.current.value = "";
@@ -92,7 +96,13 @@ export function MusicPanel({ jobId, volume: initialVolume, duck: initialDuck }: 
             {copy.remove}
           </button>
         )}
+        {sending.status && (
+          <button type="button" className="btn sm ghost" onClick={sending.cancel}>
+            {messages.transfer.cancelUpload}
+          </button>
+        )}
       </div>
+      {sending.status && <TransferProgress status={sending.status} label={messages.transfer.uploadLabel} />}
       {name && (
         <div className="music-options">
           <label htmlFor="music-volume">{fill(copy.volume, { n: Math.round(volume) })}</label>

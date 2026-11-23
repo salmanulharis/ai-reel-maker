@@ -686,6 +686,7 @@ class OllamaClient:
                 on_progress(
                     {
                         "status": status,
+                        "digest": body.get("digest") or "",
                         "completed": body.get("completed") or 0,
                         "total": body.get("total") or 0,
                     }

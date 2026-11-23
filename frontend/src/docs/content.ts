@@ -104,6 +104,7 @@ export const DOC_ARTICLES = {
     keywords: "bottleneck timing log tokens per second measure",
     blocks: [
       { kind: "p", text: "While a highlight is being made, the progress page shows the time for every step on the right, and the total time so far at the top. Look for the step with the largest time." },
+      { kind: "p", text: "The percentage follows the work that is left: steps finished on an earlier try, or turned off, do not count. The step that runs shows how far it is (for example scenes looked at, or minutes of speech written down). The time left appears once there is enough to go on, usually after a minute, and gets more accurate as the work goes on. Measuring this computer in Settings makes the first estimate closer." },
       {
         kind: "table",
         head: ["Step", "Typical time without a graphics card", "What helps"],
