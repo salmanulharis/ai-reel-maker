@@ -17,6 +17,8 @@ data/cache/*
 data/tmp/*
 data/app.db
 data/app.db-*
+data/app.lock
+data/app.pid
 data/perf_baseline.json
 data/pipeline_benchmark.json
 data/e2e-test.log

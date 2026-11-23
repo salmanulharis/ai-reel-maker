@@ -330,6 +330,20 @@ copy .env.example .env   # Windows
 python run.py
 ```
 
+### Start and stop on Windows
+
+Double-click **start.bat** in the main folder. It builds the screens the first time (needs
+Node.js), starts the app and opens it in your browser. Double-clicking it again while the app
+runs only opens the browser: one copy of the app runs at a time. A `.venv` in the main folder is
+used when there is one.
+
+To stop it, press **Ctrl+C** in the start window (answer the "Terminate batch job" question with
+either key), or double-click **stop.bat** from anywhere. A job that was running continues where
+it stopped the next time you start the app. Ollama is not started or stopped by these files.
+
+On other systems, `python run.py --open-browser` starts the app and `python scripts/stop_app.py`
+stops it.
+
 Frontend dev mode (UI on 5173, API proxied to 5000):
 
 ```bash
