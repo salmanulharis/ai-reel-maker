@@ -5,6 +5,7 @@ import { fill, messages } from "../i18n";
 import { Alert, FilmIcon, InlineStatus, PageLoader, PlayIcon, Spinner } from "../components/Feedback";
 import { ClipPreviewPanel, useClipPreview } from "../components/ClipPreview";
 import { MoreMoments } from "../components/MoreMoments";
+import { AiPlanPanel } from "../components/AiPlanPanel";
 import { EditorExport } from "../components/EditorExport";
 import { insertIndex, insertIndexInShort, momentKey, momentToClip, nearestShort, shortIndex } from "../services/clipPreview";
 import { strength } from "../services/strength";
@@ -437,6 +438,7 @@ export default function Review() {
                 {copy.source}: {sourceLabel(clip)}
               </p>
             )}
+            {clip.role && <span className="tag">{(messages.prompt.roles as Record<string, string>)[clip.role] || clip.role}</span>}
             {clip.reason && <p>{clip.reason}</p>}
             {clip.duration_reason && (
               <p className="duration-reason">
@@ -525,6 +527,12 @@ export default function Review() {
       </div>
       </div>
 
+      <AiPlanPanel
+        jobId={id}
+        version={planVersion}
+        disabled={pending !== ""}
+        onRefining={() => navigate(`/jobs/${id}/analysis`)}
+      />
       <MoreMoments
         jobId={id}
         clips={clips}

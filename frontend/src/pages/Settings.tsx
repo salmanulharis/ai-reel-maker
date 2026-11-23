@@ -8,6 +8,7 @@ import { DocLink } from "./Docs";
 import type { DocArticleId } from "../docs/content";
 import type {
   AiTestResult,
+  ImageModelStatus,
   ModelSpec,
   OllamaStatus,
   OptimizationGoal,
@@ -112,7 +113,7 @@ export default function Settings() {
   const pullBusy = Object.values(ollama?.pull || {}).some((item) => item?.state === "running");
   const testBusy = ollama?.test?.state === "running" || busy === "test";
   const whisperBusy = ollama?.whisper_download?.state === "running";
-  const imageBusy = ollama?.image_model?.state === "running";
+  const imageBusy = ollama?.image_model?.state === "running" || ollama?.sound_model?.state === "running";
   const whisperState = ollama?.whisper_download?.state;
   const measure = ollama?.measure || plan?.measurement;
   const measureBusy = measure?.state === "running" || busy === "measure";
@@ -317,8 +318,6 @@ export default function Settings() {
   const embedModel = String(settings.ollama_embed_model || "");
   const embedInstalled = Boolean(embedModel) && modelPresent(embedModel, ollama);
   const embedPull = embedModel ? ollama?.pull?.[embedModel] : undefined;
-  const imageModel = ollama?.image_model;
-  const imageDownloading = imageModel?.state === "running";
   const gb = (value: unknown) => (value ? `${value} GB` : "—");
 
   if (!info && !error) return <PageLoader />;
@@ -665,50 +664,79 @@ export default function Settings() {
           {embedPull?.state === "error" && embedPull.error && <p className="error-text">{embedPull.error}</p>}
         </div>
 
+        <ModelFileRow
+          id="image"
+          title={copy.imageMatching}
+          hint={copy.imageMatchingHint}
+          noRuntime={copy.imageModelNoRuntime}
+          enabled={settings.image_matching !== false}
+          status={ollama?.image_model}
+          sizeMb={780}
+          busy={busy === "image"}
+          saved={saved === "image"}
+          onToggle={(on) => void setInstant("image_matching", on, "image")}
+          onDownload={() =>
+            act("image-download", async () => {
+              await api.downloadImageModel();
+              setOllama(await api.ollama());
+            })
+          }
+        />
+        <ModelFileRow
+          id="sound"
+          title={copy.soundMatching}
+          hint={copy.soundMatchingHint}
+          noRuntime={copy.imageModelNoRuntime}
+          enabled={settings.sound_matching !== false}
+          status={ollama?.sound_model}
+          sizeMb={620}
+          busy={busy === "sound"}
+          saved={saved === "sound"}
+          onToggle={(on) => void setInstant("sound_matching", on, "sound")}
+          onDownload={() =>
+            act("sound-download", async () => {
+              await api.downloadSoundModel();
+              setOllama(await api.ollama());
+            })
+          }
+        />
         <div className="embed-row">
           <div>
+            <strong>{copy.director}</strong>
+            <p className="field-hint">{copy.directorHint}</p>
+            <div className="field">
+              <label htmlFor="director-model">{copy.directorModel}</label>
+              <select
+                id="director-model"
+                value={String(settings.ollama_director_model || "")}
+                disabled={busy === "director"}
+                onChange={(e) => void setInstant("ollama_director_model", e.target.value, "director")}
+              >
+                <option value="">{copy.directorModelSame}</option>
+                {(ollama?.models || [])
+                  .filter((name) => !/embed|-vl|vision/i.test(name))
+                  .map((name) => (
+                    <option key={name} value={name}>
+                      {name}
+                    </option>
+                  ))}
+              </select>
+            </div>
             <label className="check">
               <input
                 type="checkbox"
-                checked={settings.image_matching !== false}
-                disabled={busy === "image"}
-                aria-describedby="image-matching-hint"
-                onChange={(e) => void setInstant("image_matching", e.target.checked, "image")}
+                checked={Boolean(settings.director_think)}
+                disabled={busy === "director"}
+                aria-describedby="director-think-hint"
+                onChange={(e) => void setInstant("director_think", e.target.checked, "director")}
               />
-              <strong>{copy.imageMatching}</strong>
+              <strong>{copy.directorThink}</strong>
             </label>
-            <p className="field-hint" id="image-matching-hint">
-              {copy.imageMatchingHint}
+            <p className="field-hint" id="director-think-hint">
+              {copy.directorThinkHint}
             </p>
           </div>
-          <div className="btn-row">
-            {saved === "image" && <InlineStatus ok>{copy.saved}</InlineStatus>}
-            <span className={`tag ${imageModel?.installed ? "ok" : ""}`}>
-              {imageModel?.installed
-                ? copy.imageModelReady
-                : imageDownloading
-                  ? fill(copy.imageModelDownloading, { done: imageModel?.files_done ?? 0, total: imageModel?.files_total ?? 3 })
-                  : fill(copy.imageModelMissing, { size: imageModel?.size_mb ?? 780 })}
-            </span>
-            {!imageModel?.installed && (
-              <button
-                className="btn sm"
-                disabled={imageDownloading || imageModel?.runtime === false}
-                aria-busy={imageDownloading}
-                onClick={() =>
-                  act("image-download", async () => {
-                    await api.downloadImageModel();
-                    setOllama(await api.ollama());
-                  })
-                }
-              >
-                {imageDownloading && <Spinner />}
-                {imageDownloading ? copy.downloading : copy.download}
-              </button>
-            )}
-          </div>
-          {imageModel?.runtime === false && <p className="hint">{copy.imageModelNoRuntime}</p>}
-          {imageModel?.state === "error" && imageModel.error && <p className="error-text">{imageModel.error}</p>}
+          <div className="btn-row">{saved === "director" && <InlineStatus ok>{copy.saved}</InlineStatus>}</div>
         </div>
 
         <ModelGroup
@@ -1133,6 +1161,72 @@ function formatDuration(seconds: number) {
   const rest = total % 60;
   if (!minutes) return `${rest} s`;
   return rest ? `${minutes} min ${rest} s` : `${minutes} min`;
+}
+
+/** A downloadable helper model (picture or sound matching): a switch, its state, and a download button. */
+function ModelFileRow({
+  id,
+  title,
+  hint,
+  noRuntime,
+  enabled,
+  status,
+  sizeMb,
+  busy,
+  saved,
+  onToggle,
+  onDownload,
+}: {
+  id: string;
+  title: string;
+  hint: string;
+  noRuntime: string;
+  enabled: boolean;
+  status?: ImageModelStatus;
+  sizeMb: number;
+  busy: boolean;
+  saved: boolean;
+  onToggle: (on: boolean) => void;
+  onDownload: () => void;
+}) {
+  const downloading = status?.state === "running";
+  return (
+    <div className="embed-row">
+      <div>
+        <label className="check">
+          <input
+            type="checkbox"
+            checked={enabled}
+            disabled={busy}
+            aria-describedby={`${id}-matching-hint`}
+            onChange={(e) => onToggle(e.target.checked)}
+          />
+          <strong>{title}</strong>
+        </label>
+        <p className="field-hint" id={`${id}-matching-hint`}>
+          {hint}
+        </p>
+      </div>
+      <div className="btn-row">
+        {saved && <InlineStatus ok>{copy.saved}</InlineStatus>}
+        <span className={`tag ${status?.installed ? "ok" : ""}`}>
+          {status?.installed
+            ? copy.imageModelReady
+            : downloading
+              ? fill(copy.imageModelDownloading, { done: status?.files_done ?? 0, total: status?.files_total ?? 3 })
+              : fill(copy.imageModelMissing, { size: status?.size_mb ?? sizeMb })}
+        </span>
+        {!status?.installed && (
+          <button className="btn sm" disabled={downloading || status?.runtime === false} aria-busy={downloading} onClick={onDownload}>
+            {downloading && <Spinner />}
+            {downloading ? copy.downloading : copy.download}
+          </button>
+        )}
+      </div>
+      {status?.runtime === false && <p className="hint">{noRuntime}</p>}
+      {status?.state === "error" && status.error && <p className="error-text">{status.error}</p>}
+    </div>
+  );
 }
 
 function Stat({ label, value }: { label: string; value: string }) {

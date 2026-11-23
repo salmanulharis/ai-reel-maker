@@ -44,7 +44,7 @@ export const DOC_ARTICLES = {
           "**Fast picture matching** (optional, SigLIP) ranks scenes in a fraction of a second each.",
           "**Understanding what is said**: an AI model scores each sentence for importance.",
           "**Understanding what is on screen**: an AI video model looks at the most promising scenes.",
-          "**Choosing the clips**: repeats are removed and the best moments are fitted to your length.",
+          "**Choosing the clips**: repeats are removed and the best moments are fitted to your length. When you describe what you want, an AI editor chooses them first.",
           "You review the clips, then the app **creates your video** with FFmpeg.",
         ],
       },
@@ -329,6 +329,38 @@ export const DOC_ARTICLES = {
     ],
   },
 
+  "describe-it": {
+    title: "Describe what you want",
+    summary: "Write what the highlight should be; the AI sets it up, chooses the moments, and explains its choices.",
+    keywords: "prompt describe ai editor natural language instructions plan refine change sound clap captions understand request",
+    blocks: [
+      { kind: "p", text: "Choose **Describe it** on the Create page and write what you want in plain words: what to keep, what to cut, moments that must be in it, the length, and where it will be posted. Everything under **All settings** stays available." },
+      {
+        kind: "steps",
+        items: [
+          "**Understand my request** shows what the AI understood, the settings it chose (marked **from your words** or **quality default**), and what it will look for: **Keep**, **Cut**, **Must include**, **Looks like**, and **Sounds like**. Change anything before you start. If you start straight away, the description is read first.",
+          "The analysis runs as usual. With **Video analysis** on, the video model also writes a short description of each scene it looks at. With **Audio analysis** on, speech is written down and, when the sound model is downloaded, sounds such as music, laughter, applause, and cheering are labelled.",
+          "**Choosing moments with AI**: an AI editor reads every candidate moment with what is said, shown, and heard, and picks the ones that fit your description, each with a role (hook, key moment, ending, …) and a reason. It picks moments from a list and never makes up times, so every clip still starts and ends at a clean point.",
+          "On the Review page, **AI plan** shows what the AI chose and left out. Type a change in **What should change?** (\"make it shorter, end on the joke\") and press **Change the plan**: the clips are planned again from the finished analysis, without analyzing the video again.",
+        ],
+      },
+      {
+        kind: "table",
+        head: ["Choice", "What it does"],
+        rows: [
+          ["**Balanced**", "The video model looks at the most promising scenes, plus every scene that looks like what you asked for"],
+          ["**Best quality**", "The video model looks at every scene. Much slower without a graphics card"],
+          ["**Video analysis** off", "Moments are chosen from speech and sound only (podcasts, talks)"],
+          ["**Audio analysis** off", "Moments are chosen from the picture only; no subtitles"],
+        ],
+      },
+      { kind: "p", text: "Numbers and times in your description (\"45 seconds\", \"skip the first 2 minutes\", \"keep 1:20 to 2:05\", \"3 shorts\") are read exactly. Shape and captions follow from where it will be posted (\"TikTok\" means vertical 9:16). Prompt mode also turns on a few quality defaults: even loudness, automatic transitions (a short fade where the video jumps, a plain cut where it flows), and framing that follows people when the shape changes." },
+      { kind: "note", text: "Without Ollama, only the basics (length, shape, captions, times) are taken from the description, it guides the scoring as a focus, and the clips are chosen from their scores. The job always finishes." },
+      { kind: "settings", section: "ai", label: "Download the sound model and set up the AI editor" },
+      { kind: "see", article: "how-it-works", label: "How a highlight is made" },
+    ],
+  },
+
   "pause-resume": {
     title: "Pause, power cuts, and continuing later",
     summary: "Pause a highlight, turn the computer off, and continue where it stopped.",
@@ -452,7 +484,7 @@ export const DOC_ARTICLES = {
 export type DocArticleId = keyof typeof DOC_ARTICLES;
 
 export const DOC_CATEGORIES: Array<{ title: string; articles: DocArticleId[] }> = [
-  { title: "Getting started", articles: ["how-it-works", "requirements", "setup-ollama", "leave-out", "pause-resume"] },
+  { title: "Getting started", articles: ["how-it-works", "describe-it", "requirements", "setup-ollama", "leave-out", "pause-resume"] },
   { title: "Speed without a graphics card", articles: ["cpu-speed", "where-time-goes", "choose-models", "threads-memory", "ollama-tuning"] },
   { title: "Lightweight AI models", articles: ["setup-whisper", "setup-image-matching", "setup-embeddings"] },
   { title: "Graphics cards", articles: ["hardware-detection", "gpu-setup", "fallbacks", "remote-gpu"] },

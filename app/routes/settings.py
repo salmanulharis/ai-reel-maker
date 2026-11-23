@@ -46,6 +46,10 @@ EDITABLE = {
     "vision_scope",
     "ollama_embed_model",
     "image_matching",
+    "sound_matching",
+    "ollama_director_model",
+    "ollama_director_num_ctx",
+    "director_think",
 }
 
 

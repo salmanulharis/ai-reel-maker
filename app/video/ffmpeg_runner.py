@@ -81,10 +81,10 @@ class FFmpegRunner:
         payload = json.loads(result.stdout or "{}")
         return parse_probe(payload, Path(input_path))
 
-    def extract_audio(self, input_path: str | Path, output_path: str | Path) -> Path:
+    def extract_audio(self, input_path: str | Path, output_path: str | Path, sample_rate: int = 16000) -> Path:
         output = Path(output_path)
         output.parent.mkdir(parents=True, exist_ok=True)
-        self.run(VideoProcessor.extract_audio_command(input_path, output))
+        self.run(VideoProcessor.extract_audio_command(input_path, output, sample_rate))
         return output
 
     def extract_frame(

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import os
 import time
 
@@ -38,7 +37,10 @@ from app.analysis.scorer import HighlightScorer
 from app.analysis.semantic import FOCUS_BOOST, Embedder, apply_focus, repetition_embedding_fn
 from app.analysis.signals import ENERGY_HOP, audio_energy, scene_quality
 from app.analysis.image_match import get_matcher, release_matcher, score_scenes
+from app.analysis import audio_events
+from app.analysis.director import CONTENT_FILE, DIRECTOR_FILE, apply_director, content_entry, run_director
 from app.analysis.visual import (
+    vision_reply_tokens,
     analyze_scenes_visual,
     fitting_vision_batch,
     motion_score,
@@ -61,9 +63,11 @@ STAGES = [
     ("transcript", "Transcription"),
     ("silence", "Silence detection"),
     ("frames", "Keyframe extraction"),
+    ("sounds", "Understanding sounds"),
     ("content", "Finding important moments"),
     ("visual", "Visual AI analysis"),
     ("repetition", "Removing repetition"),
+    ("director", "Planning with AI"),
     ("planning", "Planning highlight"),
 ]
 
@@ -83,6 +87,13 @@ TRANSCRIPT_PARTIAL = "transcript.partial.json"
 SEGMENT_SCORES_PARTIAL = "segment_scores.partial.json"
 VISUAL_PARTIAL = "visual_analysis.partial.json"
 PARTIAL_FILES = (TRANSCRIPT_PARTIAL, SEGMENT_SCORES_PARTIAL, VISUAL_PARTIAL)
+
+# Sound labels per window and the sound vectors behind them (prompt mode).
+SOUND_EVENTS_FILE = "sound_events.json"
+SOUND_VECTORS_FILE = "sound_vectors.npy"
+# A scene whose picture matches the request at least this well (0-1, relative to the video) is
+# always given to the vision model in prompt mode.
+_PROMPT_MATCH_SHORTLIST = 0.7
 
 
 class PipelineProgress:
@@ -285,10 +296,13 @@ class VideoAnalyzer:
         elif config.audio_focus == "dialogue" and not (transcript.words or transcript.segments):
             progress.log("Dialogue focus has no transcript data; ranking will use the other available signals.", "WARNING")
 
-        match = self._image_match(job_dir, scenes, frame_map, config, cache, progress)
+        want_visuals = bool(getattr(config, "use_visuals", True))
+        match = self._image_match(job_dir, scenes, frame_map, config, cache, progress) if want_visuals else {}
         if self.run_plan.one_at_a_time:
             release_matcher()
         signals = _visual_signals(scenes, frame_map, quality, energy, match)
+        if config.mode == "prompt" and want_speech:
+            cache["sound_events"] = self._sound_events(job_dir, source, meta, config, cache, progress)
 
         if want_speech:
             progress.stage("content", "running")
@@ -321,17 +335,22 @@ class VideoAnalyzer:
         if saved_scenes:
             progress.log(f"Visual AI: {len(saved_scenes)} scene(s) were analyzed before the interruption")
         ollama_ok = bool(self.ollama)
-        vision_ok = ollama_ok and self.vision_enabled
+        vision_ok = ollama_ok and self.vision_enabled and want_visuals
         vision_ready = vision_ok and self.settings.enable_visual_analysis
+        # Prompt mode: the AI editor needs to know what each analyzed scene shows.
+        describe = vision_ready and config.mode == "prompt"
         pending_scenes = [
             scene
             for scene in scenes
             if str(scene["scene_id"]) not in visual
             or (vision_ready and score_source.needs_ai(visual[str(scene["scene_id"])]))
+            or (describe and _needs_caption(visual[str(scene["scene_id"])]))
         ]
         if pending_scenes or not visual:
             progress.stage("visual", "running")
-            if ollama_ok and not vision_ok:
+            if not want_visuals:
+                progress.log("Video analysis is off: scenes use quick motion and picture-quality scoring only")
+            elif ollama_ok and not vision_ok:
                 progress.log(
                     f"Vision model '{self.settings.ollama_vision_model}' is not available. Using deterministic visual scoring.",
                     "WARNING",
@@ -339,7 +358,8 @@ class VideoAnalyzer:
             elif not ollama_ok:
                 progress.log("Ollama is unavailable. Using deterministic visual scoring.", "WARNING")
             shortlist = None
-            if vision_ready and str(getattr(self.settings, "vision_scope", "shortlist")) != "all":
+            every_scene = str(getattr(self.settings, "vision_scope", "shortlist")) == "all" or config.analysis_depth == "best"
+            if vision_ready and not every_scene:
                 shortlist = shortlist_scenes(
                     scenes,
                     segment_scores,
@@ -348,6 +368,12 @@ class VideoAnalyzer:
                     visual_signal=signals,
                     match=match,
                 )
+                if shortlist is not None and config.mode == "prompt":
+                    # Scenes that look like what the user asked for are always worth a look.
+                    wanted = {sid for sid, item in match.items() if float(item.get("focus") or 0) >= _PROMPT_MATCH_SHORTLIST}
+                    if wanted - set(shortlist):
+                        progress.log(f"Visual AI: {len(wanted - set(shortlist))} more scene(s) look like what you asked for")
+                    shortlist = set(shortlist) | wanted
             if vision_ready and config.avoid_mode == "never":
                 # Scenes that will be left out anyway are not worth the vision model's time.
                 left_out = _never_scenes(match, config)
@@ -374,6 +400,7 @@ class VideoAnalyzer:
                     vision_batch,
                     self.ollama.role_options("vision")["num_ctx"],
                     self.settings.ollama_vision_num_predict,
+                    vision_reply_tokens(describe),
                 )
             batch_count = max(1, (ai_scene_count + vision_batch - 1) // max(1, vision_batch))
             progress.log(
@@ -424,9 +451,19 @@ class VideoAnalyzer:
                     self.settings.ollama_vision_model, progress, "The video model"
                 ),
                 on_batch_done=_save_visual_progress,
+                describe=describe,
             )
             for scene in pending_scenes:
                 scene_id = int(scene["scene_id"])
+                existing = visual.get(str(scene_id))
+                if (
+                    fallback_reasons.get(scene_id)
+                    and isinstance(existing, dict)
+                    and existing.get("score_source") == score_source.AI
+                ):
+                    # A scene waiting only for its description keeps its AI score when it
+                    # was not looked at again this time.
+                    continue
                 if scene_id in results:
                     visual[str(scene_id)] = score_source.tag(
                         results[scene_id].model_dump(), fallback_reasons.get(scene_id)
@@ -460,7 +497,7 @@ class VideoAnalyzer:
             energy=energy,
         )
         progress.log(f"{len(candidates)} candidates generated")
-        picture_focus = picture_focus_texts(config.custom_focus, config.content_priorities)
+        picture_focus = _picture_focus(config)
         if picture_focus and match:
             matched = _apply_visual_focus(candidates, scenes, match)
             if matched:
@@ -537,6 +574,7 @@ class VideoAnalyzer:
         if not sources:
             raise ValueError("No source videos")
         all_candidates: list[dict] = []
+        content: dict[str, dict] = {}
         total_duration = 0.0
         multi = len(sources) > 1
         combined_meta: dict = cache.get("metadata") or {}
@@ -556,6 +594,9 @@ class VideoAnalyzer:
                 piece_cache = dict(cache)
             piece = self.analyze(work, working_path(source), config, progress, piece_cache, plan=False)
             piece_metas.append(dict(piece.get("metadata") or {}))
+            content[str(source.get("id") or f"v{index}")] = content_entry(
+                piece.get("scenes") or [], piece.get("visual") or {}, piece.get("sound_events")
+            )
             tagged = tag_candidates(piece.get("candidates") or [], source)
             all_candidates.extend(tagged)
             duration = float((piece.get("metadata") or {}).get("duration") or 0)
@@ -604,6 +645,11 @@ class VideoAnalyzer:
         _write(job_dir / "candidates.json", candidates)
         cache["candidates"] = candidates
         progress.stage("repetition", "done")
+        _write(job_dir / CONTENT_FILE, content)
+        cache["content_index"] = content
+        if config.mode == "prompt":
+            director_plan = self._direct(job_dir, config, candidates, content, cache, progress)
+            candidates = apply_director(candidates, director_plan)
 
         progress.stage("planning", "running")
         plan = self.optimizer.plan(
@@ -663,7 +709,7 @@ class VideoAnalyzer:
         """SigLIP interest, focus match, and lookalikes per scene; cached with the focus text."""
         if not getattr(self.settings, "image_matching", True):
             return {}
-        texts = picture_focus_texts(config.custom_focus, config.content_priorities)
+        texts = _picture_focus(config)
         # The cache key is the plain focus text when there is only that (as in older versions).
         focus = " | ".join(texts)
         avoid_texts = picture_avoid_texts(config.avoid, config.avoid_custom)
@@ -701,6 +747,90 @@ class VideoAnalyzer:
         _write(job_dir / "image_match.json", payload)
         cache["image_match"] = payload
         return result
+
+    def _sound_events(
+        self,
+        job_dir: Path,
+        source: Path,
+        meta: dict,
+        config: HighlightConfig,
+        cache: dict,
+        progress: PipelineProgress,
+    ) -> dict:
+        """What can be heard in each 5 s window (sound labels) and how well it matches the sounds
+        the user asked for; cached. The sound vectors are kept, so new wanted sounds are matched
+        without another pass over the audio."""
+        if not getattr(self.settings, "sound_matching", True) or not meta.get("has_audio", True):
+            return {}
+        cues = list(config.requirements.audio_cues) if config.requirements else []
+        cue_key = " | ".join(cues)
+        cached = cache.get("sound_events")
+        vectors_path = job_dir / SOUND_VECTORS_FILE
+        if isinstance(cached, dict) and cached.get("version") == audio_events.VERSION and cached.get("cue_key") == cue_key:
+            progress.stage("sounds", "done", "cached")
+            return cached
+        matcher = audio_events.get_sound_matcher(int(getattr(self.settings, "ollama_num_thread", 0) or 0))
+        if matcher is None:
+            progress.stage("sounds", "skipped", "Sound model not downloaded")
+            progress.log("Sound labels are off: download the sound model in Settings for better sound understanding.")
+            return {}
+        progress.stage("sounds", "running")
+        started = time.perf_counter()
+        try:
+            if isinstance(cached, dict) and cached.get("version") == audio_events.VERSION and vectors_path.is_file():
+                # Only the wanted sounds changed: match them against the saved vectors.
+                starts = [float(item["start"]) for item in cached.get("windows") or []]
+                vectors = np.load(vectors_path).astype(np.float32)
+                labels = [item.get("labels") or {} for item in cached.get("windows") or []]
+            else:
+                starts, vectors = self._embed_sounds(job_dir, source, matcher)
+                labels = audio_events.label_windows(matcher, vectors)
+                if len(starts):
+                    np.save(vectors_path, vectors.astype(np.float16))
+            match = audio_events.match_texts(matcher, vectors, cues)
+        except CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - sounds are an extra signal, never a requirement
+            progress.log(f"Sound labels skipped ({exc})", "WARNING")
+            progress.stage("sounds", "skipped", "Could not read the sound")
+            return {}
+        finally:
+            if self.run_plan.one_at_a_time:
+                audio_events.release_sound_matcher()
+        windows = []
+        for index, start in enumerate(starts):
+            item = {"start": round(float(start), 3), "labels": labels[index] if index < len(labels) else {}}
+            if match:
+                item["cue"] = match[index]
+            windows.append(item)
+        events = {
+            "version": audio_events.VERSION,
+            "window": audio_events.WINDOW_SECONDS,
+            "hop": audio_events.HOP_SECONDS,
+            "cue_key": cue_key,
+            "windows": windows,
+        }
+        _write(job_dir / SOUND_EVENTS_FILE, events)
+        heard = sorted({key for item in windows for key in item["labels"] if key not in {"speech", "silence"}})
+        progress.log(
+            f"Sound labels ({matcher.device}): {len(windows)} windows in {time.perf_counter() - started:.1f}s"
+            + (f"; heard {', '.join(heard[:8])}" if heard else "")
+        )
+        progress.stage("sounds", "done")
+        return events
+
+    def _embed_sounds(self, job_dir: Path, source: Path, matcher) -> tuple[list[float], np.ndarray]:
+        """Sound vectors from a 48 kHz copy of the sound, removed afterwards."""
+        wav48 = job_dir / "source" / "audio48k.wav"
+        pending = part_path(wav48)
+        try:
+            self.runner.extract_audio(source, pending, sample_rate=audio_events.SAMPLE_RATE)
+            replace_file(pending, wav48)
+            return audio_events.embed_recording(matcher, wav48, self._check_cancel)
+        finally:
+            pending.unlink(missing_ok=True)
+            if not self.settings.debug_analysis:
+                wav48.unlink(missing_ok=True)
 
     def _audio_energy(self, job_dir: Path, wav: Path, cache: dict) -> list[float]:
         """Loudness curve of the extracted audio; cached with the analysis."""
@@ -916,6 +1046,74 @@ class VideoAnalyzer:
                 atomic_write_json(partial, {"key": key, "scores": results})
         return results, True
 
+    def refine(self, job_dir: Path, config: HighlightConfig, progress: PipelineProgress, cache: dict) -> dict:
+        """Plan again from the finished analysis with the AI editor, for changes asked for on
+        the Review page. Nothing is analyzed again."""
+        if not cache.get("candidates_all") and not cache.get("candidates"):
+            raise ValueError("This highlight has no analysis to plan from. Start the analysis again.")
+        pool, _note, _embedding = planning_pool(cache, config, self.settings)
+        previous = [
+            str(clip.get("candidate_id"))
+            for clip in (cache.get("clip_plan") or {}).get("clips") or []
+            if clip.get("candidate_id") and clip.get("kept", True) is not False
+        ]
+        self._direct(job_dir, config, pool, cache.get("content_index") or {}, cache, progress, previous=previous)
+        progress.stage("planning", "running")
+        plan_data = plan_from_cache(cache, config, self.settings)
+        _write(job_dir / "clip_plan.json", plan_data)
+        cache["clip_plan"] = plan_data
+        progress.log(f"New plan: {len(plan_data.get('clips') or [])} clip(s)")
+        progress.stage("planning", "done")
+        return cache
+
+    def _direct(
+        self,
+        job_dir: Path,
+        config: HighlightConfig,
+        candidates: list[dict],
+        content: dict,
+        cache: dict,
+        progress: PipelineProgress,
+        previous: list[str] | None = None,
+    ) -> dict | None:
+        """The AI editor's choice of moments for prompt mode (saved as director_plan.json), or
+        None when it is unavailable: the plan is then made from the scores alone."""
+        progress.stage("director", "running")
+        if self.ollama is None or not self.text_enabled:
+            progress.log("The AI editor needs the text model; the moments are chosen from their scores.", "WARNING")
+            progress.stage("director", "skipped", "Text model not available")
+            return None
+        model = director_model(self.settings)
+        if self.run_plan.one_at_a_time:
+            self._unload_models(model)
+        usage_before = self._usage()
+        started = time.perf_counter()
+        plan = run_director(
+            self.ollama,
+            model,
+            self.settings,
+            config,
+            candidates,
+            content,
+            previous=previous,
+            cached=cache.get("director_plan"),
+            check_cancel=self._check_cancel,
+            log=progress.log,
+        )
+        self._log_usage(progress, "AI editor", usage_before)
+        if plan is None:
+            progress.log("The AI editor could not make a plan; the moments are chosen from their scores.", "WARNING")
+            progress.stage("director", "skipped", "No usable reply")
+            return None
+        _write(job_dir / DIRECTOR_FILE, plan)
+        cache["director_plan"] = plan
+        progress.log(
+            f"AI editor chose {len(plan['clips'])} moment(s) from {plan.get('considered', len(candidates))} "
+            f"in {time.perf_counter() - started:.1f}s: {plan.get('understanding') or ''}".rstrip(": ")
+        )
+        progress.stage("director", "done")
+        return plan
+
     def _unload_models(self, keep: str | None) -> None:
         """Ask Ollama to free loaded models now (all but ``keep``). Best effort."""
         unload = getattr(self.ollama, "unload_others", None)
@@ -1058,7 +1256,9 @@ def _rescored_candidates(cache: dict, config: HighlightConfig, embedding_fn=None
     return candidates
 
 
-def plan_from_cache(cache: dict, config: HighlightConfig, settings: Settings) -> dict:
+def planning_pool(cache: dict, config: HighlightConfig, settings: Settings) -> tuple[list[dict], str, object]:
+    """The cached candidates as the planner sees them for ``config``, a note about the chosen
+    speaker, and the embedding function used for repeats."""
     embedding_fn = repetition_embedding_fn(_plan_embedder(settings))
     speaker_note = ""
     if config.focus_speaker and cache.get("speakers"):
@@ -1072,7 +1272,13 @@ def plan_from_cache(cache: dict, config: HighlightConfig, settings: Settings) ->
             cache = {**cache, "candidates": only, "candidates_all": only}
         else:
             speaker_note = "No strong moments where that speaker talks most; showing everyone."
-    candidates = _rescored_candidates(cache, config, embedding_fn)
+    return _rescored_candidates(cache, config, embedding_fn), speaker_note, embedding_fn
+
+
+def plan_from_cache(cache: dict, config: HighlightConfig, settings: Settings) -> dict:
+    candidates, speaker_note, embedding_fn = planning_pool(cache, config, settings)
+    if config.mode == "prompt":
+        candidates = apply_director(candidates, cache.get("director_plan"))
     analyzer = RepetitionAnalyzer(embedding_fn)
     similarity_fn = analyzer.as_similarity_fn(candidates) if candidates else None
     optimizer = ClipOptimizer()
@@ -1386,6 +1592,25 @@ def frame_extract_workers(frame_count: int) -> int:
     """Concurrent FFmpeg frame grabs: half the logical CPUs, at most 4, never more than needed."""
     cpus = os.cpu_count() or 2
     return max(1, min(4, cpus // 2, frame_count))
+
+
+def director_model(settings: Settings) -> str:
+    """The model of the AI editor: its own setting, or the text model."""
+    return str(getattr(settings, "ollama_director_model", "") or "").strip() or settings.ollama_text_model
+
+
+def _needs_caption(entry) -> bool:
+    """A scene the vision model scored without describing it (analyzed before prompt mode)."""
+    return isinstance(entry, dict) and entry.get("score_source") == score_source.AI and not entry.get("caption")
+
+
+def _picture_focus(config: HighlightConfig) -> list[str]:
+    """What picture matching compares scenes with: the focus, the priorities, and in prompt mode
+    what the wanted moments look like."""
+    texts = picture_focus_texts(config.custom_focus, config.content_priorities)
+    if config.requirements:
+        texts += [cue for cue in config.requirements.visual_cues if cue not in texts]
+    return texts
 
 
 def _segments_key(segments) -> str:

@@ -8,6 +8,9 @@ from __future__ import annotations
 
 # Upper bound on reply tokens per scene in a batched visual reply.
 VISION_TOKENS_PER_SCENE = 80
+# Extra reply tokens per scene when the vision model also describes it (prompt mode, at most
+# 15 words).
+VISION_CAPTION_TOKENS = 32
 # Prompt tokens per frame. Ollama scales Qwen3-VL images up to a minimum size, so a frame costs
 # about 1,050 tokens whatever its resolution (measured with 256-512 px frames).
 VISION_PROMPT_TOKENS_PER_IMAGE = 1100
@@ -28,7 +31,9 @@ def predict_budget(configured: int, items: int, per_item: int, num_ctx: int) -> 
     return min(wanted, max(configured, num_ctx // 2))
 
 
-def fitting_vision_batch(configured: int, num_ctx: int, configured_predict: int) -> int:
+def fitting_vision_batch(
+    configured: int, num_ctx: int, configured_predict: int, per_scene: int = VISION_TOKENS_PER_SCENE
+) -> int:
     """The largest batch, up to the configured size, whose images and reply fit the context.
 
     A batch that overflows the context loses part of its prompt or gets its reply cut off.
@@ -36,7 +41,7 @@ def fitting_vision_batch(configured: int, num_ctx: int, configured_predict: int)
     limit = num_ctx * VISION_CONTEXT_SAFETY
     for size in range(max(1, configured), 0, -1):
         prompt = VISION_PROMPT_BASE_TOKENS + size * (VISION_PROMPT_TOKENS_PER_IMAGE + VISION_PROMPT_TOKENS_PER_LINE)
-        if prompt + predict_budget(configured_predict, size, VISION_TOKENS_PER_SCENE, num_ctx) <= limit:
+        if prompt + predict_budget(configured_predict, size, per_scene, num_ctx) <= limit:
             return size
     return 1
 

@@ -48,6 +48,8 @@ _STAGE_ON_OUTCOME = {
     "paused": "pending",
 }
 
+# Steps that run only in prompt mode.
+PROMPT_STAGES = {"sounds", "director"}
 ANALYSIS_STAGES = [
     "metadata",
     "scenes",
@@ -55,9 +57,11 @@ ANALYSIS_STAGES = [
     "transcript",
     "silence",
     "frames",
+    "sounds",
     "content",
     "visual",
     "repetition",
+    "director",
     "planning",
 ]
 
@@ -191,7 +195,7 @@ class JobManager:
                 last_stage="uploaded",
             )
             session.add(job)
-            for name in ANALYSIS_STAGES + ["rendering"]:
+            for name in _stage_names(config.mode):
                 session.add(JobStage(job_id=job_id, name=name, status="pending"))
             session.commit()
             session.refresh(job)
@@ -337,6 +341,8 @@ class JobManager:
         session = get_session()
         try:
             rows = session.query(JobStage).filter(JobStage.job_id == job_id).all()
+            order = {name: index for index, name in enumerate(ANALYSIS_STAGES + ["rendering"])}
+            rows.sort(key=lambda row: order.get(row.name, len(order)))
             return [
                 {
                     "name": r.name,
@@ -348,6 +354,23 @@ class JobManager:
                 }
                 for r in rows
             ]
+        finally:
+            session.close()
+
+    def prepare_stages(self, job_id: str, mode: str) -> None:
+        """The step list for the job's mode: prompt mode adds understanding sounds and the AI
+        editor; manual mode does not show them (rows that never ran are removed)."""
+        wanted = _stage_names(mode)
+        session = get_session()
+        try:
+            rows = {row.name: row for row in session.query(JobStage).filter(JobStage.job_id == job_id)}
+            for name in wanted:
+                if name not in rows:
+                    session.add(JobStage(job_id=job_id, name=name, status="pending"))
+            for name, row in rows.items():
+                if name in PROMPT_STAGES and name not in wanted and row.status == "pending":
+                    session.delete(row)
+            session.commit()
         finally:
             session.close()
 
@@ -425,6 +448,7 @@ class JobManager:
                         source_id=clip.get("source_id") or "",
                         source_name=clip.get("source_name") or "",
                         short_index=_short_index(clip.get("short_index")),
+                        role=str(clip.get("role") or "")[:32],
                         sort_order=i,
                         kept=clip.get("kept", True),
                     )
@@ -597,6 +621,7 @@ class JobManager:
                     "source_id": getattr(c, "source_id", "") or "",
                     "source_name": getattr(c, "source_name", "") or "",
                     "short_index": int(getattr(c, "short_index", 0) or 0),
+                    "role": getattr(c, "role", "") or "",
                     "transcript": c.transcript,
                     "kept": c.kept,
                 }
@@ -617,6 +642,11 @@ class JobManager:
                 for o in outputs
             ],
         }
+
+
+def _stage_names(mode: str) -> list[str]:
+    names = [name for name in ANALYSIS_STAGES if mode == "prompt" or name not in PROMPT_STAGES]
+    return names + ["rendering"]
 
 
 def _close_attempt(session, job: Job, end, outcome: str) -> float:

@@ -21,7 +21,8 @@ CACHE_TTL_SECONDS = 3 * 60 * 60
 # v3: Qwen3 4B instruct text tag, for the same reason.
 # v4: memory sizes read as their label (15.8 GB is 16 GB), batch sizes that fit their context
 # window, and goals.
-RECOMMENDATION_VERSION = "v4"
+# v5: the AI editor's context window and whether it reasons first (prompt mode).
+RECOMMENDATION_VERSION = "v5"
 
 # The settings automatic optimization manages, and where each comes from in a recommendation.
 # Nothing else (video quality, format, visual analysis, connection, frame rate) is ever changed.
@@ -35,13 +36,22 @@ FIELD_SOURCES: dict[str, str] = {
     "ollama_text_num_ctx": "text_num_ctx",
     "ollama_num_thread": "num_thread",
     "whisper_cpu_threads": "whisper_threads",
+    "ollama_director_num_ctx": "director_num_ctx",
+    "director_think": "director_think",
 }
 APPLIED_FIELDS = tuple(FIELD_SOURCES)
 # Ollama models: applied only once they are installed, so a job never loses its working model.
 MODEL_FIELDS = ("ollama_vision_model", "ollama_text_model")
 # Settings that describe the computer Ollama runs on. They are left alone when Ollama runs
 # elsewhere, because this computer's hardware says nothing about that one.
-OLLAMA_HOST_FIELDS = (*MODEL_FIELDS, "ollama_vision_batch_size", "ollama_vision_num_ctx", "ollama_text_num_ctx")
+OLLAMA_HOST_FIELDS = (
+    *MODEL_FIELDS,
+    "ollama_vision_batch_size",
+    "ollama_vision_num_ctx",
+    "ollama_text_num_ctx",
+    "ollama_director_num_ctx",
+    "director_think",
+)
 _HELD_KEY = "hw_auto_held"
 
 

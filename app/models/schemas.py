@@ -59,6 +59,9 @@ class VisualAnalysis(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     visual_summary: str = ""
+    # A short factual description of what the scene shows (prompt mode asks the vision model
+    # for it, so the AI editor knows what each moment contains).
+    caption: str = ""
     visual_importance: float = 0.0
     action_strength: float = 0.0
     information_density: float = 0.0
@@ -171,6 +174,8 @@ class ClipPlanItem(BaseModel):
     join_previous: bool = False
     # Which short the clip belongs to when a job makes several shorts (0 for a single highlight).
     short_index: int = 0
+    # The part the AI editor gave the clip in prompt mode (hook, context, key, ending, ...).
+    role: str = ""
 
     @property
     def duration(self) -> float:
@@ -229,7 +234,58 @@ def _clean_ranges(ranges: list[tuple[float, float]]) -> list[tuple[float, float]
     return clean[:_MAX_RANGES]
 
 
+_MAX_PROMPT_CHARS = 2000
+_MAX_REQUIREMENT_ITEMS = 8
+_MAX_REQUIREMENT_CHARS = 160
+_MAX_REFINE_NOTES = 10
+
+
+def _clean_phrases(values: Any) -> list[str]:
+    phrases: list[str] = []
+    for value in values if isinstance(values, list) else []:
+        text = " ".join(str(value or "").split())[:_MAX_REQUIREMENT_CHARS]
+        if text and text.lower() not in {p.lower() for p in phrases}:
+            phrases.append(text)
+    return phrases[:_MAX_REQUIREMENT_ITEMS]
+
+
+class PromptRequirements(BaseModel):
+    """What the user asked for in prompt mode, as understood from their description (and
+    editable before the analysis starts)."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    summary: str = ""
+    keep: list[str] = Field(default_factory=list)
+    remove: list[str] = Field(default_factory=list)
+    moments: list[str] = Field(default_factory=list)
+    visual_cues: list[str] = Field(default_factory=list)
+    audio_cues: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _clean(self) -> "PromptRequirements":
+        self.summary = " ".join(str(self.summary or "").split())[:400]
+        for name in ("keep", "remove", "moments", "visual_cues", "audio_cues"):
+            setattr(self, name, _clean_phrases(getattr(self, name)))
+        return self
+
+    def is_empty(self) -> bool:
+        return not any((self.keep, self.remove, self.moments, self.visual_cues, self.audio_cues))
+
+
 class HighlightConfig(BaseModel):
+    # "manual": the user sets the options. "prompt": the user describes what they want; the AI
+    # sets the options and an AI editor chooses the moments (all options stay editable).
+    mode: Literal["manual", "prompt"] = "manual"
+    prompt: str = ""
+    requirements: PromptRequirements | None = None
+    # Changes asked for on the Review page ("make it shorter, end on the joke"), oldest first.
+    refine_notes: list[str] = Field(default_factory=list)
+    # False: do not look at the picture (no vision model, picture matching, or descriptions);
+    # moments are chosen from speech and sound. use_speech is the matching switch for sound.
+    use_visuals: bool = True
+    # "best": the vision model looks at every scene instead of the most promising ones.
+    analysis_depth: Literal["balanced", "best"] = "balanced"
     min_duration: float = 20.0
     max_duration: float = 30.0
     # "range": aim for min..max. "auto": no maximum; keep every clearly strong moment, at least
@@ -288,7 +344,11 @@ class HighlightConfig(BaseModel):
     focus_speaker: str = ""
     # Create the video right after analysis (used by the watch folder).
     auto_render: bool = False
-    transition: Literal["cut", "fade"] = "cut"
+    # Create the video right after analysis, without stopping at the Review page (a choice on
+    # the Create page; unlike auto_render, nothing is copied to the watch folder).
+    render_after_analysis: bool = False
+    # "auto": a short fade where the video jumps to another moment, a plain cut where it flows on.
+    transition: Literal["cut", "fade", "auto"] = "cut"
     audio_focus: Literal["balanced", "natural", "dialogue"] = "balanced"
     # "source" keeps the original frame rate; a number converts the output to that rate.
     frame_rate: Literal["source", "24", "25", "30", "50", "60"] = "source"
@@ -324,6 +384,16 @@ class HighlightConfig(BaseModel):
                 raise ValueError(f"{name.replace('_', ' ')} must be a positive number")
         if self.min_sequence_duration is not None and not math.isfinite(float(self.min_sequence_duration)):
             raise ValueError("min sequence duration must be a positive number")
+        if not self.use_visuals and not self.use_speech:
+            raise ValueError("Turn on video analysis or audio analysis: at least one is needed to choose moments")
+        self.prompt = (self.prompt or "").strip()[:_MAX_PROMPT_CHARS]
+        if self.mode == "prompt" and not self.prompt and (self.requirements is None or self.requirements.is_empty()):
+            # Nothing described yet (a video is uploaded before the description is written, or
+            # a preset without one): the options are used as they are.
+            self.mode = "manual"
+        self.refine_notes = [
+            " ".join(str(note or "").split())[:500] for note in (self.refine_notes or []) if str(note or "").strip()
+        ][-_MAX_REFINE_NOTES:]
         self.must_include = _clean_ranges(self.must_include)
         self.must_exclude = _clean_ranges(self.must_exclude)
         self.custom_focus = (self.custom_focus or "")[:_MAX_FOCUS_CHARS]

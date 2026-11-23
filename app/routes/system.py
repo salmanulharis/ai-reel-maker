@@ -11,7 +11,7 @@ from flask import Blueprint, jsonify, request
 from app.ai.ollama import OllamaError, OllamaPullError
 from app.ai.registry_pull import models_root
 from app.config import get_settings
-from app.analysis import image_match
+from app.analysis import audio_events, image_match
 from app.services import auto_tune, calibration
 from app.services.ai_profile import apply_recommendation, resolve_runtime, sync_hardware_profile
 from app.services.ai_test import (
@@ -162,6 +162,18 @@ def image_model_status():
     return jsonify(image_match.download_status())
 
 
+@system_bp.post("/system/sound-model/download")
+def download_sound_model():
+    if not audio_events.runtime_available():
+        return jsonify({"error": "Sound matching needs onnxruntime and tokenizers. Install the app requirements."}), 400
+    return jsonify(audio_events.start_download())
+
+
+@system_bp.get("/system/sound-model")
+def sound_model_status():
+    return jsonify(audio_events.download_status())
+
+
 @system_bp.post("/system/whisper/download")
 def download_whisper():
     data = request.get_json(silent=True) or {}
@@ -187,6 +199,7 @@ def ollama_status():
     health["test"] = test_status()
     health["whisper_download"] = whisper_download_status()
     health["image_model"] = image_match.download_status()
+    health["sound_model"] = audio_events.download_status()
     health["measure"] = calibration.status()
     return jsonify(health)
 

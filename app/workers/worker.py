@@ -10,7 +10,8 @@ from pathlib import Path
 from flask import Flask
 
 from app.ai.ollama import OllamaError
-from app.analysis.pipeline import PARTIAL_FILES, PipelineProgress, VideoAnalyzer
+from app.analysis.director import CONTENT_FILE, DIRECTOR_FILE
+from app.analysis.pipeline import PARTIAL_FILES, SOUND_EVENTS_FILE, SOUND_VECTORS_FILE, PipelineProgress, VideoAnalyzer
 from app.analysis.tighten import tighten_clips
 from app.config import get_settings
 from app.services.ollama_runtime import get_ollama_client
@@ -200,6 +201,8 @@ def _run_analysis(app: Flask, job_id: str) -> None:
         return
     # Cut off by a crash or a power cut last time (see JobManager.recover_interrupted).
     resumed = job.attempt_outcome == "interrupted"
+    # Asked on the Review page to plan again with the AI editor (nothing is analyzed again).
+    refining = job.analysis_status == "refining"
     manager.update(job_id, status="analyzing", analysis_status="running", error=None)
     manager.start_attempt(job_id, "analysis")
     cancel = _start_run(manager, job_id)
@@ -261,9 +264,14 @@ def _run_analysis(app: Flask, job_id: str) -> None:
     manager.register_runner(job_id, runner)
     try:
         config = HighlightConfig.model_validate(json.loads(job.config_json or "{}"))
+        manager.prepare_stages(job_id, config.mode)
         cache = load_cache(job_dir)
-        sources, cache = _prepare_all_sources(manager, job, original, job_dir, config, runner, progress, cache)
-        cache = analyzer.analyze_sources(job_dir, sources, config, progress, cache)
+        if refining:
+            sources = load_sources(job_dir) or [fallback_source(original, job.original_filename)]
+            cache = analyzer.refine(job_dir, config, progress, cache)
+        else:
+            sources, cache = _prepare_all_sources(manager, job, original, job_dir, config, runner, progress, cache)
+            cache = analyzer.analyze_sources(job_dir, sources, config, progress, cache)
         if cancel.is_set():
             # Cancelled during the last steps, which have no cancel point of their own.
             raise CancelledError("Job cancelled")
@@ -277,10 +285,11 @@ def _run_analysis(app: Flask, job_id: str) -> None:
             "progress": 90,
             "error": None,
         }
-        if _wants_auto_render(job_id):
-            # Watch folder jobs go straight on to creating the video.
+        if _wants_auto_render(job_id) and not refining:
+            # Watch folder jobs, and jobs started with "create the video right away", go
+            # straight on to creating the video. A change asked for on Review is reviewed first.
             fields.update(status="queued", render_status="queued")
-        if cache.get("metadata"):
+        if cache.get("metadata") and not refining:
             fields["metadata_json"] = json.dumps(cache["metadata"])
         manager.update(job_id, **fields)
         took = manager.finish_attempt(job_id, "completed")
@@ -288,7 +297,8 @@ def _run_analysis(app: Flask, job_id: str) -> None:
         try:
             from app.services.auto_tune import record_run
 
-            record_run(progress, cache, settings)
+            if not refining:
+                record_run(progress, cache, settings)
         except Exception:  # noqa: BLE001 - statistics must never fail a finished analysis
             _log.debug("Could not record performance history", exc_info=True)
         _emit(app, job_id, "job_complete", {"phase": "analysis", "plan": plan})
@@ -575,7 +585,8 @@ def _run_render(app: Flask, job_id: str) -> None:
 def _wants_auto_render(job_id: str) -> bool:
     job = get_job_manager().get(job_id)
     try:
-        return bool(json.loads(job.config_json or "{}").get("auto_render")) if job else False
+        values = json.loads(job.config_json or "{}") if job else {}
+        return bool(values.get("auto_render") or values.get("render_after_analysis"))
     except json.JSONDecodeError:
         return False
 
@@ -716,6 +727,10 @@ def _clip_subtitle_writer(subtitle_dir: Path, transcript_for, config: HighlightC
 ANALYSIS_VIDEO = "analysis.mp4"
 _CACHE_FILES = (
     *PARTIAL_FILES,
+    SOUND_EVENTS_FILE,
+    SOUND_VECTORS_FILE,
+    CONTENT_FILE,
+    DIRECTOR_FILE,
     "metadata.json",
     "scenes.json",
     "transcript.json",
@@ -883,6 +898,9 @@ def load_cache(job_dir: Path) -> dict:
         "candidates": "candidates.json",
         "clip_plan": "clip_plan.json",
         "speakers": "speakers.json",
+        "sound_events": SOUND_EVENTS_FILE,
+        "content_index": CONTENT_FILE,
+        "director_plan": DIRECTOR_FILE,
     }
     for key, name in mapping.items():
         path = job_dir / name

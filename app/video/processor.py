@@ -26,7 +26,7 @@ class VideoProcessor:
         ]
 
     @staticmethod
-    def extract_audio_command(input_path: str | Path, output_path: str | Path) -> list[str]:
+    def extract_audio_command(input_path: str | Path, output_path: str | Path, sample_rate: int = 16000) -> list[str]:
         return [
             "ffmpeg",
             "-y",
@@ -36,7 +36,7 @@ class VideoProcessor:
             "-ac",
             "1",
             "-ar",
-            "16000",
+            str(int(sample_rate)),
             "-c:a",
             "pcm_s16le",
             safe_path_argument(output_path),
