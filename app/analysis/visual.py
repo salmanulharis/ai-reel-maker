@@ -7,7 +7,8 @@ import numpy as np
 
 from collections.abc import Callable
 
-from app.ai.ollama import OllamaClient, OllamaConnectionError, OllamaTruncatedError, predict_budget
+from app.ai.context_fit import VISION_TOKENS_PER_SCENE, fitting_vision_batch, predict_budget, vision_ctx_for_batch
+from app.ai.ollama import OllamaClient, OllamaConnectionError, OllamaError, OllamaTruncatedError, is_memory_error
 from app.ai.prompts import visual_batch_prompt, visual_batch_schema
 from app.analysis import score_source
 from app.models.schemas import Scene, VisualAnalysis
@@ -123,30 +124,6 @@ def _expand_visual_score(raw: dict, fallback: VisualAnalysis, scene: Scene) -> V
     )
 
 
-# Upper bound on reply tokens per scene in a batched visual reply.
-_VISION_TOKENS_PER_SCENE = 80
-# Prompt tokens per frame. Ollama scales Qwen3-VL images up to a minimum size, so a frame costs
-# about 1,050 tokens whatever its resolution (measured with 256-512 px frames).
-_VISION_PROMPT_TOKENS_PER_IMAGE = 1100
-# Instructions plus one "scene_id=... [start-end]" line per scene.
-_VISION_PROMPT_BASE_TOKENS = 200
-_VISION_PROMPT_TOKENS_PER_LINE = 16
-_VISION_CONTEXT_SAFETY = 0.9
-
-
-def fitting_vision_batch(configured: int, num_ctx: int, configured_predict: int) -> int:
-    """The largest batch, up to the configured size, whose images and reply fit the context.
-
-    A batch that overflows the context loses part of its prompt or gets its reply cut off.
-    Smaller batches cost almost nothing extra: each image is read once either way."""
-    limit = num_ctx * _VISION_CONTEXT_SAFETY
-    for size in range(max(1, configured), 0, -1):
-        prompt = _VISION_PROMPT_BASE_TOKENS + size * (_VISION_PROMPT_TOKENS_PER_IMAGE + _VISION_PROMPT_TOKENS_PER_LINE)
-        if prompt + predict_budget(configured_predict, size, _VISION_TOKENS_PER_SCENE, num_ctx) <= limit:
-            return size
-    return 1
-
-
 def analyze_scenes_visual(
     client: OllamaClient | None,
     model: str,
@@ -159,11 +136,13 @@ def analyze_scenes_visual(
     on_batch_start: Callable[[int, int, int], None] | None = None,
     shortlist: set[int] | None = None,
     avoid: str = "",
+    on_memory_error: Callable[[], None] | None = None,
 ) -> tuple[dict[int, VisualAnalysis], list[str], dict[int, str]]:
     """Score scenes with the vision model, falling back to motion scoring per scene.
 
     ``avoid`` lists content the user wants left out; the model then also rates how clearly
-    each scene shows it.
+    each scene shows it. ``on_memory_error`` frees memory when the model runs out of it; the
+    request is then retried in smaller parts.
 
     Returns the scores, log messages, and the fallback reason for every scene that did not get
     an AI score (see app.analysis.score_source)."""
@@ -206,22 +185,31 @@ def analyze_scenes_visual(
     if not ai_queue or client is None:
         return results, errors, reasons
 
-    batch_size = fitting_vision_batch(
-        cfg.ollama_vision_batch_size, client.role_options("vision")["num_ctx"], cfg.ollama_vision_num_predict
-    )
-    batch_count = (len(ai_queue) + batch_size - 1) // batch_size
+    # A request that ran out of memory lowers this for the batches that follow.
+    limit = {
+        "size": fitting_vision_batch(
+            cfg.ollama_vision_batch_size, client.role_options("vision")["num_ctx"], cfg.ollama_vision_num_predict
+        )
+    }
     unreachable = False
+    out_of_memory = False
+    position = 0
+    batch_index = 0
 
-    for batch_index, start in enumerate(range(0, len(ai_queue), batch_size), start=1):
-        batch = ai_queue[start : start + batch_size]
+    while position < len(ai_queue):
+        batch = ai_queue[position : position + limit["size"]]
+        position += len(batch)
+        batch_index += 1
+        remaining = len(ai_queue) - position
+        batch_count = batch_index + (remaining + limit["size"] - 1) // limit["size"]
         if on_batch_start:
             on_batch_start(batch_index, batch_count, len(batch))
-        if unreachable:
+        if unreachable or out_of_memory:
             for scene_model, _, _, fallback in batch:
                 use_fallback(scene_model, fallback, score_source.AI_FAILED)
             continue
         try:
-            by_id = _score_visual_batch(client, model, batch, custom_focus, cfg, avoid)
+            by_id = _score_visual_batch(client, model, batch, custom_focus, cfg, avoid, on_memory_error, limit)
             for scene_model, _, _, fallback in batch:
                 raw = by_id.get(scene_model.scene_id, {})
                 if not raw:
@@ -240,7 +228,16 @@ def analyze_scenes_visual(
                 use_fallback(scene_model, fallback, score_source.AI_FAILED)
         except Exception as exc:  # noqa: BLE001
             detail = str(exc).replace("\n", " ").strip()[:220]
-            errors.append(f"Visual batch {batch_index}/{batch_count} failed ({detail}); using motion fallback.")
+            if is_memory_error(str(exc)):
+                # Every later request would fail the same way; a later analysis redoes these scenes.
+                out_of_memory = True
+                errors.append(
+                    f"The video model ran out of memory at batch {batch_index}/{batch_count} ({detail}). "
+                    "The remaining scenes use motion scoring and are analyzed again next time. "
+                    "Close other programs or choose a smaller video model."
+                )
+            else:
+                errors.append(f"Visual batch {batch_index}/{batch_count} failed ({detail}); using motion fallback.")
             for scene_model, _, _, fallback in batch:
                 use_fallback(scene_model, fallback, score_source.AI_FAILED)
 
@@ -254,17 +251,34 @@ def _score_visual_batch(
     custom_focus: str,
     cfg: Settings,
     avoid: str = "",
+    on_memory_error: Callable[[], None] | None = None,
+    limit: dict[str, int] | None = None,
+    retried: bool = False,
 ) -> dict[int, dict]:
-    """Raw AI rows by scene id. A reply cut off by the token limit is retried as two smaller batches."""
+    """Raw AI rows by scene id. A reply cut off by the token limit is retried as two smaller batches.
+
+    When the model runs out of memory and ``on_memory_error`` is given, it is called to free
+    memory, and the batch is retried in halves, then once as a single frame with the smallest
+    context window. ``limit["size"]`` is lowered so later batches start at the size that worked."""
     scene_meta = [
         {"scene_id": scene.scene_id, "start": scene.start, "end": scene.end}
         for scene, _, _, _ in batch
     ]
     options = client.role_options("vision")
+    if retried:
+        options["num_ctx"] = min(options["num_ctx"], vision_ctx_for_batch(1, cfg.ollama_vision_num_predict))
     options["num_predict"] = predict_budget(
-        cfg.ollama_vision_num_predict, len(batch), _VISION_TOKENS_PER_SCENE, options["num_ctx"]
+        cfg.ollama_vision_num_predict, len(batch), VISION_TOKENS_PER_SCENE, options["num_ctx"]
     )
     images = [client.encode_image(str(frame)) for _, _, frame, _ in batch]
+
+    def halves() -> dict[int, dict]:
+        middle = len(batch) // 2
+        return {
+            **_score_visual_batch(client, model, batch[:middle], custom_focus, cfg, avoid, on_memory_error, limit),
+            **_score_visual_batch(client, model, batch[middle:], custom_focus, cfg, avoid, on_memory_error, limit),
+        }
+
     try:
         data = client.chat(
             model=model,
@@ -277,11 +291,16 @@ def _score_visual_batch(
     except OllamaTruncatedError:
         if len(batch) <= 1:
             raise
-        middle = len(batch) // 2
-        return {
-            **_score_visual_batch(client, model, batch[:middle], custom_focus, cfg, avoid),
-            **_score_visual_batch(client, model, batch[middle:], custom_focus, cfg, avoid),
-        }
+        return halves()
+    except OllamaError as exc:
+        if on_memory_error is None or not is_memory_error(str(exc)) or (len(batch) <= 1 and retried):
+            raise
+        on_memory_error()
+        if limit is not None:
+            limit["size"] = max(1, len(batch) // 2)
+        if len(batch) > 1:
+            return halves()
+        return _score_visual_batch(client, model, batch, custom_focus, cfg, avoid, on_memory_error, limit, retried=True)
     by_id: dict[int, dict] = {}
     for row in data.get("scenes") or []:
         if not isinstance(row, dict) or row.get("scene_id") is None:

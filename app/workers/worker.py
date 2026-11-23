@@ -16,6 +16,7 @@ from app.config import get_settings
 from app.services.ollama_runtime import get_ollama_client
 from app.models.schemas import ClipPlan, ClipPlanItem, HighlightConfig, RenderSettings, VideoMetadata
 from app.services.hardware import preferred_hw_encoder
+from app.services.run_plan import RunPlan, build_run_plan
 from app.services.job_manager import get_job_manager
 from app.video.crop import normalize_crop, to_crop_pixels
 from app.video.ffmpeg_runner import CancelledError, FFmpegRunner
@@ -181,7 +182,14 @@ def _run_analysis(app: Flask, job_id: str) -> None:
     except Exception:
         progress.log("Ollama is unavailable. Continuing in degraded mode.", "WARNING")
 
-    analyzer = VideoAnalyzer(settings, runner, ollama, vision_enabled=vision_enabled, text_enabled=text_enabled)
+    analyzer = VideoAnalyzer(
+        settings,
+        runner,
+        ollama,
+        vision_enabled=vision_enabled,
+        text_enabled=text_enabled,
+        run_plan=_run_plan(settings, ollama, progress),
+    )
     manager.register_runner(job_id, runner)
     try:
         config = HighlightConfig.model_validate(json.loads(job.config_json or "{}"))
@@ -749,6 +757,31 @@ def _prepare_all_sources(manager, job, original: Path, job_dir: Path, config, ru
             except Exception:
                 pass
     return sources, cache
+
+
+def _run_plan(settings, ollama, progress: PipelineProgress) -> RunPlan:
+    """Memory decisions for this analysis, from the memory and load right now. Advisory: any
+    problem working them out leaves the defaults."""
+    try:
+        from app.services.ai_profile import cached_hardware
+
+        hardware = cached_hardware()
+        device = str(settings.whisper_device or "auto")
+        whisper_on_gpu = bool(settings.enable_whisper) and (
+            device == "cuda" or (device == "auto" and bool(hardware.get("whisper_cuda")))
+        )
+        plan = build_run_plan(
+            settings,
+            hardware,
+            ollama_here=ollama is not None and ollama.shares_cpu(),
+            whisper_on_gpu=whisper_on_gpu,
+        )
+    except Exception:  # noqa: BLE001
+        _log.debug("Could not work out a run plan", exc_info=True)
+        return RunPlan()
+    for note in plan.notes:
+        progress.log(note)
+    return plan
 
 
 def load_cache(job_dir: Path) -> dict:

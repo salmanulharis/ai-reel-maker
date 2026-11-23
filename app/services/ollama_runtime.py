@@ -36,9 +36,10 @@ def warm_ollama_models(settings: Settings | None = None) -> None:
     health = client.health()
     if not health.get("connected"):
         return
-    from app.services.hardware import detect_hardware
+    from app.services.ai_profile import cached_hardware, goal_of
+    from app.services.hardware import recommend_for
 
-    recommendation = detect_hardware().get("recommendation") or {}
+    recommendation = recommend_for(cached_hardware(), goal_of(settings))
     models = _models_to_warm(settings, health, warm_both=bool(recommendation.get("warm_both")))
     for model, role in models:
         try:

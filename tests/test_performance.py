@@ -506,7 +506,8 @@ def test_recommendation_change_is_applied_once_to_automatic_mode(tmp_path, monke
         )
         first = ai_profile.sync_hardware_profile(settings)
         assert first["profile"]["applied_now"] is True
-        assert settings.ollama_vision_model == "qwen3-vl:2b-instruct"
+        # 15.8 GB is how Windows reports 16 GB, so the 16 GB recommendation applies.
+        assert settings.ollama_vision_model == "qwen3-vl:4b-instruct"
 
         second = ai_profile.sync_hardware_profile(settings, refresh=True)
         assert second["profile"]["applied_now"] is False

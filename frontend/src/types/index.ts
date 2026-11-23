@@ -258,6 +258,7 @@ export interface OllamaStatus {
   test?: { state?: string; result?: AiTestResult | null };
   whisper_download?: { state?: string; model?: string | null; error?: string | null };
   image_model?: ImageModelStatus;
+  measure?: MeasureStatus;
 }
 
 export interface ImageModelStatus {
@@ -277,6 +278,29 @@ export interface OptimizationItem {
   recommended: string | number | null;
   changed: boolean;
   reason: string;
+  /** Chosen by hand while automatic optimization is on; kept as it is. */
+  pinned?: boolean;
+  /** The recommended model is not downloaded yet; the current one stays in use. */
+  needs_download?: boolean;
+  /** False when automatic optimization leaves this setting alone (Ollama on another computer). */
+  managed?: boolean;
+}
+
+export type OptimizationGoal = "quality" | "balanced" | "fast";
+
+export interface MeasureStatus {
+  state: "idle" | "running" | "done" | "error";
+  step?: "text" | "vision" | "whisper" | null;
+  error?: string | null;
+  result?: { ts: number } | null;
+}
+
+export interface TimeEstimate {
+  video_seconds: number;
+  seconds: number;
+  parts: Partial<Record<"speech_to_text" | "speech_understanding" | "video_understanding", number>>;
+  /** False when a part that is turned on has not been measured yet. */
+  complete: boolean;
 }
 
 export interface PerformanceRun {
@@ -290,8 +314,10 @@ export interface PerformanceRun {
 
 export interface OptimizationPlan {
   enabled: boolean;
+  goal: OptimizationGoal;
   hardware: {
     text: string;
+    details?: string[];
     system?: string;
     ram_available_gb?: number | null;
     disk_free_gb?: number | null;
@@ -306,4 +332,6 @@ export interface OptimizationPlan {
   undo_saved_at?: number | null;
   history: PerformanceRun[];
   tips: string[];
+  estimate?: TimeEstimate | null;
+  measurement?: MeasureStatus;
 }

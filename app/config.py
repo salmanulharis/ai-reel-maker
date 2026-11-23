@@ -100,6 +100,11 @@ class Settings(BaseSettings):
     whisper_model: str = "base"
     whisper_device: str = "auto"
     ai_config_mode: str = "auto"
+    # What automatic optimization aims for: "quality", "balanced" or "fast".
+    ai_goal: str = "balanced"
+    # Comma-separated managed settings the user chose by hand while automatic optimization is
+    # on. They keep their value; the rest stay automatic.
+    ai_auto_pinned: str = ""
     enable_scene_detection: bool = True
     enable_visual_analysis: bool = True
     enable_repetition_analysis: bool = True

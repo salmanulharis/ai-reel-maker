@@ -218,6 +218,19 @@ def get_matcher(threads: int = 0) -> ImageMatcher | None:
         return _matcher
 
 
+def release_matcher() -> bool:
+    """Drop the loaded model so its memory is free for the AI models. It reloads on next use."""
+    global _matcher
+    import gc
+
+    with _lock:
+        loaded = _matcher is not None
+        _matcher = None
+    if loaded:
+        gc.collect()
+    return loaded
+
+
 # Scene scoring
 
 

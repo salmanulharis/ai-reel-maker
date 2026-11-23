@@ -14,6 +14,7 @@ from PIL import Image
 
 from app.ai.json_util import parse_model_json
 from app.config import Settings, get_settings, running_in_docker
+from app.ai.context_fit import predict_budget  # noqa: F401 - re-exported for callers
 
 _COMPOSE_OLLAMA = "http://ollama:11434"
 _DOCKER_HOST = "host.docker.internal"
@@ -128,13 +129,6 @@ def thinking_text_warning(model: str) -> str | None:
         f"{model} is a thinking-only model. It writes its reasoning into the reply, so speech "
         f"scores often fall back to simple rules. {choice} for transcript scoring."
     )
-
-
-def predict_budget(configured: int, items: int, per_item: int, num_ctx: int) -> int:
-    """num_predict for a batched JSON reply: room for every item, but never more than half the
-    context window so the prompt still fits. Never below the configured value."""
-    wanted = max(configured, per_item * max(1, items) + 64)
-    return min(wanted, max(configured, num_ctx // 2))
 
 
 def is_memory_error(message: str) -> bool:
@@ -485,6 +479,26 @@ class OllamaClient:
             "total_sec": round(int(body.get("total_duration") or 0) / 1e9, 3),
         }
 
+    def unload_model(self, model: str) -> bool:
+        """Ask Ollama to free a loaded model now instead of after its keep-alive time.
+        Best effort: returns False when the request fails."""
+        try:
+            response = self._request(
+                "POST", "/api/generate", json={"model": model, "keep_alive": 0}, timeout=30
+            )
+            return bool(response.ok)
+        except Exception:  # noqa: BLE001 - freeing memory early is an optimization
+            return False
+
+    def unload_others(self, keep: str | None = None) -> list[str]:
+        """Free every loaded model except ``keep``. Returns the names that were unloaded."""
+        unloaded = []
+        for item in self.running_models():
+            name = str(item.get("name") or item.get("model") or "")
+            if name and name != keep and self.unload_model(name):
+                unloaded.append(name)
+        return unloaded
+
     def warm_model(self, model: str, role: str | None = None) -> None:
         payload = {
             "model": model,
@@ -729,7 +743,11 @@ def describe_placement(models: list[dict[str, Any]], prefer: str | None = None) 
     }
 
 
-def _model_present(name: str, models: list[str]) -> bool:
+def model_present(name: str, models) -> bool:
+    """True when ``name`` is among the installed model names (with or without a tag)."""
     if name in models:
         return True
     return any(m == name or m.startswith(name + ":") for m in models)
+
+
+_model_present = model_present

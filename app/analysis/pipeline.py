@@ -11,8 +11,10 @@ from pathlib import Path
 from app.ai.ollama import (
     OllamaClient,
     OllamaConnectionError,
+    OllamaError,
     OllamaTruncatedError,
     describe_usage,
+    is_memory_error,
     predict_budget,
     usage_delta,
 )
@@ -24,7 +26,7 @@ from app.ai.prompts import (
     visual_focus_priorities,
 )
 from app.analysis import score_source
-from app.analysis.audio import detect_silence, extract_audio, transcribe_detailed
+from app.analysis.audio import detect_silence, extract_audio, release_whisper_models, transcribe_detailed
 from app.analysis import avoid as leave_out
 from app.analysis.avoid import picture_avoid_texts, speech_avoid_text, vision_avoid_text
 from app.analysis.candidates import generate_candidates, populate_candidate_audio_metrics, rescore_candidate
@@ -34,7 +36,7 @@ from app.analysis.scenes import detect_scenes
 from app.analysis.scorer import HighlightScorer
 from app.analysis.semantic import FOCUS_BOOST, Embedder, apply_focus, repetition_embedding_fn
 from app.analysis.signals import ENERGY_HOP, audio_energy, scene_quality
-from app.analysis.image_match import get_matcher, score_scenes
+from app.analysis.image_match import get_matcher, release_matcher, score_scenes
 from app.analysis.visual import (
     analyze_scenes_visual,
     fitting_vision_batch,
@@ -44,6 +46,7 @@ from app.analysis.visual import (
 )
 from app.config import Settings
 from app.models.schemas import CandidateScore, HighlightConfig, Scene, Transcript
+from app.services.run_plan import RunPlan
 from app.video.ffmpeg_runner import CancelledError, FFmpegRunner
 from app.video.sources import save_sources, tag_candidates, working_path
 
@@ -81,6 +84,8 @@ class PipelineProgress:
         self._running: dict[str, float] = {}
         # Model work per AI stage ("vision", "text"), summed over every source video.
         self.usage: dict[str, dict[str, float]] = {}
+        # What had to be adjusted while running (for example after running out of memory).
+        self.adjustments: list[str] = []
 
     def log(self, message: str, level: str = "INFO") -> None:
         self.emit("log", {"level": level, "message": message, "ts": time.time()})
@@ -126,8 +131,11 @@ class VideoAnalyzer:
         ollama: OllamaClient | None,
         vision_enabled: bool = True,
         text_enabled: bool = True,
+        run_plan: RunPlan | None = None,
     ):
         self.settings = settings
+        # Memory decisions for this job only (see app.services.run_plan).
+        self.run_plan = run_plan or RunPlan()
         self.runner = runner
         self.ollama = ollama
         self.vision_enabled = vision_enabled
@@ -210,7 +218,11 @@ class VideoAnalyzer:
             progress.stage("transcript", "running")
             transcribed = True
             if wav.exists():
+                if self.run_plan.free_gpu_for_speech:
+                    self._unload_models(None)
                 transcript_data, transcribed = self._transcribe(wav, progress)
+                if self.run_plan.one_at_a_time or self.run_plan.free_gpu_for_speech:
+                    release_whisper_models()
             else:
                 # Not cached: if the audio can be extracted on a later run, it is transcribed then.
                 transcribed = False
@@ -260,6 +272,8 @@ class VideoAnalyzer:
             progress.log("Dialogue focus has no transcript data; ranking will use the other available signals.", "WARNING")
 
         match = self._image_match(job_dir, scenes, frame_map, config, cache, progress)
+        if self.run_plan.one_at_a_time:
+            release_matcher()
         signals = _visual_signals(scenes, frame_map, quality, energy, match)
 
         if want_speech:
@@ -360,6 +374,9 @@ class VideoAnalyzer:
                     total,
                 )
 
+            if self.run_plan.one_at_a_time and ai_scene_count:
+                # The speech model has finished; its memory goes to the video model.
+                self._unload_models(self.settings.ollama_vision_model)
             usage_before = self._usage()
             results, errors, fallback_reasons = analyze_scenes_visual(
                 self.ollama,
@@ -373,6 +390,9 @@ class VideoAnalyzer:
                 on_batch_start=_visual_batch_progress,
                 shortlist=shortlist,
                 avoid=vision_avoid,
+                on_memory_error=lambda: self._relieve_memory(
+                    self.settings.ollama_vision_model, progress, "The video model"
+                ),
             )
             for scene in pending_scenes:
                 scene_id = int(scene["scene_id"])
@@ -719,6 +739,9 @@ class VideoAnalyzer:
     def _transcribe(self, wav: Path, progress: PipelineProgress) -> tuple[dict, bool]:
         """Transcript data, and whether it is worth caching. A failed run is not cached, so the
         next analysis tries again instead of reusing an empty transcript."""
+        extra = {}
+        if self.run_plan.whisper_gpu_compute:
+            extra["gpu_compute"] = self.run_plan.whisper_gpu_compute
         try:
             transcript, info = transcribe_detailed(
                 wav,
@@ -726,6 +749,7 @@ class VideoAnalyzer:
                 self.settings.whisper_device,
                 cpu_threads=self.settings.whisper_cpu_threads,
                 num_workers=self.settings.whisper_num_workers,
+                **extra,
             )
         except Exception as exc:  # noqa: BLE001
             transcript, info = Transcript(), {"ok": False, "error": str(exc)}
@@ -787,6 +811,7 @@ class VideoAnalyzer:
         )
         batches = [[pending[position] for position in batch] for batch in batches]
         unreachable = False
+        out_of_memory = False
         for batch_no, indexes in enumerate(batches, start=1):
             self._check_cancel()
             batch = [segments[index] for index in indexes]
@@ -801,11 +826,11 @@ class VideoAnalyzer:
                 batch_no,
                 len(batches),
             )
-            if unreachable:
+            if unreachable or out_of_memory:
                 scored = [_heuristic_segment(seg, score_source.AI_FAILED) for seg in batch]
             else:
                 try:
-                    scored = self._score_text_batch(batch, config)
+                    scored = self._score_text_batch(batch, config, progress)
                 except CancelledError:
                     raise
                 except OllamaConnectionError as exc:
@@ -816,14 +841,49 @@ class VideoAnalyzer:
                     )
                     scored = [_heuristic_segment(seg, score_source.AI_FAILED) for seg in batch]
                 except Exception as exc:  # noqa: BLE001
-                    progress.log(f"Transcript batch scoring failed ({exc}); using fallback.", "WARNING")
+                    if is_memory_error(str(exc)):
+                        # Every later request would fail the same way; a later analysis redoes these.
+                        out_of_memory = True
+                        progress.log(
+                            "The speech model ran out of memory; the rest of the transcript uses quick scoring "
+                            "and is analyzed again next time. Close other programs or choose a smaller model.",
+                            "WARNING",
+                        )
+                    else:
+                        progress.log(f"Transcript batch scoring failed ({exc}); using fallback.", "WARNING")
                     scored = [_heuristic_segment(seg, score_source.AI_FAILED) for seg in batch]
             for index, item in zip(indexes, scored):
                 results[index] = item
         return results, True
 
-    def _score_text_batch(self, batch: list, config: HighlightConfig) -> list[dict]:
-        """AI scores for one batch. A reply cut off by the token limit is retried as two smaller batches."""
+    def _unload_models(self, keep: str | None) -> None:
+        """Ask Ollama to free loaded models now (all but ``keep``). Best effort."""
+        unload = getattr(self.ollama, "unload_others", None)
+        if callable(unload):
+            try:
+                unload(keep)
+            except Exception:  # noqa: BLE001 - freeing memory early is an optimization
+                pass
+
+    def _relieve_memory(self, keep: str, progress: PipelineProgress, what: str) -> None:
+        """After ``what`` ran out of memory: free everything except the model in use."""
+        release_whisper_models()
+        release_matcher()
+        self._unload_models(keep)
+        message = f"{what} ran out of memory. Other models were unloaded and the request is retried in smaller parts."
+        if message not in progress.adjustments:
+            progress.adjustments.append(message)
+            progress.log(message, "WARNING")
+
+    def _score_text_batch(
+        self,
+        batch: list,
+        config: HighlightConfig,
+        progress: PipelineProgress | None = None,
+        retried: bool = False,
+    ) -> list[dict]:
+        """AI scores for one batch. A reply cut off by the token limit is retried as two smaller
+        batches; so is a request that ran out of memory, after freeing the other models."""
         self._check_cancel()
         payload = [{"start": s.start, "end": s.end, "text": s.text} for s in batch]
         options = self.ollama.role_options("text")
@@ -844,7 +904,19 @@ class VideoAnalyzer:
             if len(batch) <= 1:
                 raise
             middle = len(batch) // 2
-            return self._score_text_batch(batch[:middle], config) + self._score_text_batch(batch[middle:], config)
+            return self._score_text_batch(batch[:middle], config, progress) + self._score_text_batch(
+                batch[middle:], config, progress
+            )
+        except OllamaError as exc:
+            if progress is None or retried or not is_memory_error(str(exc)):
+                raise
+            self._relieve_memory(self.settings.ollama_text_model, progress, "The speech model")
+            if len(batch) <= 1:
+                return self._score_text_batch(batch, config, progress, retried=True)
+            middle = len(batch) // 2
+            return self._score_text_batch(batch[:middle], config, progress, retried=True) + self._score_text_batch(
+                batch[middle:], config, progress, retried=True
+            )
         scored = []
         for seg, raw in zip(batch, align_segment_scores(data.get("segments"), len(batch))):
             if raw is None:

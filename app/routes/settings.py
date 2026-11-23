@@ -6,6 +6,7 @@ from flask import Blueprint, jsonify, request, send_file
 
 from app.config import get_settings
 from app.models.db_models import get_session
+from app.services.ai_profile import APPLIED_FIELDS, pinned_fields, save_pins
 from app.services.job_manager import get_job_manager
 from app.services.presets import PresetError, delete_preset, list_presets, save_preset
 from app.services.watch_folder import read_config as read_watch_config
@@ -47,17 +48,6 @@ EDITABLE = {
     "image_matching",
 }
 
-CUSTOM_ON_EDIT = {
-    "ollama_vision_model",
-    "ollama_text_model",
-    "whisper_model",
-    "whisper_device",
-    "ollama_vision_batch_size",
-    "ollama_vision_num_ctx",
-    "ollama_text_num_ctx",
-    "ollama_num_thread",
-    "whisper_cpu_threads",
-}
 
 
 def _current() -> dict:
@@ -72,17 +62,21 @@ def get_settings_route():
 @settings_bp.post("/settings")
 def save_settings():
     payload = dict(request.get_json(silent=True) or {})
-    editing_models = any(key in payload for key in CUSTOM_ON_EDIT)
-    if editing_models and payload.get("ai_config_mode") != "auto":
-        payload["ai_config_mode"] = "custom"
+    settings = get_settings()
     values = {key: value for key, value in payload.items() if key in EDITABLE}
     if "vision_scope" in values and values["vision_scope"] not in {"shortlist", "all"}:
         return jsonify({"error": "vision_scope must be shortlist or all"}), 400
     try:
-        values = validate_values(values, get_settings())
+        values = validate_values(values, settings)
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
-    apply_values(values, get_settings())
+    # A setting automatic optimization manages, changed by hand while it is on, becomes the
+    # user's own choice: it is kept, and the other settings stay automatic.
+    chosen = {key for key in APPLIED_FIELDS if key in values and str(values[key]) != str(getattr(settings, key))}
+    automatic = values.get("ai_config_mode", settings.ai_config_mode) == "auto"
+    apply_values(values, settings)
+    if chosen and automatic:
+        save_pins(settings, pinned_fields(settings) | chosen)
     return jsonify({"settings": _current()})
 
 

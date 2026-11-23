@@ -1237,8 +1237,11 @@ details.help p { color: var(--muted); font-size: 13px; }
 .change-list li { padding: 8px 0; border-bottom: 1px solid var(--border); }
 .change-list .hint { margin: 2px 0 0; font-size: 12px; }
 .change-head { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 4px 16px; font-size: 13px; }
-.change-label { color: var(--text); }
-.change-values { font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.change-label { color: var(--text); display: inline-flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.change-values { font-variant-numeric: tabular-nums; overflow-wrap: anywhere; display: inline-flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.hardware-details { margin: 6px 0 0; font-size: 13px; }
+.hardware-details summary { cursor: pointer; color: var(--muted); }
+.hardware-details .plain-list { margin-top: 6px; }
 .plain-list { margin: 0; padding-left: 18px; color: var(--muted); font-size: 13px; display: grid; gap: 6px; max-width: 100ch; }
 .managed-note {
   margin: 0 0 14px;
