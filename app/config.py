@@ -79,6 +79,16 @@ class Settings(BaseSettings):
     # Fast picture matching (SigLIP) to rank scenes before the vision model. Used only once its
     # model is downloaded from Settings; without it, ranking uses speech, motion, and sound.
     image_matching: bool = True
+    # Sound matching (CLAP) for prompt mode: labels what can be heard and matches the sounds
+    # the user asks for. Used only once its model is downloaded from Settings.
+    sound_matching: bool = True
+    # The AI editor of prompt mode: which text model chooses the moments ("" = the text model),
+    # its context window (it reads a list of all candidate moments at once), its reply budget,
+    # and whether it may reason before answering (hybrid models such as qwen3:8b only).
+    ollama_director_model: str = ""
+    ollama_director_num_ctx: int = 16384
+    ollama_director_num_predict: int = 3072
+    director_think: bool = False
 
     whisper_cpu_threads: int = 6
     whisper_num_workers: int = 1

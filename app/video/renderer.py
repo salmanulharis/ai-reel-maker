@@ -42,6 +42,35 @@ HW_ENCODERS = {
 }
 
 
+# Length of the sound fade at a plain cut, in seconds: too short to hear, long enough to avoid a
+# click where the waveform is cut mid-swing.
+_CLICK_FADE = 0.02
+# Clips this close together in the same video play on as one: no fade between them ("auto").
+_FLOW_GAP = 0.5
+
+
+def _flows(previous, clip) -> bool:
+    """Whether ``clip`` continues right where ``previous`` ended in the same video."""
+    if previous is None or str(previous.source_id or "") != str(clip.source_id or ""):
+        return False
+    return 0 <= float(clip.start) - float(previous.end) < _FLOW_GAP
+
+
+def _edge_fades(transition: str, clips: list, index: int, edge_in: bool, edge_out: bool) -> tuple[bool, bool]:
+    """Whether a clip fades in and out. "fade": at every clip edge. "auto": where the video
+    jumps to another moment (and at the very start and end), not where it flows on."""
+    if transition == "fade":
+        return edge_in, edge_out
+    if transition == "auto":
+        previous = clips[index - 1] if index > 0 else None
+        following = clips[index + 1] if index + 1 < len(clips) else None
+        return (
+            edge_in and not _flows(previous, clips[index]),
+            edge_out and (following is None or not _flows(clips[index], following)),
+        )
+    return False, False
+
+
 # Fingerprints of the clips a render has finished, kept in its work folder.
 CLIP_MANIFEST = "clips_done.json"
 
@@ -139,21 +168,27 @@ class Renderer:
                 if gain is not None:
                     audio_filters.extend(leveling_filters(gain))
                     leveled += 1
-            if settings.transition == "fade":
-                dur = max(0.05, clip.end - clip.start)
-                fade = min(0.12, dur / 6)
-                # Pieces of one moment (pauses cut out) join without a fade between them.
-                fade_in = not getattr(clip, "join_previous", False)
-                fade_out = not (i + 1 < len(clips) and getattr(clips[i + 1], "join_previous", False))
-                video_fades = []
-                if fade_in:
-                    video_fades.append(f"fade=t=in:st=0:d={fade}")
-                    audio_filters.append(f"afade=t=in:st=0:d={fade}")
-                if fade_out:
-                    video_fades.append(f"fade=t=out:st={dur - fade}:d={fade}")
-                    audio_filters.append(f"afade=t=out:st={dur - fade}:d={fade}")
-                if video_fades:
-                    filters.append(",".join(video_fades))
+            dur = max(0.05, clip.end - clip.start)
+            # Pieces of one moment (pauses cut out) join without any fade between them.
+            edge_in = not getattr(clip, "join_previous", False)
+            edge_out = not (i + 1 < len(clips) and getattr(clips[i + 1], "join_previous", False))
+            fade_in, fade_out = _edge_fades(settings.transition, clips, i, edge_in, edge_out)
+            fade = min(0.12, dur / 6)
+            video_fades = []
+            if fade_in:
+                video_fades.append(f"fade=t=in:st=0:d={fade}")
+                audio_filters.append(f"afade=t=in:st=0:d={fade}")
+            elif edge_in:
+                # A very short sound fade at a plain cut avoids a click; the picture is untouched.
+                audio_filters.append(f"afade=t=in:st=0:d={min(_CLICK_FADE, dur / 10):.3f}")
+            if fade_out:
+                video_fades.append(f"fade=t=out:st={dur - fade}:d={fade}")
+                audio_filters.append(f"afade=t=out:st={dur - fade}:d={fade}")
+            elif edge_out:
+                click = min(_CLICK_FADE, dur / 10)
+                audio_filters.append(f"afade=t=out:st={dur - click:.3f}:d={click:.3f}")
+            if video_fades:
+                filters.append(",".join(video_fades))
             if extras and extras.punch_in and moment % 2 == 1:
                 filters.extend(punch_in_filters(out_w, out_h))
             video_graph = ",".join(filters)

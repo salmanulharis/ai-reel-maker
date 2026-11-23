@@ -20,6 +20,7 @@ _RANGES = {
     "ollama_vision_batch_size": (1, 32),
     "ollama_vision_num_ctx": (1024, None),
     "ollama_text_num_ctx": (1024, None),
+    "ollama_director_num_ctx": (2048, None),
     "ollama_num_thread": (0, 256),
     "whisper_cpu_threads": (0, 256),
     "maximum_candidates": (1, 1000),

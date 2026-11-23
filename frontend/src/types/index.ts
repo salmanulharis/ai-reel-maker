@@ -9,6 +9,7 @@ export type JobStatus =
   | "cancelled"
   | "paused";
 
+
 export interface VideoMeta {
   duration?: number;
   width?: number;
@@ -35,6 +36,39 @@ export interface Clip {
   source_name?: string;
   /** Which short the clip belongs to when the job makes several shorts (0-based). */
   short_index?: number;
+  /** The part the AI editor gave the clip in prompt mode (hook, key, ending, ...). */
+  role?: string;
+}
+
+/** What the user asked for in prompt mode, as understood from the description. */
+export interface PromptRequirements {
+  summary: string;
+  keep: string[];
+  remove: string[];
+  moments: string[];
+  visual_cues: string[];
+  audio_cues: string[];
+}
+
+export type RequirementKey = "keep" | "remove" | "moments" | "visual_cues" | "audio_cues";
+
+/** POST /api/prompt/interpret: settings and requirements read from a description. */
+export interface InterpretResult {
+  summary: string;
+  settings: Record<string, unknown>;
+  changes: Array<{ field: string; value: unknown; source: "ai" | "rules" | "default" }>;
+  requirements: PromptRequirements;
+  source: "ai" | "rules";
+  warning?: string | null;
+}
+
+/** GET /api/jobs/:id/ai-plan: what the AI understood and chose. */
+export interface AiPlanInfo {
+  mode: "manual" | "prompt";
+  prompt: string;
+  requirements: PromptRequirements | null;
+  refine_notes: string[];
+  plan: { understanding: string; left_out: string; order: string; chosen: number; considered: number } | null;
 }
 
 /** A strong moment the current clips leave out (from GET /jobs/:id/moments). */
@@ -125,6 +159,15 @@ export interface CropBox {
 }
 
 export interface HighlightForm {
+  /** "prompt": describe what you want and let the AI set things up; "manual": set it yourself. */
+  mode: "manual" | "prompt";
+  prompt: string;
+  requirements: PromptRequirements | null;
+  /** Look at the picture (vision model, picture matching, descriptions). */
+  use_visuals: boolean;
+  analysis_depth: "balanced" | "best";
+  /** Create the video as soon as the analysis is done, without stopping at Review. */
+  render_after_analysis: boolean;
   min_duration: number;
   max_duration: number;
   length_mode: "range" | "auto";
@@ -259,6 +302,7 @@ export interface OllamaStatus {
   test?: { state?: string; result?: AiTestResult | null };
   whisper_download?: { state?: string; model?: string | null; error?: string | null };
   image_model?: ImageModelStatus;
+  sound_model?: ImageModelStatus;
   measure?: MeasureStatus;
 }
 

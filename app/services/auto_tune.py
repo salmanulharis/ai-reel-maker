@@ -44,6 +44,8 @@ LABELS = {
     "ollama_text_num_ctx": "Speech model memory",
     "ollama_num_thread": "Processor threads for AI",
     "whisper_cpu_threads": "Processor threads for speech to text",
+    "ollama_director_num_ctx": "AI editor memory",
+    "director_think": "AI editor thinks first",
 }
 
 _SNAPSHOT_KEY = "auto_tune_previous"
@@ -274,6 +276,12 @@ def _reason(key: str, rec: dict[str, Any], hw: dict[str, Any]) -> str:
         return "How many scenes fit in one request without running out of memory. It is lowered automatically if needed."
     if key in {"ollama_vision_num_ctx", "ollama_text_num_ctx"}:
         return "Enough working memory for each request without using more RAM than this computer can spare."
+    if key == "ollama_director_num_ctx":
+        return "Room for the AI editor of prompt mode to read every candidate moment of a video at once."
+    if key == "director_think":
+        if rec.get("director_think"):
+            return "The graphics card is fast enough for the AI editor to reason before choosing, which gives better plans."
+        return "Off: reasoning first takes many minutes on the processor, or the text model cannot do it."
     if key in {"ollama_num_thread", "whisper_cpu_threads"}:
         if cores:
             return f"Uses {rec.get('num_thread')} of {cores} processor cores and leaves the rest free, so your computer stays responsive."

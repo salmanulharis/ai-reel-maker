@@ -1,5 +1,15 @@
 import { messages } from "../i18n";
-import type { HighlightForm, Job, Moment, MeasureStatus, OllamaStatus, OptimizationGoal, OptimizationPlan } from "../types";
+import type {
+  AiPlanInfo,
+  HighlightForm,
+  InterpretResult,
+  Job,
+  Moment,
+  MeasureStatus,
+  OllamaStatus,
+  OptimizationGoal,
+  OptimizationPlan,
+} from "../types";
 import type { Preset } from "./presets";
 import { coverUrl } from "./cover";
 
@@ -111,6 +121,15 @@ export function parseRanges(text: string): [number, number][] {
     .filter((pair) => Number.isFinite(pair[0]) && Number.isFinite(pair[1]));
 }
 
+/** Ranges in the form the time fields use ("01:20-02:05, 05:00-05:40"). */
+export function formatRanges(ranges: unknown): string {
+  if (!Array.isArray(ranges)) return "";
+  return ranges
+    .filter((pair): pair is [number, number] => Array.isArray(pair) && pair.length === 2)
+    .map(([a, b]) => `${formatTime(a)}-${formatTime(b)}`)
+    .join(", ");
+}
+
 export function toSeconds(value: string): number {
   if (!value) return NaN;
   if (/^\d+(\.\d+)?$/.test(value)) return Number(value);
@@ -161,14 +180,22 @@ export const SPEECH_AVOID = ["filler", "sponsor", "swearing", "talking_heads"];
 export function configPayload(form: HighlightForm) {
   // A length field can be empty while it is being edited; never send that to the server.
   const max = finiteOr(form.max_duration, finiteOr(form.min_duration, 30));
+  const prompt = form.mode === "prompt";
   return {
+    mode: form.mode,
+    prompt: prompt ? form.prompt.trim() : "",
+    requirements: prompt ? form.requirements : null,
+    use_visuals: form.use_visuals,
+    analysis_depth: form.analysis_depth,
+    render_after_analysis: form.render_after_analysis,
     min_duration: finiteOr(form.min_duration, Math.min(20, max)),
     max_duration: max,
     length_mode: form.social_short ? "range" : form.length_mode,
     use_speech: form.use_speech,
     style: form.style,
     // The focus text box only shows for the custom style; a hidden focus must not steer the AI.
-    custom_focus: form.style === "custom" ? form.custom_focus : "",
+    // In prompt mode the focus comes from the description.
+    custom_focus: form.style === "custom" || prompt ? form.custom_focus : "",
     preserve_context: form.preserve_context,
     remove_repetition: form.remove_repetition,
     allow_repeated_content: form.allow_repeated_content,
@@ -247,6 +274,19 @@ export const api = {
   cancel: (id: string) => http<Job>(`/api/jobs/${id}/cancel`, { method: "POST" }),
   retry: (id: string) => http<Job>(`/api/jobs/${id}/retry`, { method: "POST" }),
   pause: (id: string) => http<Job>(`/api/jobs/${id}/pause`, { method: "POST" }),
+  interpret: (prompt: string, jobId: string | null, useSpeech: boolean) =>
+    http<InterpretResult>("/api/prompt/interpret", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ prompt, job_id: jobId, use_speech: useSpeech }),
+    }),
+  refine: (id: string, request: string) =>
+    http<Job>(`/api/jobs/${id}/refine`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ request }),
+    }),
+  aiPlan: (id: string) => http<AiPlanInfo>(`/api/jobs/${id}/ai-plan`),
   resume: (id: string) => http<Job>(`/api/jobs/${id}/resume`, { method: "POST" }),
   regenerate: (id: string, preset: string) =>
     http<{ job: Job; plan: unknown }>(`/api/jobs/${id}/regenerate`, {
@@ -369,6 +409,7 @@ export const api = {
   startMeasure: () => http<MeasureStatus>("/api/system/ai/measure", { method: "POST" }),
   startAiTest: () => http("/api/system/ai/test", { method: "POST" }),
   downloadImageModel: () => http("/api/system/image-model/download", { method: "POST" }),
+  downloadSoundModel: () => http("/api/system/sound-model/download", { method: "POST" }),
   downloadWhisper: (model: string) =>
     http("/api/system/whisper/download", {
       method: "POST",

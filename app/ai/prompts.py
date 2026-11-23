@@ -195,19 +195,30 @@ def _style_label(style: str) -> str:
     return f"{style} ({hint})" if hint else style
 
 
-def visual_batch_schema(with_avoid: bool = False) -> dict:
-    """The batch reply schema; with ``with_avoid`` each scene may also carry an "avoid" score."""
-    if not with_avoid:
+def visual_batch_schema(with_avoid: bool = False, with_caption: bool = False) -> dict:
+    """The batch reply schema; with ``with_avoid`` each scene may also carry an "avoid" score,
+    with ``with_caption`` a short description of what it shows."""
+    if not with_avoid and not with_caption:
         return VISUAL_BATCH_SCHEMA
-    item = {**VISUAL_SCENE_SCHEMA_FAST, "properties": {**VISUAL_SCENE_SCHEMA_FAST["properties"], "avoid": {"type": "number", "minimum": 0, "maximum": 1}}}
+    properties = dict(VISUAL_SCENE_SCHEMA_FAST["properties"])
+    required = list(VISUAL_SCENE_SCHEMA_FAST["required"])
+    if with_avoid:
+        properties["avoid"] = {"type": "number", "minimum": 0, "maximum": 1}
+    if with_caption:
+        properties["caption"] = {"type": "string"}
+        required.append("caption")
+    item = {**VISUAL_SCENE_SCHEMA_FAST, "properties": properties, "required": required}
     return {**VISUAL_BATCH_SCHEMA, "properties": {"scenes": {"type": "array", "items": item}}}
 
 
-def visual_batch_prompt(scenes: list[dict], custom_focus: str = "", avoid: str = "") -> str:
+def visual_batch_prompt(scenes: list[dict], custom_focus: str = "", avoid: str = "", describe: bool = False) -> str:
     extra = f" Focus: {custom_focus}." if custom_focus else ""
     avoid_key = ',"avoid":0-1' if avoid else ""
     if avoid:
         extra += f' "avoid" is how clearly the scene shows any of: {avoid}. Use 0 when none is visible.'
+    if describe:
+        avoid_key += ',"caption":"..."'
+        extra += ' "caption" says plainly what is visible and happening, in at most 15 words (who, what, where).'
 
     lines = "\n".join(
         f"{idx}. scene_id={scene['scene_id']} [{scene['start']:.1f}-{scene['end']:.1f}s]"
@@ -265,3 +276,149 @@ is allowed only if it still feels natural.
 Return JSON {{"order": [indices], "rationale": "..."}}.
 Clips:
 {lines}"""
+
+
+# Prompt mode: understanding the user's description
+
+PROMPT_STYLES = ("auto", "informative", "exciting", "social", "educational", "cinematic", "funny", "story", "trailer", "calm")
+PROMPT_PRIORITIES = ("action", "speech", "visual", "information", "connection", "people", "scenery", "fun", "pets", "music", "sports")
+PROMPT_LEAVE_OUT = ("filler", "sponsor", "swearing", "talking_heads", "dark", "text", "screens", "empty", "intro_outro", "silence")
+
+_PHRASES = {"type": "array", "items": {"type": "string"}, "maxItems": 8}
+_TIME_RANGES = {
+    "type": "array",
+    "items": {
+        "type": "object",
+        "properties": {"start": {"type": "number"}, "end": {"type": "number"}},
+        "required": ["start", "end"],
+    },
+    "maxItems": 8,
+}
+
+INTENT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "summary": {"type": "string"},
+        "min_seconds": {"type": "number"},
+        "max_seconds": {"type": "number"},
+        "length_auto": {"type": "boolean"},
+        "format": {"type": "string", "enum": ["original", "16:9", "9:16", "1:1", "4:5"]},
+        "subtitles": {"type": "string", "enum": ["none", "burned", "srt"]},
+        "style": {"type": "string", "enum": list(PROMPT_STYLES)},
+        "shorts": {"type": "integer"},
+        "priorities": {"type": "array", "items": {"type": "string", "enum": list(PROMPT_PRIORITIES)}},
+        "leave_out": {"type": "array", "items": {"type": "string", "enum": list(PROMPT_LEAVE_OUT)}},
+        "order": {"type": "string", "enum": ["time", "story", "hook"]},
+        "transition": {"type": "string", "enum": ["cut", "fade", "auto"]},
+        "tighten": {"type": "string", "enum": ["off", "pauses", "fillers"]},
+        "keep": _PHRASES,
+        "remove": _PHRASES,
+        "moments": _PHRASES,
+        "visual_cues": _PHRASES,
+        "audio_cues": _PHRASES,
+        "keep_times": _TIME_RANGES,
+        "remove_times": _TIME_RANGES,
+    },
+    "required": ["summary", "keep", "remove", "moments", "visual_cues", "audio_cues"],
+}
+
+
+def intent_prompt(request: str, duration: float, video_count: int) -> str:
+    length = f"{duration:.0f} seconds" if duration > 0 else "unknown length"
+    videos = f"{video_count} videos, {length} in total" if video_count > 1 else f"one video of {length}"
+    return f"""A person wants a short highlight cut from {videos}. Turn their request into settings and editing requirements.
+Request: <<<{request}>>>
+
+Rules:
+- "summary": one sentence saying what you understood.
+- Add a setting ONLY when the request asks for it or clearly implies it. Leave every other setting out.
+  Examples: TikTok, Reels, Shorts, vertical -> "format":"9:16"; captions -> "subtitles":"burned"; "about a minute" -> "min_seconds":50,"max_seconds":70; "as long as needed" -> "length_auto":true; "5 clips" or "5 shorts" -> "shorts":5.
+- "order": "story" to tell it as a story, "hook" to open with the strongest moment, "time" to keep the original order.
+- "priorities" and "leave_out" use only the listed values.
+- "keep", "remove", "moments": short phrases about content to keep, to cut, and specific moments that must be in it.
+- "visual_cues": short descriptions of what wanted moments LOOK like (for example "a dog catching a ball"). "audio_cues": what they SOUND like (for example "crowd cheering").
+- "keep_times" / "remove_times": only times the request states, in seconds from the start of the video.
+- Do not invent content the request does not mention. Empty lists are fine.
+Return JSON only."""
+
+
+# Prompt mode: the AI editor
+
+DIRECTOR_ROLES = ("hook", "context", "key", "highlight", "reaction", "ending")
+
+DIRECTOR_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "understanding": {"type": "string"},
+        "clips": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "id": {"type": "string"},
+                    "role": {"type": "string", "enum": list(DIRECTOR_ROLES)},
+                    "why": {"type": "string"},
+                },
+                "required": ["id", "role", "why"],
+            },
+        },
+        "order": {"type": "string", "enum": ["time", "story"]},
+        "left_out": {"type": "string"},
+    },
+    "required": ["understanding", "clips", "order"],
+}
+
+_REQUIREMENT_LABELS = (
+    ("keep", "Keep"),
+    ("remove", "Cut"),
+    ("moments", "Must include"),
+    ("visual_cues", "Looks like"),
+    ("audio_cues", "Sounds like"),
+)
+
+
+def director_prompt(
+    request: str,
+    requirements: dict,
+    notes: list[str],
+    lines: list[str],
+    target: str,
+    pick_up_to: int,
+    previous: list[str] | None = None,
+    final: bool = True,
+) -> str:
+    wants = [
+        f"{label}: {'; '.join(requirements[key])}" for key, label in _REQUIREMENT_LABELS if requirements.get(key)
+    ]
+    asked = "\n".join(wants) or "(nothing specific)"
+    changes = ""
+    if notes:
+        changes = "\nChanges asked for after the last plan (newest last; these win over the request):\n" + "\n".join(
+            f"- {note}" for note in notes
+        )
+    before = f"\nThe last plan used, in order: {', '.join(previous)}" if previous else ""
+    if final:
+        task = f"Choose the moments for the final video ({target}). Pick up to {pick_up_to}."
+    else:
+        task = (
+            f"This is one part of a longer video. Pick up to {pick_up_to} moments worth considering "
+            f"for the final video ({target})."
+        )
+    listing = "\n".join(lines)
+    return f"""You are a video editor. {task}
+Request: <<<{request}>>>
+Requirements:
+{asked}{changes}{before}
+
+Each moment: id [start-end, length] score | says: speech | sees: picture | hears: sounds.
+"score" is the automatic highlight value (0-1); use it when the request does not decide.
+Rules:
+- Follow the request and requirements first. Never pick a moment that matches "Cut".
+- Pick moments that are complete and understandable; avoid cutting mid-sentence.
+- Do not pick two moments with the same content.
+- "role" is the moment's part in the video. "why" says in a few words why it is in (refer to the request).
+- "order": "story" only when another order tells it better than the original timeline; then list clips in viewing order.
+- "understanding": one sentence about what the final video shows. "left_out": what you cut, briefly.
+Moments:
+{listing}
+Return JSON only, using ids from the list."""

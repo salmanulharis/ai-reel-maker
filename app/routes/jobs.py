@@ -195,6 +195,107 @@ def cancel_job(job_id: str):
     return jsonify(get_job_manager().serialize(job))
 
 
+@jobs_bp.post("/prompt/interpret")
+def interpret_prompt():
+    """Settings and requirements read from a description (prompt mode), for the preview."""
+    from app.ai.intent import interpret
+    from app.services.ollama_runtime import get_ollama_client
+
+    data = request.get_json(silent=True) or {}
+    text = " ".join(str(data.get("prompt") or "").split())
+    if not text:
+        return jsonify({"error": "Describe what you want first."}), 400
+    if len(text) > 2000:
+        return jsonify({"error": "Keep the description under 2,000 characters."}), 400
+    duration, count = 0.0, 1
+    job_id = str(data.get("job_id") or "")
+    if job_id and valid_job_id(job_id):
+        sources = load_sources(get_job_manager().job_dir(job_id))
+        if sources:
+            count = len(sources)
+            duration = sum(float(item.get("duration") or 0) for item in sources)
+    settings = get_settings()
+    client = get_ollama_client(settings)
+    if not client.reachable():
+        client = None
+    result = interpret(
+        text,
+        duration=duration,
+        video_count=count,
+        client=client,
+        model=settings.ollama_text_model,
+        use_speech=bool(data.get("use_speech", True)),
+    )
+    return jsonify(result)
+
+
+@jobs_bp.post("/jobs/<job_id>/refine")
+def refine_job(job_id: str):
+    """Plan again with the AI editor, with a change the user asked for on the Review page."""
+    manager = get_job_manager()
+    job = manager.get(job_id)
+    if not job:
+        return jsonify({"error": "not found"}), 404
+    if manager.has_runners(job_id):
+        return jsonify({"error": STILL_STOPPING}), 409
+    if job.analysis_status != "completed" or job.status not in {"planning", "completed", "failed", "cancelled"}:
+        return jsonify({"error": "The analysis has to finish before the plan can be changed."}), 409
+    data = request.get_json(silent=True) or {}
+    change = " ".join(str(data.get("request") or "").split())
+    if not change:
+        return jsonify({"error": "Say what to change."}), 400
+    if len(change) > 500:
+        return jsonify({"error": "Keep the change under 500 characters."}), 400
+    values = json.loads(job.config_json or "{}")
+    if values.get("mode") != "prompt" or not str(values.get("prompt") or "").strip():
+        # A highlight made with manual options: the change becomes the request.
+        values.update(mode="prompt", prompt=change, refine_notes=[])
+    else:
+        values["refine_notes"] = [*(values.get("refine_notes") or []), change]
+    try:
+        config = HighlightConfig.model_validate(values)
+    except ValueError as exc:
+        return jsonify({"error": _error_message(exc)}), 400
+    job = manager.update(
+        job_id,
+        status="queued",
+        analysis_status="refining",
+        cancelled=False,
+        error=None,
+        config_json=config.model_dump_json(),
+    )
+    return jsonify(manager.serialize(job))
+
+
+@jobs_bp.get("/jobs/<job_id>/ai-plan")
+def job_ai_plan(job_id: str):
+    """What the AI understood and chose (prompt mode), for the Review page."""
+    manager = get_job_manager()
+    job = manager.get(job_id)
+    if not job:
+        return jsonify({"error": "not found"}), 404
+    config = json.loads(job.config_json or "{}")
+    cache = load_cache(manager.job_dir(job_id))
+    plan = cache.get("director_plan") if isinstance(cache.get("director_plan"), dict) else None
+    return jsonify(
+        {
+            "mode": config.get("mode") or "manual",
+            "prompt": config.get("prompt") or "",
+            "requirements": config.get("requirements"),
+            "refine_notes": config.get("refine_notes") or [],
+            "plan": {
+                "understanding": plan.get("understanding") or "",
+                "left_out": plan.get("left_out") or "",
+                "order": plan.get("order") or "time",
+                "chosen": len(plan.get("clips") or []),
+                "considered": int(plan.get("considered") or 0),
+            }
+            if plan
+            else None,
+        }
+    )
+
+
 @jobs_bp.post("/jobs/<job_id>/pause")
 def pause_job(job_id: str):
     manager = get_job_manager()

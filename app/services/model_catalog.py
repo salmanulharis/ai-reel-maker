@@ -261,8 +261,23 @@ def recommend_setup(
         setup["notes"].append(
             "Speech to text runs on the processor: its graphics card support (CUDA 12 with cuDNN) was not found."
         )
+    setup.update(_director_setup(setup, ram, budget, goal))
     setup["goal"] = goal
     return setup
+
+
+def _director_setup(setup: dict[str, Any], ram: float, budget: float, goal: str) -> dict[str, Any]:
+    """The AI editor (prompt mode) reads every candidate moment at once, so it gets a larger
+    context window than transcript scoring. Reasoning first improves its choices but costs
+    thousands of reply tokens: worth it on a graphics card with a hybrid model, too slow on the
+    processor, and not possible with the 4B instruct model."""
+    on_gpu = setup.get("inference_mode") == "gpu"
+    if on_gpu:
+        num_ctx = 32768 if budget >= 16 else 16384
+    else:
+        num_ctx = 16384 if ram >= 16 else 8192
+    think = on_gpu and goal != "fast" and setup.get("text_model") != TEXT_4B
+    return {"director_num_ctx": num_ctx, "director_think": think}
 
 
 def _cpu_setup(ram: float, threads: int, goal: str) -> dict[str, Any]:

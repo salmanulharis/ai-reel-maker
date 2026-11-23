@@ -4,13 +4,26 @@ import { UploadZone } from "../components/UploadZone";
 import { HighlightConfigPanel, defaultForm, formProblem } from "../components/HighlightConfig";
 import { VideoCropPreview } from "../components/VideoCrop";
 import { PresetBar } from "../components/PresetBar";
+import { PromptPanel, understoodForm } from "../components/PromptPanel";
 import { Alert, InlineStatus, Spinner } from "../components/Feedback";
 import { api, formatBytes, formatTime } from "../services/api";
 import { fill, messages } from "../i18n";
-import type { HighlightForm, Job } from "../types";
+import type { HighlightForm, InterpretResult, Job } from "../types";
 
 const MAX_FILES = 8;
 const copy = messages.create;
+const MODE_KEY = "create-mode";
+
+/** The way of working chosen last time in this browser ("prompt" the first time). */
+function startForm(): HighlightForm {
+  const form = defaultForm();
+  try {
+    if (localStorage.getItem(MODE_KEY) === "manual") form.mode = "manual";
+  } catch {
+    // Storage can be unavailable (private window); the default is fine.
+  }
+  return form;
+}
 
 export default function Dashboard() {
   const navigate = useNavigate();
@@ -18,7 +31,8 @@ export default function Dashboard() {
   const [previewIndex, setPreviewIndex] = useState(0);
   const [preview, setPreview] = useState<string>("");
   const [job, setJob] = useState<Job | null>(null);
-  const [form, setForm] = useState<HighlightForm>(defaultForm());
+  const [form, setForm] = useState<HighlightForm>(startForm);
+  const [understood, setUnderstood] = useState<{ prompt: string; result: InterpretResult } | null>(null);
   const [busy, setBusy] = useState(false);
   const [starting, setStarting] = useState(false);
   const [error, setError] = useState("");
@@ -100,18 +114,38 @@ export default function Dashboard() {
     }
   }
 
+  function chooseMode(mode: HighlightForm["mode"]) {
+    setForm({ ...form, mode });
+    try {
+      localStorage.setItem(MODE_KEY, mode);
+    } catch {
+      // Only a convenience.
+    }
+  }
+
   async function analyze() {
     if (!job) return;
     setBusy(true);
     setStarting(true);
     setError("");
     try {
+      let ready = form;
+      if (form.mode === "prompt") {
+        // A description that was not read yet (or changed since) is read now, so starting
+        // straight away still gets the settings it asks for.
+        const read = await understoodForm(form, job.id, understood);
+        ready = read.form;
+        if (read.result) {
+          setForm(ready);
+          setUnderstood({ prompt: form.prompt.trim(), result: read.result });
+        }
+      }
       if (separate && files.length > 1) {
-        const result = await api.split(job.id, form);
+        const result = await api.split(job.id, ready);
         navigate(`/history?queued=${result.jobs.length}`);
         return;
       }
-      await api.analyze(job.id, form);
+      await api.analyze(job.id, ready);
       navigate(`/jobs/${job.id}/analysis`);
     } catch (err) {
       setError((err as Error).message);
@@ -229,12 +263,50 @@ export default function Dashboard() {
         <h3 className="step-title" id="step-2">
           {copy.step2}
         </h3>
-        <PresetBar form={form} setForm={setForm} />
-        <HighlightConfigPanel
-          form={form}
-          setForm={setForm}
-          sourceFps={sources[previewIndex]?.fps || sources[0]?.fps || meta.fps}
-        />
+        <div className="chips mode-switch" role="radiogroup" aria-label={messages.prompt.modeLabel}>
+          <button
+            type="button"
+            role="radio"
+            aria-checked={form.mode === "prompt"}
+            className={`chip ${form.mode === "prompt" ? "active" : ""}`}
+            onClick={() => chooseMode("prompt")}
+          >
+            {messages.prompt.modePrompt}
+          </button>
+          <button
+            type="button"
+            role="radio"
+            aria-checked={form.mode === "manual"}
+            className={`chip ${form.mode === "manual" ? "active" : ""}`}
+            onClick={() => chooseMode("manual")}
+          >
+            {messages.prompt.modeManual}
+          </button>
+        </div>
+        {form.mode === "prompt" ? (
+          <>
+            <PromptPanel form={form} setForm={setForm} jobId={job?.id || null} understood={understood} setUnderstood={setUnderstood} />
+            <details className="advanced all-settings">
+              <summary>{messages.prompt.allSettings}</summary>
+              <p className="field-hint">{messages.prompt.allSettingsHint}</p>
+              <PresetBar form={form} setForm={setForm} />
+              <HighlightConfigPanel
+                form={form}
+                setForm={setForm}
+                sourceFps={sources[previewIndex]?.fps || sources[0]?.fps || meta.fps}
+              />
+            </details>
+          </>
+        ) : (
+          <>
+            <PresetBar form={form} setForm={setForm} />
+            <HighlightConfigPanel
+              form={form}
+              setForm={setForm}
+              sourceFps={sources[previewIndex]?.fps || sources[0]?.fps || meta.fps}
+            />
+          </>
+        )}
       </section>
 
       {error && <Alert>{error}</Alert>}

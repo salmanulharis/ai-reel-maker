@@ -7,7 +7,13 @@ import numpy as np
 
 from collections.abc import Callable
 
-from app.ai.context_fit import VISION_TOKENS_PER_SCENE, fitting_vision_batch, predict_budget, vision_ctx_for_batch
+from app.ai.context_fit import (
+    VISION_CAPTION_TOKENS,
+    VISION_TOKENS_PER_SCENE,
+    fitting_vision_batch,
+    predict_budget,
+    vision_ctx_for_batch,
+)
 from app.ai.ollama import OllamaClient, OllamaConnectionError, OllamaError, OllamaTruncatedError, is_memory_error
 from app.ai.prompts import visual_batch_prompt, visual_batch_schema
 from app.analysis import score_source
@@ -97,6 +103,11 @@ def _pick_representative_frame(frame_paths: list[Path]) -> Path | None:
     return existing[len(existing) // 2]
 
 
+def vision_reply_tokens(describe: bool) -> int:
+    """Reply tokens per scene, with room for a description when one is asked for."""
+    return VISION_TOKENS_PER_SCENE + (VISION_CAPTION_TOKENS if describe else 0)
+
+
 def _expand_visual_score(raw: dict, fallback: VisualAnalysis, scene: Scene) -> VisualAnalysis:
     importance = float(raw.get("visual_importance", fallback.visual_importance))
     action = float(raw.get("action_strength", fallback.action_strength))
@@ -112,6 +123,7 @@ def _expand_visual_score(raw: dict, fallback: VisualAnalysis, scene: Scene) -> V
             **fallback.model_dump(),
             **raw,
             "visual_summary": raw.get("visual_summary") or summary,
+            "caption": " ".join(str(raw.get("caption") or "").split())[:200],
             "visual_importance": importance,
             "action_strength": action,
             "information_density": density,
@@ -138,13 +150,15 @@ def analyze_scenes_visual(
     avoid: str = "",
     on_memory_error: Callable[[], None] | None = None,
     on_batch_done: Callable[[dict[int, VisualAnalysis], dict[int, str]], None] | None = None,
+    describe: bool = False,
 ) -> tuple[dict[int, VisualAnalysis], list[str], dict[int, str]]:
     """Score scenes with the vision model, falling back to motion scoring per scene.
 
     ``avoid`` lists content the user wants left out; the model then also rates how clearly
     each scene shows it. ``on_memory_error`` frees memory when the model runs out of it; the
     request is then retried in smaller parts. ``on_batch_done`` receives the scores and fallback
-    reasons so far after every batch, so finished batches can be saved as they complete.
+    reasons so far after every batch, so finished batches can be saved as they complete. With
+    ``describe`` the model also says in a few words what each scene shows ("caption").
 
     Returns the scores, log messages, and the fallback reason for every scene that did not get
     an AI score (see app.analysis.score_source)."""
@@ -190,7 +204,10 @@ def analyze_scenes_visual(
     # A request that ran out of memory lowers this for the batches that follow.
     limit = {
         "size": fitting_vision_batch(
-            cfg.ollama_vision_batch_size, client.role_options("vision")["num_ctx"], cfg.ollama_vision_num_predict
+            cfg.ollama_vision_batch_size,
+            client.role_options("vision")["num_ctx"],
+            cfg.ollama_vision_num_predict,
+            vision_reply_tokens(describe),
         )
     }
     unreachable = False
@@ -213,7 +230,9 @@ def analyze_scenes_visual(
                 on_batch_done(results, reasons)
             continue
         try:
-            by_id = _score_visual_batch(client, model, batch, custom_focus, cfg, avoid, on_memory_error, limit)
+            by_id = _score_visual_batch(
+                client, model, batch, custom_focus, cfg, avoid, on_memory_error, limit, describe=describe
+            )
             for scene_model, _, _, fallback in batch:
                 raw = by_id.get(scene_model.scene_id, {})
                 if not raw:
@@ -260,6 +279,7 @@ def _score_visual_batch(
     on_memory_error: Callable[[], None] | None = None,
     limit: dict[str, int] | None = None,
     retried: bool = False,
+    describe: bool = False,
 ) -> dict[int, dict]:
     """Raw AI rows by scene id. A reply cut off by the token limit is retried as two smaller batches.
 
@@ -274,23 +294,27 @@ def _score_visual_batch(
     if retried:
         options["num_ctx"] = min(options["num_ctx"], vision_ctx_for_batch(1, cfg.ollama_vision_num_predict))
     options["num_predict"] = predict_budget(
-        cfg.ollama_vision_num_predict, len(batch), VISION_TOKENS_PER_SCENE, options["num_ctx"]
+        cfg.ollama_vision_num_predict, len(batch), vision_reply_tokens(describe), options["num_ctx"]
     )
     images = [client.encode_image(str(frame)) for _, _, frame, _ in batch]
 
     def halves() -> dict[int, dict]:
         middle = len(batch) // 2
         return {
-            **_score_visual_batch(client, model, batch[:middle], custom_focus, cfg, avoid, on_memory_error, limit),
-            **_score_visual_batch(client, model, batch[middle:], custom_focus, cfg, avoid, on_memory_error, limit),
+            **_score_visual_batch(
+                client, model, batch[:middle], custom_focus, cfg, avoid, on_memory_error, limit, describe=describe
+            ),
+            **_score_visual_batch(
+                client, model, batch[middle:], custom_focus, cfg, avoid, on_memory_error, limit, describe=describe
+            ),
         }
 
     try:
         data = client.chat(
             model=model,
-            prompt=visual_batch_prompt(scene_meta, custom_focus, avoid),
+            prompt=visual_batch_prompt(scene_meta, custom_focus, avoid, describe),
             images=images,
-            schema=visual_batch_schema(bool(avoid)),
+            schema=visual_batch_schema(bool(avoid), describe),
             options=options,
             schema_first=False,
         )
@@ -306,7 +330,9 @@ def _score_visual_batch(
             limit["size"] = max(1, len(batch) // 2)
         if len(batch) > 1:
             return halves()
-        return _score_visual_batch(client, model, batch, custom_focus, cfg, avoid, on_memory_error, limit, retried=True)
+        return _score_visual_batch(
+            client, model, batch, custom_focus, cfg, avoid, on_memory_error, limit, retried=True, describe=describe
+        )
     by_id: dict[int, dict] = {}
     for row in data.get("scenes") or []:
         if not isinstance(row, dict) or row.get("scene_id") is None:

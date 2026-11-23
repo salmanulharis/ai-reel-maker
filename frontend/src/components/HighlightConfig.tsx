@@ -98,6 +98,8 @@ const copy = messages.config;
 
 /** A reason the form cannot be submitted yet, or "" when it is fine. */
 export function formProblem(form: HighlightForm): string {
+  if (!form.use_visuals && !form.use_speech) return copy.analysisNeeded;
+  if (form.mode === "prompt" && !form.prompt.trim()) return copy.promptMissing;
   // With "No limit" the longest length is not used, so only the shortest has to be valid.
   const lengths = form.length_mode === "auto" ? [form.min_duration] : [form.min_duration, form.max_duration];
   if (lengths.some((value) => !Number.isFinite(value) || value < 1)) return copy.lengthMissing;
@@ -323,6 +325,21 @@ export function HighlightConfigPanel({
             <strong>{copy.visualsOnly}</strong>
             <span className="field-hint block" id="visuals-only-hint">
               {copy.visualsOnlyHint}
+            </span>
+          </span>
+        </label>
+        <label className="check visuals-only">
+          <input
+            type="checkbox"
+            checked={!form.use_visuals}
+            disabled={!form.use_speech}
+            aria-describedby="speech-only-hint"
+            onChange={(e) => update({ use_visuals: !e.target.checked })}
+          />
+          <span>
+            <strong>{copy.speechOnly}</strong>
+            <span className="field-hint block" id="speech-only-hint">
+              {form.use_speech ? copy.speechOnlyHint : copy.analysisNeeded}
             </span>
           </span>
         </label>
@@ -674,6 +691,7 @@ export function HighlightConfigPanel({
             <select id="transition" value={form.transition} onChange={(e) => update({ transition: e.target.value })}>
               <option value="cut">{copy.transitionCut}</option>
               <option value="fade">{copy.transitionFade}</option>
+              <option value="auto">{copy.transitionAuto}</option>
             </select>
           </div>
           <div className="field">
@@ -800,6 +818,7 @@ export function HighlightConfigPanel({
                 <option value="chronological">{copy.orderChronological}</option>
                 <option value="narrative">{copy.orderNarrative}</option>
                 <option value="hook">{copy.orderHook}</option>
+                {(form.mode === "prompt" || form.order_mode === "ai") && <option value="ai">{copy.orderAi}</option>}
               </select>
             </div>
             <div className="field">
@@ -884,6 +903,12 @@ export function HighlightConfigPanel({
 }
 
 export const defaultForm = (): HighlightForm => ({
+  mode: "prompt",
+  prompt: "",
+  requirements: null,
+  use_visuals: true,
+  analysis_depth: "balanced",
+  render_after_analysis: false,
   min_duration: 20,
   max_duration: 30,
   length_mode: "range",

@@ -16,10 +16,12 @@ from __future__ import annotations
 
 import logging
 import threading
-from pathlib import Path
 from typing import Any
 
 import numpy as np
+
+from app.ai.onnx_models import HubModel, on_gpu, providers, session
+from app.ai.onnx_models import runtime_available as onnx_runtime_available
 
 _log = logging.getLogger(__name__)
 
@@ -53,95 +55,39 @@ NEGATIVE_PROMPTS = (
 )
 # Frames this similar (cosine) show essentially the same picture.
 DUPLICATE_SIMILARITY = 0.95
-_GPU_PROVIDERS = ("CUDAExecutionProvider", "DmlExecutionProvider")
-
 _lock = threading.Lock()
 _matcher: "ImageMatcher | None" = None
-_download_state: dict[str, Any] = {"state": "idle", "files_done": 0, "files_total": len(MODEL_FILES), "error": None}
 
 
 # Model files
 
-
-def _cached_path(filename: str) -> str | None:
-    try:
-        from huggingface_hub import try_to_load_from_cache
-    except ImportError:
-        return None
-    path = try_to_load_from_cache(MODEL_REPO, filename)
-    return path if isinstance(path, str) and Path(path).is_file() else None
+_MODEL = HubModel(MODEL_REPO, MODEL_FILES, MODEL_DOWNLOAD_MB, "image matching model")
+_download_state = _MODEL.state
+_cached_path = _MODEL.cached_path
+_download = _MODEL.download
+_providers = providers
 
 
 def model_installed() -> bool:
-    return all(_cached_path(name) for name in MODEL_FILES)
+    return _MODEL.installed()
 
 
 def runtime_available() -> bool:
-    try:
-        import onnxruntime  # noqa: F401
-        import tokenizers  # noqa: F401
-    except ImportError:
-        return False
-    return True
+    return onnx_runtime_available()
 
 
 def download_status() -> dict[str, Any]:
-    with _lock:
-        state = dict(_download_state)
-    state["installed"] = model_installed()
-    state["size_mb"] = MODEL_DOWNLOAD_MB
-    state["runtime"] = runtime_available()
-    return state
+    return _MODEL.status(model_installed(), runtime_available())
 
 
 def start_download() -> dict[str, Any]:
-    with _lock:
-        if _download_state.get("state") == "running":
-            return dict(_download_state)
-        _download_state.update({"state": "running", "files_done": 0, "error": None})
-    threading.Thread(target=_download, daemon=True, name="image-model-download").start()
+    if _MODEL.begin():
+        threading.Thread(target=_download, daemon=True, name="image-model-download").start()
     return download_status()
 
 
-def _download() -> None:
-    try:
-        from huggingface_hub import hf_hub_download
-
-        for index, name in enumerate(MODEL_FILES, start=1):
-            hf_hub_download(MODEL_REPO, name)
-            with _lock:
-                _download_state["files_done"] = index
-        state = {"state": "done", "error": None}
-    except Exception as exc:  # noqa: BLE001
-        state = {"state": "error", "error": f"Could not download the image matching model: {exc}"[:300]}
-    with _lock:
-        _download_state.update(state)
-
-
-# Inference
-
-
-def _providers() -> list[str]:
-    import onnxruntime as ort
-
-    available = set(ort.get_available_providers())
-    return [name for name in _GPU_PROVIDERS if name in available] + ["CPUExecutionProvider"]
-
-
 def _session(path: str, threads: int):
-    import onnxruntime as ort
-
-    options = ort.SessionOptions()
-    if threads > 0:
-        options.intra_op_num_threads = threads
-    providers = _providers()
-    try:
-        return ort.InferenceSession(path, options, providers=providers)
-    except Exception:  # noqa: BLE001 - a GPU provider that cannot start falls back to the CPU
-        if providers == ["CPUExecutionProvider"]:
-            raise
-        _log.warning("Image matching could not use the graphics card; using the processor")
-        return ort.InferenceSession(path, options, providers=["CPUExecutionProvider"])
+    return session(path, threads, "Image matching")
 
 
 class ImageMatcher:
@@ -159,7 +105,7 @@ class ImageMatcher:
         self.tokenizer.enable_truncation(_TEXT_LENGTH)
         self.vision = _session(paths["onnx/vision_model.onnx"], threads)
         self.text = _session(paths["onnx/text_model.onnx"], threads)
-        self.device = "GPU" if any(p in _GPU_PROVIDERS for p in self.vision.get_providers()) else "CPU"
+        self.device = "GPU" if on_gpu(self.vision) else "CPU"
         self._text_cache: dict[str, np.ndarray] = {}
 
     def embed_images(self, paths: list[str]) -> tuple[np.ndarray, list[bool]]:

@@ -228,7 +228,9 @@ class ClipOptimizer:
                     dur = min(dur, repeat_budget - repeated_so_far)
                 if current_duration() + dur > max_duration + 1e-6:
                     continue
-                if is_low_value(cand) and current_duration() >= min_duration * 0.55:
+                # The AI editor chose this moment for the request: quality guesses do not override it.
+                picked = cand.get("director_rank") is not None
+                if not picked and is_low_value(cand) and current_duration() >= min_duration * 0.55:
                     continue
                 if auto_length and not need_more and float(cand.get("score", 0)) < keep_from:
                     continue
@@ -240,7 +242,7 @@ class ClipOptimizer:
                 # Candidate score already reflects the user's content priorities. Keep
                 # diversity secondary so it cannot routinely override that ranking.
                 value = float(cand.get("score", 0)) + 0.08 * novelty
-                if novelty < 0.35 and not need_more:
+                if novelty < 0.35 and not need_more and not picked:
                     continue
                 if value > best_value:
                     best_value = value
@@ -276,7 +278,17 @@ class ClipOptimizer:
         selected = [fit(c) for c in selected]
 
         source_ids = {str(c.get("source_id") or "") for c in selected if c.get("source_id")}
-        if len(source_ids) > 1:
+        if order_mode == "ai" and any(c.get("director_order") is not None for c in selected):
+            # The AI editor's story order; moments it did not choose follow in time order.
+            selected.sort(
+                key=lambda c: (
+                    0 if c.get("director_order") is not None else 1,
+                    float(c.get("director_order") or 0),
+                    str(c.get("source_id") or ""),
+                    float(c["start"]),
+                )
+            )
+        elif len(source_ids) > 1:
             selected = self._multi_source_order(selected)
         elif order_mode == "narrative":
             selected = self._narrative_order(selected)
@@ -655,4 +667,5 @@ class ClipOptimizer:
             source_id=str(candidate.get("source_id") or ""),
             source_name=str(candidate.get("source_name") or ""),
             source_path=str(candidate.get("source_path") or ""),
+            role=str(candidate.get("role") or ""),
         )

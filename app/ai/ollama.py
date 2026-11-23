@@ -241,7 +241,14 @@ class OllamaClient:
     def role_options(self, role: str) -> dict[str, Any]:
         """Runner options for one role. Warm-up, probes, and real calls share them because
         Ollama reloads a model whenever num_ctx or num_thread change."""
-        num_ctx = self.settings.ollama_vision_num_ctx if role == "vision" else self.settings.ollama_text_num_ctx
+        if role == "vision":
+            num_ctx = self.settings.ollama_vision_num_ctx
+        elif role == "director":
+            # The AI editor of prompt mode reads every candidate moment at once. Its larger
+            # window reloads the text model once per job, which is small next to its work.
+            num_ctx = max(self.settings.ollama_text_num_ctx, int(getattr(self.settings, "ollama_director_num_ctx", 0) or 0))
+        else:
+            num_ctx = self.settings.ollama_text_num_ctx
         return {"num_ctx": num_ctx, **self._thread_option()}
 
     def usage_snapshot(self) -> dict[str, float]:
@@ -524,7 +531,11 @@ class OllamaClient:
         system: str | None = None,
         options: dict[str, Any] | None = None,
         schema_first: bool = True,
+        think: bool = False,
     ) -> dict[str, Any]:
+        """A JSON reply. ``think`` lets a hybrid model (qwen3:8b and larger) reason before it
+        answers; the reasoning is not part of the reply but counts against num_predict. A
+        model that cannot think rejects the request with an OllamaError."""
         messages: list[dict[str, Any]] = []
         if system:
             messages.append({"role": "system", "content": system})
@@ -550,7 +561,7 @@ class OllamaClient:
                 "model": model,
                 "messages": attempt["messages"],
                 "stream": False,
-                "think": False,
+                "think": bool(think),
                 "keep_alive": self.settings.ollama_keep_alive,
                 "format": attempt["format"],
                 "options": dict(chat_options),
