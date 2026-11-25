@@ -28,6 +28,11 @@ _RANGES = {
     "cache_retention_days": (0, None),
     "scene_threshold": (1, 100),
     "silence_threshold_db": (-90, 0),
+    "claude_timeout": (30, 3600),
+    "claude_max_budget_usd": (0.05, 20),
+    "tts_speed": (0.6, 1.5),
+    "tts_threads": (0, 64),
+    "remotion_concurrency": (0, 16),
 }
 
 

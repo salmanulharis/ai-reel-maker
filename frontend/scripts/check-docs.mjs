@@ -5,7 +5,7 @@
 import { readFileSync } from "node:fs";
 import { DOC_ARTICLES, DOC_CATEGORIES, searchDocs } from "../src/docs/content.ts";
 
-const SETTINGS_SECTIONS = ["optimize", "ai", "speech", "video", "storage", "system", "performance", "connection"];
+const SETTINGS_SECTIONS = ["optimize", "ai", "speech", "video", "narration", "storage", "system", "performance", "connection"];
 const problems = [];
 const ids = Object.keys(DOC_ARTICLES);
 

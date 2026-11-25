@@ -121,6 +121,19 @@ Because the tunnel makes the GPU look like `127.0.0.1`, the app treats it as loc
 
 Stop the Studio when done to avoid charges.
 
+## 6. Narrated videos (Phase 0 trials)
+
+Two trial scripts measure the new steps on this computer; their numbers decide the defaults.
+
+| Step | Script | Decides |
+|---|---|---|
+| Kokoro narration (CPU) | `python scripts/voice_benchmark.py --download` | `WORDS_PER_SECOND` in `app/brief/schema.py` (2.8; measured 3.1 words/s for af_heart and 2.8 for am_michael, speaking at 0.67× real time plus about 0.6 s of Whisper word timing per second of speech) and whether speaking a brief is fast enough to run inside the render |
+| Remotion drawing | `python scripts/remotion_benchmark.py --prepare --workers 4 6` | the default worker count (`remotion_concurrency` = 0 → half the threads, at most 6) and `CHUNK_SECONDS` in `app/compose/remotion.py` |
+
+First measurement (12 threads, 15 GB, no graphics card, Ollama idle): 1080×1920 at 30 fps with 4 workers drew 7.6 frames per second, about 4 s per second of video, peaking at about 3.5 GB for Node + Chrome. A 30-second narrated short therefore adds about 2 minutes to creating the video. Compare 4 and 6 workers before changing the default.
+
+Remotion renders through headless Chrome, so the render step unloads Ollama models, Whisper and the voice model before drawing (`compose._free_memory`). Results are saved to `data/voice_benchmark.json` and `data/remotion_benchmark.json`; record them here once measured.
+
 ## Sources
 
 **Lightning AI**

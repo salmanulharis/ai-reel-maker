@@ -90,6 +90,32 @@ class Settings(BaseSettings):
     ollama_director_num_predict: int = 3072
     director_think: bool = False
 
+    # Video brief (title, hook, beats with narration) for narrated videos. "local" uses Ollama on
+    # this computer; "claude" sends the video's summary (and, if allowed, small frame sheets) to
+    # Claude through the Claude Code CLI on the user's own Claude subscription. Never switched
+    # automatically: this is only the choice pre-selected on the Create page.
+    brief_engine: str = "local"
+    # The Claude Code CLI program. Environment / .env only (never editable from the browser,
+    # because it names a program to run).
+    claude_cli_path: str = "claude"
+    claude_model: str = "opus"
+    claude_effort: str = "medium"
+    claude_send_frames: bool = True
+    claude_timeout: int = 300
+    # Safety cap the CLI enforces per brief (the subscription is not billed per call).
+    claude_max_budget_usd: float = 1.0
+    # Narration (Kokoro text to speech): on by default for new narrated videos, the voice, speed.
+    narration_default: bool = True
+    tts_voice: str = "af_heart"
+    tts_speed: float = 1.0
+    tts_threads: int = 0
+    # How narrated videos are drawn: "remotion" (titles, captions and text animated with
+    # Remotion) or "ffmpeg" (captions burned with FFmpeg, no animated text). Remotion falls back
+    # to FFmpeg when its tools are not prepared.
+    render_engine: str = "remotion"
+    # Parallel Remotion render workers (0 = about half the processor threads, at most 6).
+    remotion_concurrency: int = 0
+
     whisper_cpu_threads: int = 6
     whisper_num_workers: int = 1
     worker_idle_sleep: float = 1.5

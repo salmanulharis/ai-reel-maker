@@ -109,6 +109,11 @@ def _word_cues(words: list[Word], max_words: int, max_chars: int, max_seconds: f
     return cues
 
 
+def word_cues(words: list[Word], portrait: bool = False) -> list[Cue]:
+    """Caption lines for timed words (narration), sized like the word-by-word styles."""
+    return _word_cues(words, max_words=4 if portrait else 6, max_chars=22 if portrait else 34)
+
+
 def clip_cues(transcript: dict, clip_start: float, clip_end: float, style: str = "plain", portrait: bool = False) -> list[Cue]:
     """Caption lines for one clip, timed from the clip's start."""
     if style != "plain":

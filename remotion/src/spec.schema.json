@@ -1,0 +1,249 @@
+{
+  "$defs": {
+    "SpecCaption": {
+      "properties": {
+        "end": {
+          "title": "End",
+          "type": "number"
+        },
+        "start": {
+          "title": "Start",
+          "type": "number"
+        },
+        "text": {
+          "title": "Text",
+          "type": "string"
+        },
+        "words": {
+          "items": {
+            "$ref": "#/$defs/SpecWord"
+          },
+          "title": "Words",
+          "type": "array"
+        }
+      },
+      "required": [
+        "start",
+        "end",
+        "text"
+      ],
+      "title": "SpecCaption",
+      "type": "object"
+    },
+    "SpecClip": {
+      "description": "A piece of a source video (the preview plays these instead of a finished video).",
+      "properties": {
+        "end": {
+          "title": "End",
+          "type": "number"
+        },
+        "source_start": {
+          "title": "Source Start",
+          "type": "number"
+        },
+        "src": {
+          "title": "Src",
+          "type": "string"
+        },
+        "start": {
+          "title": "Start",
+          "type": "number"
+        }
+      },
+      "required": [
+        "src",
+        "start",
+        "end",
+        "source_start"
+      ],
+      "title": "SpecClip",
+      "type": "object"
+    },
+    "SpecNarration": {
+      "properties": {
+        "beat": {
+          "title": "Beat",
+          "type": "string"
+        },
+        "duration": {
+          "title": "Duration",
+          "type": "number"
+        },
+        "src": {
+          "title": "Src",
+          "type": "string"
+        },
+        "start": {
+          "title": "Start",
+          "type": "number"
+        }
+      },
+      "required": [
+        "beat",
+        "src",
+        "start",
+        "duration"
+      ],
+      "title": "SpecNarration",
+      "type": "object"
+    },
+    "SpecText": {
+      "properties": {
+        "end": {
+          "title": "End",
+          "type": "number"
+        },
+        "kind": {
+          "enum": [
+            "title",
+            "beat",
+            "cta"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "start": {
+          "title": "Start",
+          "type": "number"
+        },
+        "text": {
+          "title": "Text",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "text",
+        "start",
+        "end"
+      ],
+      "title": "SpecText",
+      "type": "object"
+    },
+    "SpecVideo": {
+      "properties": {
+        "clips": {
+          "items": {
+            "$ref": "#/$defs/SpecClip"
+          },
+          "title": "Clips",
+          "type": "array"
+        },
+        "kind": {
+          "enum": [
+            "base",
+            "clips"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "src": {
+          "default": "",
+          "title": "Src",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind"
+      ],
+      "title": "SpecVideo",
+      "type": "object"
+    },
+    "SpecWord": {
+      "properties": {
+        "end": {
+          "title": "End",
+          "type": "number"
+        },
+        "start": {
+          "title": "Start",
+          "type": "number"
+        },
+        "text": {
+          "title": "Text",
+          "type": "string"
+        }
+      },
+      "required": [
+        "text",
+        "start",
+        "end"
+      ],
+      "title": "SpecWord",
+      "type": "object"
+    }
+  },
+  "properties": {
+    "accent": {
+      "default": "#FFD700",
+      "title": "Accent",
+      "type": "string"
+    },
+    "caption_style": {
+      "default": "none",
+      "enum": [
+        "none",
+        "plain",
+        "clean",
+        "bold",
+        "boxed"
+      ],
+      "title": "Caption Style",
+      "type": "string"
+    },
+    "captions": {
+      "items": {
+        "$ref": "#/$defs/SpecCaption"
+      },
+      "title": "Captions",
+      "type": "array"
+    },
+    "duration": {
+      "title": "Duration",
+      "type": "number"
+    },
+    "fps": {
+      "title": "Fps",
+      "type": "number"
+    },
+    "height": {
+      "title": "Height",
+      "type": "integer"
+    },
+    "narration": {
+      "items": {
+        "$ref": "#/$defs/SpecNarration"
+      },
+      "title": "Narration",
+      "type": "array"
+    },
+    "texts": {
+      "items": {
+        "$ref": "#/$defs/SpecText"
+      },
+      "title": "Texts",
+      "type": "array"
+    },
+    "version": {
+      "default": 1,
+      "title": "Version",
+      "type": "integer"
+    },
+    "video": {
+      "$ref": "#/$defs/SpecVideo"
+    },
+    "width": {
+      "title": "Width",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "width",
+    "height",
+    "fps",
+    "duration",
+    "video"
+  ],
+  "title": "RenderSpec",
+  "type": "object"
+}

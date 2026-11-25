@@ -5,6 +5,7 @@ import { HighlightConfigPanel, defaultForm, formProblem } from "../components/Hi
 import { VideoCropPreview } from "../components/VideoCrop";
 import { PresetBar } from "../components/PresetBar";
 import { PromptPanel, understoodForm } from "../components/PromptPanel";
+import { NarratedVideoPanel } from "../components/NarratedVideoPanel";
 import { Alert, InlineStatus, Spinner } from "../components/Feedback";
 import { TransferProgress } from "../components/Progress";
 import { useUpload } from "../hooks/useUpload";
@@ -327,6 +328,7 @@ export default function Dashboard() {
             />
           </>
         )}
+        <NarratedVideoPanel form={form} setForm={setForm} />
       </section>
 
       {error && <Alert>{error}</Alert>}

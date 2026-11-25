@@ -1467,3 +1467,14 @@ details.help p { color: var(--muted); font-size: 13px; }
 .ai-plan p { margin: 6px 0; }
 .refine-notes { margin: 4px 0 8px; padding-left: 20px; }
 .clip-card .tag + p { margin-top: 6px; }
+
+/* Narrated videos */
+.tag.warn { color: var(--warn); background: var(--warn-soft); border-color: transparent; }
+.block { display: block; }
+.brief-beats { list-style: none; margin: 12px 0; padding: 0; display: grid; gap: 10px; }
+.brief-beat { border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; background: var(--surface-2); }
+.brief-beat .field { margin-bottom: 8px; }
+.brief-beat textarea, .brief-beat input[type="text"] { width: 100%; }
+.brief-beat-head { margin: 0 0 8px; display: flex; flex-wrap: wrap; gap: 6px; align-items: baseline; }
+.brief-panel h4.sub-title { margin-top: 16px; }
+.log-tail { font-size: 11px; color: var(--muted); background: var(--surface-2); border-radius: 6px; padding: 6px 8px; white-space: pre-wrap; max-height: 6.5em; overflow: hidden; }

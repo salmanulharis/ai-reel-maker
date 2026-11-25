@@ -107,7 +107,7 @@ export default function Analysis() {
   const [job, setJob] = useState<Job | null>(null);
   const [logs, setLogs] = useState<Array<{ level: string; message: string }>>([]);
   const [openLog, setOpenLog] = useState(false);
-  const [action, setAction] = useState<"" | "cancel" | "retry" | "pause" | "resume">("");
+  const [action, setAction] = useState<"" | "cancel" | "retry" | "pause" | "resume" | "local">("");
   const [actionError, setActionError] = useState("");
   const elapsed = useElapsed(job?.timing);
   // When the time left on screen was received, so it counts down between updates.
@@ -122,7 +122,7 @@ export default function Analysis() {
     if (box && stickToBottom.current) box.scrollTop = box.scrollHeight;
   }, [logs, openLog]);
 
-  async function run(kind: "cancel" | "retry" | "pause" | "resume", call: () => Promise<Job>) {
+  async function run(kind: "cancel" | "retry" | "pause" | "resume" | "local", call: () => Promise<Job>) {
     setAction(kind);
     setActionError("");
     try {
@@ -259,10 +259,16 @@ export default function Analysis() {
             {copy.cancelledHint}
           </Alert>
         )}
-        {paused && (
+        {paused && job.brief_failure && !pausing ? (
           <Alert kind="info">
-            <strong>{pausing ? copy.pausing : copy.paused}.</strong> {pausing ? copy.pausingHint : copy.pausedHint}
+            <strong>{messages.narrated.pausedTitle}:</strong> {job.brief_failure.message} {messages.narrated.pausedHint}
           </Alert>
+        ) : (
+          paused && (
+            <Alert kind="info">
+              <strong>{pausing ? copy.pausing : copy.paused}.</strong> {pausing ? copy.pausingHint : copy.pausedHint}
+            </Alert>
+          )
         )}
         <ul className="stage-list">
           {(job.stages || []).map((stage) => {
@@ -305,7 +311,18 @@ export default function Analysis() {
               onClick={() => run("resume", () => api.resume(id))}
             >
               {action === "resume" && <Spinner />}
-              {action === "resume" ? copy.resuming : copy.resume}
+              {action === "resume" ? copy.resuming : job.brief_failure ? messages.narrated.retry : copy.resume}
+            </button>
+          )}
+          {paused && job.brief_failure && !pausing && (
+            <button
+              className="btn"
+              disabled={action !== ""}
+              aria-busy={action === "local"}
+              onClick={() => run("local", () => api.switchBriefEngine(id, "local", true))}
+            >
+              {action === "local" && <Spinner />}
+              {messages.narrated.useLocal}
             </button>
           )}
           {stopped && !paused && (

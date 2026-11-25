@@ -1,0 +1,84 @@
+{
+  "version": 1,
+  "width": 1080,
+  "height": 1920,
+  "fps": 30.0,
+  "duration": 14.0,
+  "video": {
+    "kind": "base",
+    "src": "base.mp4",
+    "clips": []
+  },
+  "texts": [
+    {
+      "kind": "title",
+      "text": "Our trip",
+      "start": 0.0,
+      "end": 2.6
+    },
+    {
+      "kind": "beat",
+      "text": "Day one",
+      "start": 0.3,
+      "end": 3.5
+    },
+    {
+      "kind": "cta",
+      "text": "Follow for more",
+      "start": 11.2,
+      "end": 14.0
+    }
+  ],
+  "captions": [
+    {
+      "start": 0.2,
+      "end": 1.45,
+      "text": "Hello trip.",
+      "words": [
+        {
+          "text": "Hello",
+          "start": 0.2,
+          "end": 0.7
+        },
+        {
+          "text": "trip.",
+          "start": 0.8,
+          "end": 1.2
+        }
+      ]
+    },
+    {
+      "start": 4.2,
+      "end": 5.35,
+      "text": "Then this.",
+      "words": [
+        {
+          "text": "Then",
+          "start": 4.2,
+          "end": 4.5
+        },
+        {
+          "text": "this.",
+          "start": 4.6,
+          "end": 5.1
+        }
+      ]
+    }
+  ],
+  "caption_style": "bold",
+  "narration": [
+    {
+      "beat": "b1",
+      "src": "aaaa.wav",
+      "start": 0.2,
+      "duration": 2.0
+    },
+    {
+      "beat": "b2",
+      "src": "bbbb.wav",
+      "start": 4.2,
+      "duration": 3.0
+    }
+  ],
+  "accent": "#FFD700"
+}

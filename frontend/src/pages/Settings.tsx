@@ -1,6 +1,7 @@
 import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { useSearchParams } from "react-router-dom";
 import { WatchFolderPanel } from "../components/WatchFolderPanel";
+import { NarrationSettings } from "../components/NarrationSettings";
 import { api, formatBytes } from "../services/api";
 import { fill, messages } from "../i18n";
 import { Alert, InlineStatus, PageLoader, Spinner } from "../components/Feedback";
@@ -36,7 +37,7 @@ type SectionId = keyof typeof copy.sections;
 
 // Everyday sections first; tuning and connection details are grouped under "Advanced".
 const NAV: Array<{ group: string; items: SectionId[] }> = [
-  { group: copy.navGeneral, items: ["optimize", "ai", "speech", "video", "storage", "system"] },
+  { group: copy.navGeneral, items: ["optimize", "ai", "speech", "video", "narration", "storage", "system"] },
   { group: copy.navAdvanced, items: ["performance", "connection"] },
 ];
 const SECTIONS = NAV.flatMap((entry) => entry.items);
@@ -57,6 +58,7 @@ const SECTION_HELP: Partial<Record<SectionId, DocArticleId>> = {
   ai: "choose-models",
   speech: "setup-whisper",
   system: "hardware-detection",
+  narration: "narrated-videos",
   performance: "threads-memory",
   connection: "remote-gpu",
 };
@@ -961,6 +963,8 @@ export default function Settings() {
       </div>
       </>
     ),
+
+    narration: <NarrationSettings settings={settings} save={setInstant} />,
 
     connection: (
       <>

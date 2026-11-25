@@ -41,6 +41,8 @@ from app.analysis.signals import ENERGY_HOP, audio_energy, scene_quality
 from app.analysis.image_match import get_matcher, release_matcher, score_scenes
 from app.analysis import audio_events
 from app.analysis.director import CONTENT_FILE, DIRECTOR_FILE, apply_director, content_entry, run_director
+from app.brief.engines.base import BriefEngineError, BriefPaused
+from app.brief.service import apply_brief, make_brief, planning_config, save_failure
 from app.analysis.visual import (
     vision_reply_tokens,
     analyze_scenes_visual,
@@ -609,11 +611,14 @@ class VideoAnalyzer:
         if config.mode == "prompt":
             director_plan = self._direct(job_dir, config, candidates, content, cache, progress)
             candidates = apply_director(candidates, director_plan)
+        if config.video_brief:
+            brief = self._brief(job_dir, config, candidates, content, cache, progress, sources)
+            candidates = apply_brief(candidates, brief)
 
         progress.stage("planning", "running")
         plan = self.optimizer.plan(
             candidates,
-            config,
+            planning_config(config),
             source_duration=total_duration,
             multi_source=multi,
             similarity_fn=similarity_fn,
@@ -656,6 +661,8 @@ class VideoAnalyzer:
             skip.append("content")
         if config.mode != "prompt":
             skip.append("director")
+        if not config.video_brief:
+            skip.append("brief")
         progress.skip(*skip)
         if self.ollama is None or not self.text_enabled:
             progress.expect("content", 2.0)
@@ -1083,14 +1090,24 @@ class VideoAnalyzer:
         the Review page. Nothing is analyzed again."""
         if not cache.get("candidates_all") and not cache.get("candidates"):
             raise ValueError("This highlight has no analysis to plan from. Start the analysis again.")
-        progress.only("director", "planning")
+        progress.only("director", "brief", "planning") if config.video_brief else progress.only("director", "planning")
         pool, _note, _embedding = planning_pool(cache, config, self.settings)
         previous = [
             str(clip.get("candidate_id"))
             for clip in (cache.get("clip_plan") or {}).get("clips") or []
             if clip.get("candidate_id") and clip.get("kept", True) is not False
         ]
-        self._direct(job_dir, config, pool, cache.get("content_index") or {}, cache, progress, previous=previous)
+        plan = self._direct(job_dir, config, pool, cache.get("content_index") or {}, cache, progress, previous=previous)
+        if config.video_brief:
+            self._brief(
+                job_dir,
+                config,
+                apply_director(pool, plan),
+                cache.get("content_index") or {},
+                cache,
+                progress,
+                cache.get("sources") or [],
+            )
         progress.stage("planning", "running")
         plan_data = plan_from_cache(cache, config, self.settings)
         _write(job_dir / "clip_plan.json", plan_data)
@@ -1147,6 +1164,51 @@ class VideoAnalyzer:
         )
         progress.stage("director", "done")
         return plan
+
+    def _brief(
+        self,
+        job_dir: Path,
+        config: HighlightConfig,
+        candidates: list[dict],
+        content: dict,
+        cache: dict,
+        progress: PipelineProgress,
+        sources: list[dict],
+    ):
+        """The video brief (brief.json) with the engine the user chose. The local engine always
+        gives one (rules when Ollama cannot); when Claude cannot write it, the job pauses with
+        the reason (BriefPaused) and the user decides: retry, or use the local engine."""
+        claude = config.brief_engine == "claude"
+        progress.stage("brief", "running", "Claude is writing the brief" if claude else "")
+        if not claude and self.run_plan.one_at_a_time and self.ollama is not None:
+            from app.brief.engines.local import text_model
+
+            self._unload_models(text_model(self.settings))
+        usage_before = self._usage()
+        try:
+            brief = make_brief(
+                job_dir,
+                config,
+                candidates,
+                content,
+                settings=self.settings,
+                ollama=self.ollama if self.text_enabled else None,
+                runner=self.runner,
+                sources=sources,
+                video_name=", ".join(str(s.get("filename") or "") for s in sources if s.get("filename")),
+                cached=cache.get("brief"),
+                director_plan=cache.get("director_plan") if config.mode == "prompt" else None,
+                log=progress.log,
+                check_cancel=self._check_cancel,
+            )
+        except BriefEngineError as exc:
+            save_failure(job_dir, str(exc), exc.reason)
+            raise BriefPaused(str(exc), exc.reason) from exc
+        if not claude:
+            self._log_usage(progress, "Brief", usage_before)
+        cache["brief"] = brief.model_dump()
+        progress.stage("brief", "done")
+        return brief
 
     def _unload_models(self, keep: str | None) -> None:
         """Ask Ollama to free loaded models now (all but ``keep``). Best effort."""
@@ -1313,6 +1375,9 @@ def plan_from_cache(cache: dict, config: HighlightConfig, settings: Settings) ->
     candidates, speaker_note, embedding_fn = planning_pool(cache, config, settings)
     if config.mode == "prompt":
         candidates = apply_director(candidates, cache.get("director_plan"))
+    if config.video_brief:
+        candidates = apply_brief(candidates, cache.get("brief"))
+    config = planning_config(config)
     analyzer = RepetitionAnalyzer(embedding_fn)
     similarity_fn = analyzer.as_similarity_fn(candidates) if candidates else None
     optimizer = ClipOptimizer()

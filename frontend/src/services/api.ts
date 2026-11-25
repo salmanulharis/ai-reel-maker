@@ -1,14 +1,19 @@
 import { messages } from "../i18n";
 import type {
   AiPlanInfo,
+  BriefInfo,
+  EngineStatus,
   HighlightForm,
   InterpretResult,
   Job,
   Moment,
   MeasureStatus,
   OllamaStatus,
+  NarrationState,
   OptimizationGoal,
   OptimizationPlan,
+  VideoBrief,
+  VideoToolsStatus,
 } from "../types";
 import type { Preset } from "./presets";
 import { coverUrl } from "./cover";
@@ -279,6 +284,9 @@ export function configPayload(form: HighlightForm) {
     must_include: parseRanges(form.must_include),
     must_exclude: parseRanges(form.must_exclude),
     crop: form.cropEnabled ? form.crop : null,
+    video_brief: form.video_brief,
+    brief_engine: form.brief_engine,
+    narration: form.video_brief && form.narration,
   };
 }
 
@@ -356,7 +364,7 @@ export const api = {
   uploadMusic: (id: string, file: File, options?: UploadOptions) =>
     upload<{ name: string }>(`/api/jobs/${encodeURIComponent(id)}/music`, file, options),
   deleteMusic: (id: string) => http(`/api/jobs/${encodeURIComponent(id)}/music`, { method: "DELETE" }),
-  renderOptions: (id: string, options: { music_volume?: number; music_duck?: boolean }) =>
+  renderOptions: (id: string, options: { music_volume?: number; music_duck?: boolean; narration?: boolean }) =>
     http(`/api/jobs/${encodeURIComponent(id)}/render-options`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -464,6 +472,35 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
     }),
+  // Narrated videos
+  briefEngines: (refresh = false) =>
+    http<{ engines: EngineStatus[]; default: string }>(`/api/system/brief-engines${refresh ? "?refresh=1" : ""}`),
+  testClaude: () =>
+    http<{ ok: boolean; seconds: number; model: string | null; error: string | null }>("/api/system/brief-engines/claude/test", {
+      method: "POST",
+    }),
+  videoTools: () => http<VideoToolsStatus>("/api/system/video-tools"),
+  downloadVoiceModel: () => http("/api/system/voice-model/download", { method: "POST" }),
+  prepareVideoTools: () => http("/api/system/video-tools/prepare", { method: "POST" }),
+  jobBrief: (id: string) => http<BriefInfo>(`/api/jobs/${encodeURIComponent(id)}/brief`),
+  saveBrief: (
+    id: string,
+    changes: { title?: string; hook?: string; call_to_action?: string; beats?: Array<{ id: string; narration?: string; on_screen_text?: string }> }
+  ) =>
+    http<{ brief: VideoBrief; warnings: string[] }>(`/api/jobs/${encodeURIComponent(id)}/brief`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(changes),
+    }),
+  switchBriefEngine: (id: string, engine: "local" | "claude", resume = false) =>
+    http<Job>(`/api/jobs/${encodeURIComponent(id)}/brief-engine`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ engine, resume }),
+    }),
+  speakNarration: (id: string) => http<NarrationState>(`/api/jobs/${encodeURIComponent(id)}/narration`, { method: "POST" }),
+  previewSpec: (id: string) =>
+    http<{ spec: Record<string, unknown> | null; narration: NarrationState }>(`/api/jobs/${encodeURIComponent(id)}/preview-spec`),
   clearTmp: () => http("/api/settings/storage/clear-tmp", { method: "POST" }),
   clearCache: () => http("/api/settings/storage/clear-cache", { method: "POST" }),
   deleteCompleted: () => http("/api/settings/storage/delete-completed", { method: "POST" }),

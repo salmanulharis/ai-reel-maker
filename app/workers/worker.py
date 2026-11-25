@@ -14,6 +14,9 @@ from app.analysis.director import CONTENT_FILE, DIRECTOR_FILE
 from app.analysis.pipeline import PARTIAL_FILES, SOUND_EVENTS_FILE, SOUND_VECTORS_FILE, PipelineProgress, VideoAnalyzer
 from app.analysis.progress import RenderProgress
 from app.analysis.tighten import tighten_clips
+from app.brief.engines.base import BriefPaused
+from app.brief.schema import BRIEF_DIR, BRIEF_FILE
+from app.compose.compose import compose_video, fit_clips, prepare_narration, wants_composition, write_srt
 from app.config import get_settings
 from app.services.ollama_runtime import get_ollama_client
 from app.models.schemas import ClipPlan, ClipPlanItem, HighlightConfig, RenderSettings, VideoMetadata
@@ -274,10 +277,11 @@ def _run_analysis(app: Flask, job_id: str) -> None:
     manager.register_runner(job_id, runner)
     try:
         config = HighlightConfig.model_validate(json.loads(job.config_json or "{}"))
-        manager.prepare_stages(job_id, config.mode)
+        manager.prepare_stages(job_id, config.mode, config.video_brief)
         cache = load_cache(job_dir)
         if refining:
             sources = load_sources(job_dir) or [fallback_source(original, job.original_filename)]
+            cache["sources"] = sources
             cache = analyzer.refine(job_dir, config, progress, cache)
         else:
             sources, cache = _prepare_all_sources(manager, job, original, job_dir, config, runner, progress, cache)
@@ -312,6 +316,15 @@ def _run_analysis(app: Flask, job_id: str) -> None:
         except Exception:  # noqa: BLE001 - statistics must never fail a finished analysis
             _log.debug("Could not record performance history", exc_info=True)
         _emit(app, job_id, "job_complete", {"phase": "analysis", "plan": plan})
+    except BriefPaused as exc:
+        # The engine the user chose (Claude) could not write the brief. Nothing switches by
+        # itself: the job waits, with the reason, for "Retry" or "Use the local engine".
+        manager.take_pause_request(job_id)
+        manager.update(job_id, status="paused", analysis_status="pending", error=str(exc))
+        took = manager.finish_attempt(job_id, "paused")
+        progress.log(f"Paused after {format_elapsed(took)}: {exc}", "WARNING")
+        progress.log("Retry when Claude is available, or switch this video to the local engine. Finished work is kept.")
+        _emit(app, job_id, "job_paused", {"phase": "analysis", "reason": "brief", "message": str(exc)})
     except CancelledError:
         if manager.take_pause_request(job_id):
             manager.update(job_id, status="paused", analysis_status="pending")
@@ -413,6 +426,29 @@ def _run_render(app: Flask, job_id: str) -> None:
                 else f"Tighten clips: no {what} to cut (or no word timings)"
             )
 
+        # Narrated video: speak the brief first, so clips can be lengthened where a line needs
+        # more time than its beat has.
+        composing = wants_composition(config)
+        brief, narration = None, {}
+        if composing:
+
+            def stop_if_cancelled() -> None:
+                if cancel.is_set():
+                    raise CancelledError("Job cancelled")
+
+            def spoken(done: int, total: int) -> None:
+                manager.set_stage(job_id, "rendering", "running", "Speaking the narration", done, total, "lines")
+
+            emit_log("Preparing the narrated video")
+            brief, narration = prepare_narration(
+                job_dir, config, settings, log=emit_log, check_cancel=stop_if_cancelled, on_line=spoken
+            )
+            if narration:
+                plan.clips, fitted = fit_clips(plan.clips, brief, narration, sources)
+                plan.estimated_duration = sum(c.duration for c in plan.clips)
+                for note in fitted:
+                    emit_log(note)
+
         groups = render_groups(plan, config, outputs, ext)
         extras = render_extras(config, settings)
         music = find_music(job_dir) if config.music_volume > 0 else None
@@ -485,7 +521,10 @@ def _run_render(app: Flask, job_id: str) -> None:
             _emit(app, job_id, "job_progress", payload)
 
         tracker = RenderProgress(
-            [[max(0.0, c.end - c.start) for c in group["clips"]] for group in groups], music is not None, emit_progress
+            [[max(0.0, c.end - c.start) for c in group["clips"]] for group in groups],
+            music is not None,
+            emit_progress,
+            compose=composing,
         )
         clip_total = tracker.clip_total
         manager.record_progress(job_id, 0, None, "rendering", "running", "", 0, clip_total, "clips")
@@ -511,8 +550,9 @@ def _run_render(app: Flask, job_id: str) -> None:
                 render_settings,
                 work_dir,
                 metadata=meta,
+                # A narrated video's captions follow the narration (drawn when it is composed).
                 clip_subtitles=_clip_subtitle_writer(work_dir / "subtitles", subtitle_transcript_for, config)
-                if config.subtitles == "burned"
+                if config.subtitles == "burned" and not narration
                 else None,
                 hardware_encoder=encoder,
                 source_lookup=source_lookup,
@@ -524,6 +564,26 @@ def _run_render(app: Flask, job_id: str) -> None:
                 emit_log(subtitle_note)
             if result.get("leveled"):
                 emit_log(f"{prefix}Sound levelled in {result['leveled']['clips']} of {result['leveled']['of']} clips")
+            if composing:
+                spec = compose_video(
+                    runner,
+                    group["output"],
+                    group["clips"],
+                    brief,
+                    narration,
+                    config,
+                    settings,
+                    work_dir,
+                    job_dir,
+                    log=lambda message, level="INFO", p=prefix: emit_log(p + message, level),
+                    on_progress=lambda share, g=number - 1: tracker.compose(g, min(share, 0.99)),
+                )
+                tracker.compose(number - 1, 1.0)
+                if spec is not None:
+                    if narration and config.subtitles in {"auto", "burned", "srt"}:
+                        write_srt(spec, group["srt"])
+                    composed = runner.probe(group["output"]).model_dump()
+                    out_meta = {**out_meta, **{k: v for k, v in composed.items() if v}}
             if music is not None:
                 out_meta = add_music(
                     runner,
@@ -785,6 +845,8 @@ _CACHE_FILES = (
     SOUND_VECTORS_FILE,
     CONTENT_FILE,
     DIRECTOR_FILE,
+    BRIEF_FILE,
+    "render_spec.json",
     "metadata.json",
     "scenes.json",
     "transcript.json",
@@ -814,9 +876,9 @@ def _clear_analysis_cache(job_dir: Path) -> None:
         path = job_dir / name
         if path.exists():
             path.unlink()
-    frames = job_dir / "frames"
-    if frames.exists():
-        shutil.rmtree(frames, ignore_errors=True)
+    for folder in (job_dir / "frames", job_dir / BRIEF_DIR):
+        if folder.exists():
+            shutil.rmtree(folder, ignore_errors=True)
 
 
 def _crop_one(
@@ -979,6 +1041,7 @@ def load_cache(job_dir: Path) -> dict:
         "sound_events": SOUND_EVENTS_FILE,
         "content_index": CONTENT_FILE,
         "director_plan": DIRECTOR_FILE,
+        "brief": BRIEF_FILE,
     }
     for key, name in mapping.items():
         path = job_dir / name

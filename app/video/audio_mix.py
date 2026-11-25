@@ -127,6 +127,91 @@ def music_mix_command(
     ]
 
 
+# Narration is levelled a little below the social target, so the voice sits on top of the mix
+# without the limiter working hard.
+NARRATION_LUFS = -16.0
+
+
+def subtitle_filter(path: Path) -> str:
+    """FFmpeg's subtitles filter for an SRT or ASS file (the path escaped for filter syntax)."""
+    escaped = Path(path).as_posix().replace("\\", "/").replace(":", r"\:")
+    return f"subtitles='{escaped}'"
+
+
+def narration_mix_command(
+    base: Path,
+    narration: list[tuple[Path, float]],
+    output: Path,
+    duration: float,
+    has_audio: bool,
+    *,
+    audio_args: list[str],
+    picture: Path | None = None,
+    subtitles: Path | None = None,
+    video_args: list[str] | None = None,
+) -> list[str]:
+    """
+    The finished video with its voice-over. ``narration`` holds (spoken line, start second).
+    Each line is levelled on its own and placed at its time; the video's own sound is lowered
+    (ducked) while the voice speaks. The picture is ``picture`` (drawn separately, e.g. by
+    Remotion) or ``base``'s own, with ``subtitles`` (ASS) burned in when given. The picture is
+    copied unless it has to be drawn on or ``video_args`` asks for an encode.
+    """
+    duration = max(0.1, float(duration))
+    inputs = ["-i", safe_path_argument(base)]
+    if picture is not None:
+        inputs += ["-i", safe_path_argument(picture)]
+    first_voice = 2 if picture is not None else 1
+    parts: list[str] = []
+    labels: list[str] = []
+    for index, (path, start) in enumerate(narration):
+        inputs += ["-i", safe_path_argument(path)]
+        delay = max(0, int(round(float(start) * 1000)))
+        parts.append(
+            f"[{first_voice + index}:a]loudnorm=I={NARRATION_LUFS}:TP=-1.5:LRA=11,aresample=48000,"
+            f"aformat=channel_layouts=stereo,adelay={delay}|{delay}[n{index}]"
+        )
+        labels.append(f"[n{index}]")
+    if not labels:
+        raise ValueError("No narration to mix")
+    if len(labels) > 1:
+        parts.append(f"{''.join(labels)}amix=inputs={len(labels)}:normalize=0:dropout_transition=0[nm]")
+    else:
+        parts.append(f"{labels[0]}anull[nm]")
+    parts.append(f"[nm]apad=whole_dur={duration:.3f}[nv]")
+    if has_audio:
+        parts.append("[0:a]aresample=48000,aformat=channel_layouts=stereo[src]")
+        parts.append("[nv]asplit=2[nv1][nv2]")
+        parts.append("[src][nv2]sidechaincompress=threshold=0.015:ratio=6:attack=15:release=350[duck]")
+        parts.append("[duck][nv1]amix=inputs=2:normalize=0:duration=first:dropout_transition=0[a]")
+    else:
+        parts.append("[nv]anull[a]")
+    video_map: list[str]
+    if subtitles is not None:
+        parts.append(f"[0:v]{subtitle_filter(subtitles)}[v]")
+        video_map = ["-map", "[v]", *(video_args or ["-c:v", "libx264", "-preset", "medium", "-crf", "18", "-pix_fmt", "yuv420p"])]
+    else:
+        source = "1:v:0" if picture is not None else "0:v:0"
+        video_map = ["-map", source, *(video_args or ["-c:v", "copy"])]
+    command = [
+        "ffmpeg",
+        "-hide_banner",
+        "-y",
+        *inputs,
+        "-filter_complex",
+        ";".join(parts),
+        *video_map,
+        "-map",
+        "[a]",
+        *audio_args,
+        "-t",
+        f"{duration:.3f}",
+    ]
+    if Path(output).suffix.lower() in {".mp4", ".mov", ".m4v"}:
+        command += ["-movflags", "+faststart"]
+    return [*command, safe_path_argument(output)]
+
+
 def find_music(job_dir: Path) -> Path | None:
     folder = job_dir / "music"
     if not folder.is_dir():

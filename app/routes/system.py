@@ -321,3 +321,49 @@ def queue():
         if j.status in {"queued", "analyzing", "planning", "rendering"}
     ]
     return jsonify({"jobs": active})
+
+
+# Video brief engines and the video tools (narration voice, Remotion)
+
+
+@system_bp.get("/system/brief-engines")
+def brief_engines():
+    """Whether each brief engine is ready. Nothing is chosen here: the user picks the engine."""
+    from app.brief.engines import engines_status
+
+    refresh = request.args.get("refresh") in {"1", "true"}
+    return jsonify({"engines": engines_status(get_settings(), refresh=refresh), "default": get_settings().brief_engine})
+
+
+@system_bp.post("/system/brief-engines/claude/test")
+def test_claude_engine():
+    """One tiny request through the Claude Code CLI with the chosen model."""
+    from app.brief.engines.claude_cli import ClaudeCliEngine
+
+    return jsonify(ClaudeCliEngine(get_settings()).test())
+
+
+@system_bp.get("/system/video-tools")
+def video_tools():
+    from app.compose import remotion
+    from app.voice import kokoro
+
+    settings = get_settings()
+    return jsonify({"voice": kokoro.download_status(), "remotion": remotion.status(settings)})
+
+
+@system_bp.post("/system/voice-model/download")
+def download_voice_model():
+    from app.voice import kokoro
+
+    if not kokoro.runtime_available():
+        return jsonify({"error": "Narration needs kokoro-onnx and soundfile. Install the app requirements."}), 400
+    return jsonify(kokoro.start_download())
+
+
+@system_bp.post("/system/video-tools/prepare")
+def prepare_video_tools():
+    """Install the Remotion packages, build the composition and download its browser (one time)."""
+    from app.compose import remotion
+
+    return jsonify(remotion.start_prepare(get_settings()))

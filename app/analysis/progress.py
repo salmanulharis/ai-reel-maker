@@ -30,13 +30,14 @@ STAGES = [
     ("visual", "Visual AI analysis"),
     ("repetition", "Removing repetition"),
     ("director", "Planning with AI"),
+    ("brief", "Writing the video brief"),
     ("planning", "Planning highlight"),
 ]
 
 # Steps that run once per source video; the others run once per job.
 PER_SOURCE = ("metadata", "scenes", "audio", "transcript", "silence", "frames", "sounds", "content", "visual")
 BEFORE_SOURCES = ("prepare",)
-AFTER_SOURCES = ("repetition", "director", "planning")
+AFTER_SOURCES = ("repetition", "director", "brief", "planning")
 
 # Expected cost of each step in seconds: (fixed, per second of video) on a CPU-only computer.
 # Only the ratios matter for the percentage; the time left is corrected by the speed of this run.
@@ -53,6 +54,7 @@ _COST: dict[str, tuple[float, float]] = {
     "visual": (2.0, 0.8),
     "repetition": (1.0, 0.01),
     "director": (15.0, 0.0),
+    "brief": (25.0, 0.0),
     "planning": (1.0, 0.0),
 }
 # Used until a video's length is known.
@@ -479,6 +481,8 @@ class RenderProgress(_Reporter):
 
     # Mixing music re-encodes the sound only: a fraction of the clip encoding time.
     MUSIC_COST = 0.15
+    # A narrated video is drawn again (texts, captions) and its voice mixed in.
+    COMPOSE_COST = 1.2
 
     def __init__(
         self,
@@ -486,6 +490,7 @@ class RenderProgress(_Reporter):
         music: bool,
         emit: Callable[[dict], None],
         clock: Callable[[], float] = time.monotonic,
+        compose: bool = False,
     ):
         super().__init__(clock)
         self.emit = emit
@@ -495,6 +500,8 @@ class RenderProgress(_Reporter):
         for g, clips in enumerate(groups):
             for c, seconds in enumerate(clips):
                 self.model.add(("clip", g, c), max(0.05, seconds))
+            if compose:
+                self.model.add(("compose", g), max(0.5, sum(clips) * self.COMPOSE_COST))
             if music:
                 self.model.add(("music", g), max(0.5, sum(clips) * self.MUSIC_COST))
         self._detail = ""
@@ -524,9 +531,15 @@ class RenderProgress(_Reporter):
                 self._send(now)
 
     def music(self, group: int, fraction: float) -> None:
+        self._extra(("music", group), fraction)
+
+    def compose(self, group: int, fraction: float) -> None:
+        """The narrated video of ``group`` is ``fraction`` drawn and mixed."""
+        self._extra(("compose", group), fraction)
+
+    def _extra(self, key: tuple, fraction: float) -> None:
         with self.lock:
             now = self.clock()
-            key = ("music", group)
             if key not in self.model.units:
                 return
             final = fraction >= 1.0

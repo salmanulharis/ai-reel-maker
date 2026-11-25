@@ -53,3 +53,6 @@ samples/*
 !samples/.gitkeep
 !samples/README.md
 samples/.multi-e2e/
+
+# Remotion (narrated videos)
+remotion/node_modules/

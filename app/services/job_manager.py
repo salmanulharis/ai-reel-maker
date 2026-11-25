@@ -48,8 +48,9 @@ _STAGE_ON_OUTCOME = {
     "paused": "pending",
 }
 
-# Steps that run only in prompt mode.
+# Steps that run only in prompt mode, and only for narrated videos (a brief).
 PROMPT_STAGES = {"sounds", "director"}
+BRIEF_STAGES = {"brief"}
 ANALYSIS_STAGES = [
     "metadata",
     "scenes",
@@ -62,6 +63,7 @@ ANALYSIS_STAGES = [
     "visual",
     "repetition",
     "director",
+    "brief",
     "planning",
 ]
 
@@ -195,7 +197,7 @@ class JobManager:
                 last_stage="uploaded",
             )
             session.add(job)
-            for name in _stage_names(config.mode):
+            for name in _stage_names(config.mode, config.video_brief):
                 session.add(JobStage(job_id=job_id, name=name, status="pending"))
             session.commit()
             session.refresh(job)
@@ -387,10 +389,11 @@ class JobManager:
         finally:
             session.close()
 
-    def prepare_stages(self, job_id: str, mode: str) -> None:
+    def prepare_stages(self, job_id: str, mode: str, brief: bool = False) -> None:
         """The step list for the job's mode: prompt mode adds understanding sounds and the AI
-        editor; manual mode does not show them (rows that never ran are removed)."""
-        wanted = _stage_names(mode)
+        editor, a narrated video adds writing the brief; steps that do not apply are not shown
+        (rows that never ran are removed)."""
+        wanted = _stage_names(mode, brief)
         session = get_session()
         try:
             rows = {row.name: row for row in session.query(JobStage).filter(JobStage.job_id == job_id)}
@@ -398,7 +401,7 @@ class JobManager:
                 if name not in rows:
                     session.add(JobStage(job_id=job_id, name=name, status="pending"))
             for name, row in rows.items():
-                if name in PROMPT_STAGES and name not in wanted and row.status == "pending":
+                if name in PROMPT_STAGES | BRIEF_STAGES and name not in wanted and row.status == "pending":
                     session.delete(row)
             session.commit()
         finally:
@@ -643,6 +646,8 @@ class JobManager:
             "config": config,
             "sources": load_sources(self.job_dir(job.id)),
             "stages": self.stages(job.id),
+            # Why a narrated video's brief paused the job (Claude could not write it).
+            "brief_failure": _brief_failure(self.job_dir(job.id)) if job.status == "paused" else None,
             "clips": [
                 {
                     "id": c.id,
@@ -677,8 +682,18 @@ class JobManager:
         }
 
 
-def _stage_names(mode: str) -> list[str]:
-    names = [name for name in ANALYSIS_STAGES if mode == "prompt" or name not in PROMPT_STAGES]
+def _brief_failure(job_dir: Path) -> dict | None:
+    from app.brief.service import read_failure
+
+    return read_failure(job_dir)
+
+
+def _stage_names(mode: str, brief: bool = False) -> list[str]:
+    names = [
+        name
+        for name in ANALYSIS_STAGES
+        if (mode == "prompt" or name not in PROMPT_STAGES) and (brief or name not in BRIEF_STAGES)
+    ]
     return names + ["rendering"]
 
 

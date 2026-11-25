@@ -34,7 +34,7 @@ export const DOC_ARTICLES = {
     summary: "The steps the app runs, and which ones use AI.",
     keywords: "pipeline steps stages overview",
     blocks: [
-      { kind: "p", text: "Everything runs on your computer (or on a computer you choose). Your videos are never uploaded to an online AI service." },
+      { kind: "p", text: "Everything runs on your computer (or on a computer you choose). Your videos are never uploaded to an online AI service. The one exception is your own choice: a narrated video's brief can be written by Claude, which then receives a text list of the moments (and, if you allow it, small frame sheets)." },
       {
         kind: "steps",
         items: [
@@ -480,12 +480,41 @@ export const DOC_ARTICLES = {
       },
     ],
   },
+  "narrated-videos": {
+    title: "Narrated videos",
+    summary: "A brief, a voice-over and animated titles, written from the analysis.",
+    keywords: "narration voice over voiceover tts kokoro remotion claude brief title captions story",
+    blocks: [
+      { kind: "p", text: "Turn on **Make a narrated video** on the Create page. After the analysis, an AI writes a short **brief**: a title, a hook, a few beats (each a few of the video's own moments with a line of narration and some on-screen text) and a closing line. The video then gets the title, the texts and, with **Add a voice-over**, the narration spoken over it." },
+      {
+        kind: "table",
+        head: ["Who writes the brief", "What it uses", "What leaves your computer"],
+        rows: [
+          ["**Local (this computer)**", "Your Ollama text model, like the AI editor", "Nothing"],
+          ["**Claude (your Claude subscription)**", "Claude Code on this computer, signed in with your Claude account", "The list of moments (what is said, seen and heard) and, if allowed, small frame sheets"],
+        ],
+      },
+      { kind: "p", text: "Your choice is used as is. Press **Check engines** to see whether each one is ready. If Claude can't write the brief (not signed in, usage limit reached, no answer), the job **pauses** and tells you why: choose **Retry with Claude** or **Use the local engine**. Without Ollama, the local engine still makes a simple brief from the best moments, without narration text." },
+      { kind: "h", text: "Checks on every brief" },
+      { kind: "list", items: [
+        "The engine picks moments only from the analysis's list, never by time, so every cut is a clean one.",
+        "Each beat gets a word budget from its length (about 2.8 words per second), so the voice fits its pictures.",
+        "Problems are sent back to the engine once to fix; anything left is fixed by rules (unknown moments dropped, narration shortened, required parts added).",
+      ] },
+      { kind: "h", text: "The voice" },
+      { kind: "p", text: "The narration is spoken by **Kokoro**, a small natural voice model that runs on your computer (about 340 MB, downloaded once from **Settings → Narrated videos**). Each line is spoken once and kept: editing one line on the Review page only re-speaks that line. When a line is longer than its beat, that beat's last clip runs a little longer. The video's own sound is lowered while the voice speaks. The voices speak English." },
+      { kind: "h", text: "Titles and captions" },
+      { kind: "p", text: "With the **Remotion** video tools prepared (one button in Settings, needs Node.js 18 or newer), titles fade in and captions highlight each spoken word. Without them, the same texts are burned in with FFmpeg. To show the narration as captions, choose burned-in subtitles." },
+      { kind: "tip", text: "On the Review page, edit the brief's words, press **Speak the narration** and **Show preview** to watch the narrated video in the browser before creating it." },
+      { kind: "settings", section: "narration", label: "Open narrated video settings" },
+    ],
+  },
 } satisfies Record<string, DocArticle>;
 
 export type DocArticleId = keyof typeof DOC_ARTICLES;
 
 export const DOC_CATEGORIES: Array<{ title: string; articles: DocArticleId[] }> = [
-  { title: "Getting started", articles: ["how-it-works", "describe-it", "requirements", "setup-ollama", "leave-out", "pause-resume"] },
+  { title: "Getting started", articles: ["how-it-works", "describe-it", "narrated-videos", "requirements", "setup-ollama", "leave-out", "pause-resume"] },
   { title: "Speed without a graphics card", articles: ["cpu-speed", "where-time-goes", "choose-models", "threads-memory", "ollama-tuning"] },
   { title: "Lightweight AI models", articles: ["setup-whisper", "setup-image-matching", "setup-embeddings"] },
   { title: "Graphics cards", articles: ["hardware-detection", "gpu-setup", "fallbacks", "remote-gpu"] },

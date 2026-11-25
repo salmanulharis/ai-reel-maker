@@ -23,6 +23,10 @@ av>=11,<19
 onnxruntime>=1.17
 tokenizers>=0.15
 huggingface-hub>=0.20
+# Narration voice for narrated videos (Kokoro v1.0, ONNX). Brings its own espeak-ng; the model is
+# downloaded from Settings. soundfile writes the spoken lines.
+kokoro-onnx>=0.6.1,<0.7
+soundfile>=0.12
 psutil>=5.9.8
 pillow>=10.2.0
 werkzeug>=3.0.1

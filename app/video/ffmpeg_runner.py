@@ -20,6 +20,41 @@ class FFmpegError(RuntimeError):
     pass
 
 
+class CommandError(RuntimeError):
+    """A tool other than FFmpeg (Node, the Claude CLI) could not run or did not finish."""
+
+
+def kill_process_tree(proc: subprocess.Popen, timeout: float = 5.0) -> None:
+    """Stop ``proc`` and every process it started. Children first, so none is left behind."""
+    children = []
+    try:
+        import psutil
+
+        children = psutil.Process(proc.pid).children(recursive=True)
+    except Exception:  # noqa: BLE001 - gone already, or a test double without a real process
+        children = []
+    for child in children:
+        try:
+            child.terminate()
+        except Exception:  # noqa: BLE001
+            pass
+    if proc.poll() is None:
+        proc.terminate()
+        try:
+            proc.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+    if children:
+        try:
+            import psutil
+
+            _, alive = psutil.wait_procs(children, timeout=timeout)
+            for child in alive:
+                child.kill()
+        except Exception:  # noqa: BLE001
+            pass
+
+
 # Where FFmpeg commands run by this thread report how far they are (see report_progress).
 _sink = threading.local()
 
@@ -38,11 +73,83 @@ class FFmpegRunner:
             procs = list(self._procs)
         for proc in procs:
             if proc.poll() is None:
-                proc.terminate()
+                # Node starts Chrome and the Claude CLI starts helpers: stop the whole tree, or
+                # they keep running (and holding files) after the job stopped.
+                kill_process_tree(proc)
+
+    def run_streaming(
+        self,
+        command: list[str],
+        *,
+        on_line: Callable[[str], None] | None = None,
+        stdin_text: str | None = None,
+        timeout: float | None = None,
+        cwd: str | Path | None = None,
+        env: dict[str, str] | None = None,
+    ) -> tuple[int, list[str], str]:
+        """Run a long-running tool (Node, the Claude CLI) that reports as it goes: every line it
+        prints is passed to ``on_line`` and kept. ``stdin_text`` is written to its input. Stops
+        with the job (the whole process tree). Returns (exit code, stdout lines, stderr tail);
+        raises CommandError on a timeout or when the program cannot be started."""
+        if self.cancel_event.is_set():
+            raise CancelledError("Job cancelled")
+        try:
+            proc = subprocess.Popen(
+                command,
+                stdin=subprocess.PIPE if stdin_text is not None else subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                cwd=str(cwd) if cwd else None,
+                env=env,
+            )
+        except OSError as exc:
+            raise CommandError(f"Could not start {Path(str(command[0])).name}: {exc}") from exc
+        with self._procs_lock:
+            self._procs.add(proc)
+        errors: list[str] = []
+        reader = threading.Thread(target=lambda: errors.append(proc.stderr.read()), daemon=True)
+        reader.start()
+        if stdin_text is not None:
+
+            def feed() -> None:
                 try:
-                    proc.wait(timeout=5)
-                except subprocess.TimeoutExpired:
-                    proc.kill()
+                    proc.stdin.write(stdin_text)
+                    proc.stdin.close()
+                except (OSError, ValueError):
+                    pass  # the program ended (or was stopped) before reading everything
+
+            threading.Thread(target=feed, daemon=True).start()
+        timed_out = threading.Event()
+        timer = None
+        if timeout:
+            timer = threading.Timer(timeout, lambda: (timed_out.set(), kill_process_tree(proc)))
+            timer.daemon = True
+            timer.start()
+        lines: list[str] = []
+        try:
+            for line in proc.stdout:
+                line = line.rstrip("\r\n")
+                lines.append(line)
+                if on_line is not None:
+                    try:
+                        on_line(line)
+                    except Exception:  # noqa: BLE001 - reporting never disturbs the program
+                        pass
+            proc.wait()
+        finally:
+            if timer is not None:
+                timer.cancel()
+            reader.join(timeout=5)
+            with self._procs_lock:
+                self._procs.discard(proc)
+        if self.cancel_event.is_set():
+            raise CancelledError("Job cancelled")
+        if timed_out.is_set():
+            raise CommandError(f"{Path(str(command[0])).name} did not finish within {int(timeout or 0)} seconds")
+        return proc.returncode, lines, "".join(errors)[-4000:]
 
     def run(
         self,

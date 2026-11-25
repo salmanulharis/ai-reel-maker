@@ -52,6 +52,7 @@ Everything runs locally. Your videos are not uploaded to third-party AI services
 - Analysis cache so changing 20s → 30s does not re-transcribe
 - Cancel, retry from the last valid stage, job history, storage cleanup
 - Deterministic fallback when Ollama is offline
+- Narrated videos: an AI brief (title, hook, beats, closing line) written by the local model or, if you choose, by Claude through Claude Code on your own subscription; a local Kokoro voice-over; animated titles and word-highlighted captions drawn with Remotion (FFmpeg fallback), previewed in the browser before rendering
 
 ---
 

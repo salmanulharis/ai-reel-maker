@@ -50,6 +50,28 @@ EDITABLE = {
     "ollama_director_model",
     "ollama_director_num_ctx",
     "director_think",
+    # Narrated videos (the Claude CLI's program path is .env only: it names a program to run).
+    "brief_engine",
+    "claude_model",
+    "claude_effort",
+    "claude_send_frames",
+    "claude_timeout",
+    "claude_max_budget_usd",
+    "narration_default",
+    "tts_voice",
+    "tts_speed",
+    "tts_threads",
+    "render_engine",
+    "remotion_concurrency",
+}
+
+# Settings with a fixed set of values.
+_CHOICES = {
+    "vision_scope": {"shortlist", "all"},
+    "brief_engine": {"local", "claude"},
+    "claude_model": {"opus", "sonnet", "haiku"},
+    "claude_effort": {"low", "medium", "high"},
+    "render_engine": {"remotion", "ffmpeg"},
 }
 
 
@@ -68,8 +90,14 @@ def save_settings():
     payload = dict(request.get_json(silent=True) or {})
     settings = get_settings()
     values = {key: value for key, value in payload.items() if key in EDITABLE}
-    if "vision_scope" in values and values["vision_scope"] not in {"shortlist", "all"}:
-        return jsonify({"error": "vision_scope must be shortlist or all"}), 400
+    for key, allowed in _CHOICES.items():
+        if key in values and values[key] not in allowed:
+            return jsonify({"error": f"{key} must be one of: {', '.join(sorted(allowed))}"}), 400
+    if "tts_voice" in values:
+        from app.voice.kokoro import VOICES
+
+        if values["tts_voice"] not in VOICES:
+            return jsonify({"error": "unknown voice"}), 400
     try:
         values = validate_values(values, settings)
     except ValueError as exc:

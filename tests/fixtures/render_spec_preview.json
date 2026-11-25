@@ -1,0 +1,49 @@
+{
+  "version": 1,
+  "width": 1920,
+  "height": 1080,
+  "fps": 25.0,
+  "duration": 10.0,
+  "video": {
+    "kind": "clips",
+    "src": "",
+    "clips": [
+      {
+        "src": "/api/media/job/source/v0",
+        "start": 0.0,
+        "end": 4.0,
+        "source_start": 10.0
+      },
+      {
+        "src": "/api/media/job/source/v0",
+        "start": 4.0,
+        "end": 10.0,
+        "source_start": 30.0
+      }
+    ]
+  },
+  "texts": [
+    {
+      "kind": "title",
+      "text": "Our trip",
+      "start": 0.0,
+      "end": 2.6
+    },
+    {
+      "kind": "beat",
+      "text": "Day one",
+      "start": 0.3,
+      "end": 3.5
+    },
+    {
+      "kind": "cta",
+      "text": "Follow for more",
+      "start": 7.2,
+      "end": 10.0
+    }
+  ],
+  "captions": [],
+  "caption_style": "clean",
+  "narration": [],
+  "accent": "#FFD700"
+}

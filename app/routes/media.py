@@ -70,6 +70,22 @@ def source_media_by_id(job_id: str, source_id: str):
     return _send_job_video(job_id, _source_file(job_id, source_id))
 
 
+@media_bp.get("/media/<job_id>/narration/<name>")
+def narration_media(job_id: str, name: str):
+    """A spoken narration line (for the Review preview)."""
+    import re
+
+    from app.voice.kokoro import NARRATION_DIR
+
+    if not re.fullmatch(r"[0-9a-f]{20}\.wav", name):
+        abort(404)
+    manager = get_job_manager()
+    if not manager.get(job_id):
+        abort(404)
+    path = manager.job_dir(job_id) / NARRATION_DIR / name
+    return _send_job_video(job_id, path)
+
+
 @media_bp.get("/media/<job_id>/output")
 def output_media(job_id: str):
     """The finished highlight, or ?short=N for one of several shorts."""

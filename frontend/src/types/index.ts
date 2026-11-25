@@ -147,6 +147,8 @@ export interface Job {
   stages: Stage[];
   clips: Clip[];
   sources?: JobSource[];
+  /** Why a narrated video's brief paused the job (Claude could not write it). */
+  brief_failure?: { message: string; reason: string } | null;
   outputs: Array<{
     id: number;
     kind?: string;
@@ -222,6 +224,93 @@ export interface HighlightForm {
   resolution: string;
   must_include: string;
   must_exclude: string;
+  /** A narrated video: a brief (title, hook, beats) is written and drawn on the video. */
+  video_brief: boolean;
+  /** Who writes the brief; chosen by the user, never switched automatically. */
+  brief_engine: "local" | "claude";
+  /** Speak the brief's narration over the video (needs video_brief). */
+  narration: boolean;
+}
+
+/** GET /api/system/brief-engines: whether each brief engine is ready. */
+export interface EngineStatus {
+  name: "local" | "claude";
+  label: string;
+  ready: boolean;
+  problems: string[];
+  notes: string[];
+  details: Record<string, unknown>;
+}
+
+export interface BriefClip {
+  id: string;
+  source_id: string;
+  start: number;
+  end: number;
+}
+
+export interface BriefBeat {
+  id: string;
+  purpose: string;
+  narration: string;
+  on_screen_text: string;
+  /** About how many narration words fit the beat's moments. */
+  max_words: number;
+  clips: BriefClip[];
+}
+
+/** A narrated video's brief (brief.json). */
+export interface VideoBrief {
+  engine: string;
+  model: string;
+  title: string;
+  hook: string;
+  tone: string;
+  music_mood: string;
+  call_to_action: string;
+  beats: BriefBeat[];
+  /** What the checks fixed. */
+  checks: string[];
+  edited: boolean;
+}
+
+export interface NarrationState {
+  state: "idle" | "running" | "done" | "error";
+  done: number;
+  total: number;
+  error?: string | null;
+}
+
+/** GET /api/jobs/:id/brief */
+export interface BriefInfo {
+  brief: VideoBrief | null;
+  failure: { message: string; reason: string } | null;
+  narration: NarrationState;
+  /** Beat ids whose narration is already spoken with the current voice. */
+  spoken: string[];
+}
+
+/** GET /api/system/video-tools */
+export interface VideoToolsStatus {
+  voice: TransferFields & {
+    state: string;
+    files_done: number;
+    files_total: number;
+    error?: string | null;
+    installed: boolean;
+    size_mb: number;
+    runtime: boolean;
+    voices: Record<string, string>;
+  };
+  remotion: {
+    node: string | null;
+    node_ok: boolean;
+    installed: boolean;
+    bundle: boolean;
+    browser: boolean;
+    ready: boolean;
+    prepare: { state: string; step: string; error?: string | null; log: string[] };
+  };
 }
 
 export interface ModelSpec {

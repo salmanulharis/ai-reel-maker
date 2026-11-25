@@ -267,6 +267,103 @@ def refine_job(job_id: str):
     return jsonify(manager.serialize(job))
 
 
+@jobs_bp.get("/jobs/<job_id>/brief")
+def job_brief(job_id: str):
+    """The video brief (narrated videos), why a Claude brief paused the job, and the voice."""
+    from app.brief.service import load_brief, read_failure
+    from app.services import narration_preview
+
+    manager = get_job_manager()
+    job = manager.get(job_id)
+    if not job:
+        return jsonify({"error": "not found"}), 404
+    job_dir = manager.job_dir(job_id)
+    brief = load_brief(job_dir)
+    return jsonify(
+        {
+            "brief": brief.model_dump() if brief else None,
+            "failure": read_failure(job_dir) if job.status == "paused" else None,
+            "narration": narration_preview.status(job_id),
+            "spoken": sorted(narration_preview.spoken_lines(job_dir, get_settings())) if brief else [],
+        }
+    )
+
+
+@jobs_bp.put("/jobs/<job_id>/brief")
+def edit_job_brief(job_id: str):
+    """Text edits from the Review page (title, hook, closing line, each beat's words)."""
+    from app.brief.service import update_brief
+
+    manager = get_job_manager()
+    job = manager.get(job_id)
+    if not job:
+        return jsonify({"error": "not found"}), 404
+    if job.status in {"analyzing", "rendering"} or manager.has_runners(job_id):
+        return jsonify({"error": "Wait until the job has stopped working before editing the brief."}), 409
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return jsonify({"error": "Send the changes as JSON."}), 400
+    try:
+        brief, warnings = update_brief(manager.job_dir(job_id), data)
+    except LookupError as exc:
+        return jsonify({"error": str(exc)}), 404
+    return jsonify({"brief": brief.model_dump(), "warnings": warnings})
+
+
+@jobs_bp.post("/jobs/<job_id>/brief-engine")
+def switch_brief_engine(job_id: str):
+    """Choose the engine for this job's brief ("local" or "claude"). With ``resume``, a job that
+    paused because Claude could not write the brief continues with the new choice."""
+    from app.brief.service import clear_failure
+
+    manager = get_job_manager()
+    job = manager.get(job_id)
+    if not job:
+        return jsonify({"error": "not found"}), 404
+    if manager.has_runners(job_id):
+        return jsonify({"error": STILL_STOPPING}), 409
+    data = request.get_json(silent=True) or {}
+    engine = str(data.get("engine") or "")
+    if engine not in {"local", "claude"}:
+        return jsonify({"error": "engine must be local or claude"}), 400
+    values = json.loads(job.config_json or "{}")
+    values["brief_engine"] = engine
+    try:
+        config = HighlightConfig.model_validate(values)
+    except ValueError as exc:
+        return jsonify({"error": _error_message(exc)}), 400
+    job = manager.update(job_id, config_json=config.model_dump_json())
+    if data.get("resume") and job.status == "paused":
+        clear_failure(manager.job_dir(job_id))
+        job = manager.resume(job_id)
+    return jsonify(manager.serialize(job))
+
+
+@jobs_bp.post("/jobs/<job_id>/narration")
+def speak_narration(job_id: str):
+    """Speak the brief's lines for the Review preview (in the background; reused by the render)."""
+    from app.services import narration_preview
+
+    manager = get_job_manager()
+    if not manager.get(job_id):
+        return jsonify({"error": "not found"}), 404
+    state = narration_preview.start(job_id, manager.job_dir(job_id), get_settings())
+    return jsonify(state), (400 if state.get("state") == "error" else 200)
+
+
+@jobs_bp.get("/jobs/<job_id>/preview-spec")
+def preview_spec(job_id: str):
+    """The narrated video's timeline for the Review player (spoken lines only once spoken)."""
+    from app.services import narration_preview
+
+    manager = get_job_manager()
+    job = manager.get(job_id)
+    if not job:
+        return jsonify({"error": "not found"}), 404
+    spec = narration_preview.preview_spec(job_id, manager.job_dir(job_id), manager.serialize(job), get_settings())
+    return jsonify({"spec": spec, "narration": narration_preview.status(job_id)})
+
+
 @jobs_bp.get("/jobs/<job_id>/ai-plan")
 def job_ai_plan(job_id: str):
     """What the AI understood and chose (prompt mode), for the Review page."""
@@ -549,7 +646,7 @@ def make_post_text(job_id: str):
 
 
 MUSIC_MAX_BYTES = 200 * 1024 * 1024
-RENDER_OPTIONS = {"music_volume", "music_duck"}
+RENDER_OPTIONS = {"music_volume", "music_duck", "narration"}
 
 
 @jobs_bp.get("/jobs/<job_id>/music")

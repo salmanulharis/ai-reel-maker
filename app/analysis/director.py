@@ -372,3 +372,29 @@ def _valid_picks(reply: dict | None, allowed: set[str]) -> list[dict]:
 
 def _text(value: Any, limit: int) -> str:
     return " ".join(str(value or "").split())[:limit]
+
+
+# Shared with the video brief (app.brief), which reads the moments the same way.
+
+
+def candidate_pool(candidates: list[dict], content: dict, limit: int = MAX_CANDIDATES) -> list[dict]:
+    """The best ``limit`` moments (by score and wanted sounds), in time order per video."""
+    usable = [c for c in candidates if c.get("id") is not None and float(c.get("end", 0)) > float(c.get("start", 0))]
+    usable.sort(key=lambda c: _relevance(c, content), reverse=True)
+    pool = usable[: max(1, min(limit, MAX_CANDIDATES))]
+    pool.sort(key=lambda c: (str(c.get("source_id") or ""), float(c["start"])))
+    return pool
+
+
+def alias_map(pool: list[dict]) -> dict[str, dict]:
+    """Moments numbered m1, m2, ... in the order given."""
+    return _aliases(pool)
+
+
+def moment_line(alias: str, item: dict, content: dict) -> str:
+    """One moment as the AI reads it: time, length, score, what is said, seen and heard."""
+    return _line(alias, item, content)
+
+
+def request_text(config: HighlightConfig) -> str:
+    return config.prompt or (config.requirements.summary if config.requirements else "")

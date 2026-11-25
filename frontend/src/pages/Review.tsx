@@ -6,6 +6,7 @@ import { Alert, FilmIcon, InlineStatus, PageLoader, PlayIcon, Spinner } from "..
 import { ClipPreviewPanel, useClipPreview } from "../components/ClipPreview";
 import { MoreMoments } from "../components/MoreMoments";
 import { AiPlanPanel } from "../components/AiPlanPanel";
+import { BriefPanel } from "../components/BriefPanel";
 import { EditorExport } from "../components/EditorExport";
 import { insertIndex, insertIndexInShort, momentKey, momentToClip, nearestShort, shortIndex } from "../services/clipPreview";
 import { strength } from "../services/strength";
@@ -533,6 +534,14 @@ export default function Review() {
         disabled={pending !== ""}
         onRefining={() => navigate(`/jobs/${id}/analysis`)}
       />
+      {(job.config as { video_brief?: boolean } | undefined)?.video_brief && (
+        <BriefPanel
+          jobId={id}
+          narrationOn={(job.config as { narration?: boolean } | undefined)?.narration === true}
+          clipsKey={clips.map((clip) => `${clip.kept === false ? "x" : ""}${clip.source_id || ""}:${clip.start}-${clip.end}`).join("|")}
+          beforePreview={() => api.clips(id, clips)}
+        />
+      )}
       <MoreMoments
         jobId={id}
         clips={clips}

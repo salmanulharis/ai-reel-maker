@@ -373,6 +373,14 @@ class HighlightConfig(BaseModel):
     avoid: list[str] = Field(default_factory=list)
     avoid_custom: str = ""
     avoid_mode: Literal["avoid", "never"] = "avoid"
+    # A narrated video: a brief (title, hook, beats with narration and on-screen text) is written
+    # from the analysis, and the video gets a voice-over and text drawn on it.
+    video_brief: bool = False
+    # Which engine writes the brief: "local" (Ollama on this computer) or "claude" (the Claude
+    # Code CLI on the user's subscription). Chosen by the user; never switched automatically.
+    brief_engine: Literal["local", "claude"] = "local"
+    # Speak the brief's narration (Kokoro) over the video. Needs a brief.
+    narration: bool = False
 
     @model_validator(mode="after")
     def _range(self) -> "HighlightConfig":
@@ -481,6 +489,9 @@ class HighlightConfig(BaseModel):
         # Speech kinds need a transcript, which is not made without speech.
         self.avoid = clean_items(self.avoid, use_speech=self.use_speech)
         self.avoid_custom = (self.avoid_custom or "").strip()[:300]
+        if self.narration:
+            # The narration is the brief's text: there is nothing to speak without one.
+            self.video_brief = True
         return self
 
 
