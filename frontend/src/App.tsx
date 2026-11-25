@@ -4,7 +4,7 @@ import { messages } from "./i18n";
 import { OllamaStatus } from "./components/OllamaStatus";
 import { ThemeToggle } from "./components/ThemeToggle";
 import { useJobNotifications } from "./hooks/useJobNotifications";
-import { BookIcon, FilmIcon, HistoryIcon, PlusIcon, SettingsIcon } from "./components/Feedback";
+import { BookIcon, HistoryIcon, PlusIcon, SettingsIcon } from "./components/Feedback";
 import Dashboard from "./pages/Dashboard";
 import Analysis from "./pages/Analysis";
 import Review from "./pages/Review";
@@ -57,9 +57,7 @@ export default function App() {
       <aside className="sidebar">
         <div className="brand">
           <h1>
-            <span className="brand-mark">
-              <FilmIcon size={14} />
-            </span>
+            <img className="brand-mark" src="/favicon.png" alt="" width={22} height={22} />
             {messages.appName}
           </h1>
           <p>{messages.subtitle}</p>
