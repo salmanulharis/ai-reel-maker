@@ -12,10 +12,23 @@ interface Props {
   jobId: string;
   volume: number;
   duck: boolean;
+  /** A music-led video: the clips are cut to this music's beat. */
+  musicLed?: boolean;
+  musicLedSound?: "lower" | "mute";
+  /** The clips were fitted to new music (or planned without it): reload them. */
+  onReplanned?: (notes: string) => void;
 }
 
 /** Background music for the video: a file of your own, its volume, and lowering it under speech. */
-export function MusicPanel({ jobId, volume: initialVolume, duck: initialDuck }: Props) {
+export function MusicPanel({
+  jobId,
+  volume: initialVolume,
+  duck: initialDuck,
+  musicLed = false,
+  musicLedSound: initialSound = "lower",
+  onReplanned,
+}: Props) {
+  const [sound, setSound] = useState(initialSound);
   const [name, setName] = useState<string | null>(null);
   const [volume, setVolume] = useState(initialVolume);
   const [duck, setDuck] = useState(initialDuck);
@@ -33,7 +46,7 @@ export function MusicPanel({ jobId, volume: initialVolume, duck: initialDuck }: 
       .catch(() => undefined);
   }, [jobId]);
 
-  function saveOptions(next: { music_volume?: number; music_duck?: boolean }) {
+  function saveOptions(next: { music_volume?: number; music_duck?: boolean; music_led_sound?: "lower" | "mute" }) {
     setSaved(false);
     window.clearTimeout(timer.current);
     // Saved shortly after the last change, so dragging the slider sends one request.
@@ -50,7 +63,9 @@ export function MusicPanel({ jobId, volume: initialVolume, duck: initialDuck }: 
     setBusy(true);
     setError("");
     try {
-      setName((await sending.run(file.size, (options) => api.uploadMusic(jobId, file, options))).name);
+      const result = await sending.run(file.size, (options) => api.uploadMusic(jobId, file, options));
+      setName(result.name);
+      if (result.replanned) onReplanned?.(result.notes || "");
     } catch (err) {
       if (!isAbort(err)) setError((err as Error).message);
     } finally {
@@ -63,8 +78,9 @@ export function MusicPanel({ jobId, volume: initialVolume, duck: initialDuck }: 
     setBusy(true);
     setError("");
     try {
-      await api.deleteMusic(jobId);
+      const result = await api.deleteMusic(jobId);
       setName(null);
+      if (result.replanned) onReplanned?.(result.notes || "");
     } catch (err) {
       setError((err as Error).message);
     } finally {
@@ -78,6 +94,7 @@ export function MusicPanel({ jobId, volume: initialVolume, duck: initialDuck }: 
         {copy.title}
       </h3>
       <p className="field-hint">{name ? fill(copy.current, { name }) : copy.hint}</p>
+      {musicLed && <p className="field-hint">{name ? copy.ledNote : copy.ledMissing}</p>}
       <div className="btn-row">
         <label className="btn sm">
           {busy && <Spinner />}
@@ -119,6 +136,25 @@ export function MusicPanel({ jobId, volume: initialVolume, duck: initialDuck }: 
               saveOptions({ music_volume: value });
             }}
           />
+          {musicLed ? (
+            <fieldset className="field">
+              <legend>{messages.musicLed.sound}</legend>
+              {(["lower", "mute"] as const).map((choice) => (
+                <label key={choice} className="check">
+                  <input
+                    type="radio"
+                    name="music-panel-sound"
+                    checked={sound === choice}
+                    onChange={() => {
+                      setSound(choice);
+                      saveOptions({ music_led_sound: choice });
+                    }}
+                  />
+                  <span>{choice === "mute" ? messages.musicLed.soundMute : messages.musicLed.soundLower}</span>
+                </label>
+              ))}
+            </fieldset>
+          ) : (
           <label className="check">
             <input
               type="checkbox"
@@ -130,6 +166,7 @@ export function MusicPanel({ jobId, volume: initialVolume, duck: initialDuck }: 
             />
             <span>{copy.duck}</span>
           </label>
+          )}
           {saved && <InlineStatus ok>{copy.saved}</InlineStatus>}
         </div>
       )}

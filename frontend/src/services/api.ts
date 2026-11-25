@@ -1,5 +1,7 @@
 import { messages } from "../i18n";
 import type {
+  JobInsights,
+  LogEntry,
   AiPlanInfo,
   BriefInfo,
   EngineStatus,
@@ -289,6 +291,10 @@ export function configPayload(form: HighlightForm) {
     video_brief: form.video_brief,
     brief_engine: form.brief_engine,
     narration: form.video_brief && form.narration,
+    music_led: Boolean(form.music_led),
+    music_led_sound: form.music_led_sound || "lower",
+    // The music carries a music-led video, so it starts loud; the slider on Review changes it.
+    ...(form.music_led ? { music_volume: 90 } : {}),
   };
 }
 
@@ -350,7 +356,8 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ clips }),
     }),
-  logs: (id: string) => http<{ logs: Array<{ level: string; message: string; ts?: number }> }>(`/api/jobs/${id}/logs`),
+  logs: (id: string) => http<{ logs: LogEntry[] }>(`/api/jobs/${id}/logs`),
+  insights: (id: string) => http<JobInsights>(`/api/jobs/${id}/insights`),
   analysis: (id: string) => http<Record<string, unknown>>(`/api/jobs/${id}/analysis`),
   timeline: (id: string) => http<Record<string, unknown>>(`/api/jobs/${id}/timeline`),
   /** Save a full-size frame of the finished highlight as a JPEG. Returns the saved file name. */
@@ -364,9 +371,13 @@ export const api = {
     }),
   music: (id: string) => http<{ name: string | null }>(`/api/jobs/${encodeURIComponent(id)}/music`),
   uploadMusic: (id: string, file: File, options?: UploadOptions) =>
-    upload<{ name: string }>(`/api/jobs/${encodeURIComponent(id)}/music`, file, options),
-  deleteMusic: (id: string) => http(`/api/jobs/${encodeURIComponent(id)}/music`, { method: "DELETE" }),
-  renderOptions: (id: string, options: { music_volume?: number; music_duck?: boolean; narration?: boolean }) =>
+    upload<{ name: string; replanned?: boolean; notes?: string }>(`/api/jobs/${encodeURIComponent(id)}/music`, file, options),
+  deleteMusic: (id: string) =>
+    http<{ name: null; replanned?: boolean; notes?: string }>(`/api/jobs/${encodeURIComponent(id)}/music`, { method: "DELETE" }),
+  renderOptions: (
+    id: string,
+    options: { music_volume?: number; music_duck?: boolean; narration?: boolean; music_led_sound?: "lower" | "mute" },
+  ) =>
     http(`/api/jobs/${encodeURIComponent(id)}/render-options`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },

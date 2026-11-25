@@ -101,9 +101,10 @@ export const DOC_ARTICLES = {
   "where-time-goes": {
     title: "Find what is slowing you down",
     summary: "Read the step times, the detailed log, and the AI test.",
-    keywords: "bottleneck timing log tokens per second measure",
+    keywords: "bottleneck timing log tokens per second measure processing details insights",
     blocks: [
       { kind: "p", text: "While a highlight is being made, the progress page shows the time for every step on the right, and the total time so far at the top. Look for the step with the largest time." },
+      { kind: "p", text: "Afterwards, open **Processing details** under the processing time of a finished video (or click the time in **My highlights**). It keeps, for every highlight: the time of each step with the slowest one marked, what slowed it down and what would help, the work of each AI model (requests, tokens and writing speed), the models used, every warning, and the full log to read or download." },
       { kind: "p", text: "The percentage follows the work that is left: steps finished on an earlier try, or turned off, do not count. The step that runs shows how far it is (for example scenes looked at, or minutes of speech written down). The time left appears once there is enough to go on, usually after a minute, and gets more accurate as the work goes on. Measuring this computer in Settings makes the first estimate closer." },
       {
         kind: "table",
@@ -511,12 +512,32 @@ export const DOC_ARTICLES = {
       { kind: "settings", section: "narration", label: "Open narrated video settings" },
     ],
   },
+  "music-led": {
+    title: "Cut a video to music",
+    summary: "Add your own song and let the cuts follow its beat.",
+    keywords: "music beat rhythm tempo bpm song sync cut to music soundtrack",
+    blocks: [
+      { kind: "p", text: "Tick **Cut to music** on the Create page and add a song (MP3, WAV, M4A, AAC, OGG, FLAC or Opus) after the video. The app reads the song's beat on your computer: its tempo, where each bar starts, and how energetic each part is." },
+      {
+        kind: "list",
+        items: [
+          "The video is as long as the music from its first bar, within the length you asked for, and ends at the end of a musical phrase when it can.",
+          "Every cut lands on a beat. Where the music is energetic the cuts come quicker; where it is calm, moments last longer.",
+          "Lively music favours action and reactions; calm music favours calmer, good-looking moments.",
+          "The order of the story is kept (the AI editor's order in **Describe it**, otherwise the original order).",
+          "The video's own sound is lowered under the music, or muted: your choice under **The video's own sound**.",
+        ],
+      },
+      { kind: "note", text: "Cuts follow the beat, not sentences, so it suits visual videos (travel, sports, events) better than talks. Fades, removing pauses and separate shorts are turned off for a video cut to music." },
+      { kind: "tip", text: "On the Review page you can replace the music: the clips are fitted to the new beat straight away. Changing a clip's start or end by hand moves that cut off the beat." },
+    ],
+  },
 } satisfies Record<string, DocArticle>;
 
 export type DocArticleId = keyof typeof DOC_ARTICLES;
 
 export const DOC_CATEGORIES: Array<{ title: string; articles: DocArticleId[] }> = [
-  { title: "Getting started", articles: ["how-it-works", "describe-it", "narrated-videos", "requirements", "setup-ollama", "leave-out", "pause-resume"] },
+  { title: "Getting started", articles: ["how-it-works", "describe-it", "narrated-videos", "music-led", "requirements", "setup-ollama", "leave-out", "pause-resume"] },
   { title: "Speed without a graphics card", articles: ["cpu-speed", "where-time-goes", "choose-models", "threads-memory", "ollama-tuning"] },
   { title: "Lightweight AI models", articles: ["setup-whisper", "setup-image-matching", "setup-embeddings"] },
   { title: "Graphics cards", articles: ["hardware-detection", "gpu-setup", "fallbacks", "remote-gpu"] },

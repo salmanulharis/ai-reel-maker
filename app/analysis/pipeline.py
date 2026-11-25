@@ -26,6 +26,7 @@ from app.ai.prompts import (
     visual_analysis_focus,
     visual_focus_priorities,
 )
+from app.analysis import music as music_beat
 from app.analysis import score_source, speech_check
 from app.analysis.audio import detect_silence, extract_audio, release_whisper_models, transcribe_detailed
 from app.analysis import avoid as leave_out
@@ -53,7 +54,7 @@ from app.analysis.visual import (
     shortlist_scenes,
 )
 from app.config import Settings
-from app.models.schemas import CandidateScore, HighlightConfig, Scene, Transcript
+from app.models.schemas import CandidateScore, ClipPlan, ClipPlanItem, HighlightConfig, Scene, Transcript
 from app.services.run_plan import RunPlan
 from app.video.ffmpeg_runner import CancelledError, FFmpegRunner, report_progress
 from app.utils.timefmt import format_duration
@@ -62,6 +63,10 @@ from app.video.processor import VideoProcessor
 from app.video.sources import save_sources, tag_candidates, working_path
 
 
+
+# Model work per step and what the analysis ran with, for the processing details page.
+AI_USAGE_FILE = "ai_usage.json"
+RUN_INFO_FILE = "run_info.json"
 
 # Small copy of the picture that scenes and frames are read from (see _analysis_proxy).
 ANALYSIS_PROXY = "analysis_proxy.mp4"
@@ -669,14 +674,38 @@ class VideoAnalyzer:
             candidates = apply_brief(candidates, brief)
 
         progress.stage("planning", "running")
-        plan = self.optimizer.plan(
-            candidates,
-            planning_config(config),
-            source_duration=total_duration,
-            multi_source=multi,
-            similarity_fn=similarity_fn,
-            repeat_threshold=self.repetition.threshold_for(config.repetition_mode),
-        )
+        plan = None
+        if config.music_led:
+            from app.video.audio_mix import find_music
+
+            track = find_music(job_dir)
+            if track is None:
+                progress.log("Music-led editing needs a music file; add one on the Create or Review page.", "WARNING")
+            analysis = music_beat.load_or_analyze(job_dir, track, self.runner, progress.log)
+            cache["music_analysis"] = analysis
+            if analysis:
+                plan = music_led_plan(
+                    candidates,
+                    planning_config(config),
+                    analysis,
+                    self.optimizer,
+                    source_duration=total_duration,
+                    source_lengths=_source_lengths(sources, total_duration),
+                    multi_source=multi,
+                    similarity_fn=similarity_fn,
+                    repeat_threshold=self.repetition.threshold_for(config.repetition_mode),
+                )
+                if plan is not None:
+                    progress.log(plan.notes)
+        if plan is None:
+            plan = self.optimizer.plan(
+                candidates,
+                planning_config(config),
+                source_duration=total_duration,
+                multi_source=multi,
+                similarity_fn=similarity_fn,
+                repeat_threshold=self.repetition.threshold_for(config.repetition_mode),
+            )
         used = {c.source_id for c in plan.clips if c.source_id}
         if used and len(sources) > 1:
             skipped = [s.get("filename") for s in sources if s.get("id") not in used]
@@ -699,7 +728,63 @@ class VideoAnalyzer:
         if summary:
             progress.log(f"Stage timings: {summary}")
             _write(job_dir / "analysis_timings.json", progress.timings)
+        usage_by_step = getattr(progress, "usage_by_step", {})
+        if usage_by_step:
+            _write(job_dir / AI_USAGE_FILE, usage_by_step)
+        _write(job_dir / RUN_INFO_FILE, self._run_info(config, cache, sources))
         return cache
+
+    def _run_info(self, config: HighlightConfig, cache: dict, sources: list[dict]) -> dict:
+        """What this analysis ran with and what it found, for the processing details page."""
+        settings = self.settings
+        transcript = cache.get("transcript") or {}
+        visual = cache.get("visual") or {}
+        ai_scenes = sum(
+            1 for entry in visual.values() if isinstance(entry, dict) and entry.get("score_source") == score_source.AI
+        )
+        try:
+            import psutil
+
+            memory_gb = round(psutil.virtual_memory().total / 1024**3, 1)
+        except Exception:  # noqa: BLE001 - optional detail
+            memory_gb = None
+        return {
+            "finished_at": time.time(),
+            "computer": {"cpu_threads": os.cpu_count() or 0, "memory_gb": memory_gb},
+            "models": {
+                "speech": settings.whisper_model if bool(getattr(config, "use_speech", True)) and settings.enable_whisper else "",
+                "speech_device": settings.whisper_device,
+                "vision": settings.ollama_vision_model
+                if settings.enable_visual_analysis and bool(getattr(config, "use_visuals", True))
+                else "",
+                "text": settings.ollama_text_model,
+                "editor": (
+                    ("claude:" + str(getattr(settings, "claude_model", "")))
+                    if director_engine(config, settings) == "claude"
+                    else director_model(settings)
+                )
+                if config.mode == "prompt"
+                else "",
+            },
+            "options": {
+                "mode": config.mode,
+                "vision_scope": "all" if config.analysis_depth == "best" else str(getattr(settings, "vision_scope", "shortlist")),
+                "editor_review": bool(getattr(settings, "director_review", False)) and config.mode == "prompt",
+                "analysis_copy": bool(getattr(self, "_proxy_used", False)),
+                "music_led": bool(getattr(config, "music_led", False)),
+            },
+            "found": {
+                "videos": len(sources),
+                "scenes": len(cache.get("scenes") or []) if len(sources) == 1 else None,
+                "scenes_ai": ai_scenes if len(sources) == 1 else None,
+                "segments": len(transcript.get("segments") or []) if len(sources) == 1 else None,
+                "language": transcript.get("language") if len(sources) == 1 else None,
+                "language_probability": transcript.get("language_probability") if len(sources) == 1 else None,
+                "speech_reliable": cache.get("speech_reliable", True),
+                "candidates": len(cache.get("candidates") or []),
+                "music_bpm": (cache.get("music_analysis") or {}).get("bpm"),
+            },
+        }
 
     def _plan_progress(
         self, progress: PipelineProgress, cache: dict, config: HighlightConfig, meta: dict, wav: Path, want_speech: bool
@@ -932,6 +1017,7 @@ class VideoAnalyzer:
         Times are unchanged: every frame keeps its timestamp."""
         target = job_dir / ANALYSIS_PROXY
         if target.is_file() and target.stat().st_size > 1000:
+            self._proxy_used = True
             return target
         if not _needs_proxy(meta):
             return source
@@ -946,6 +1032,7 @@ class VideoAnalyzer:
             with report_progress(self.runner, duration, report):
                 self.runner.run(VideoProcessor.analysis_proxy_command(source, pending, _PROXY_SHORT_SIDE))
             replace_file(pending, target)
+            self._proxy_used = True
         except CancelledError:
             pending.unlink(missing_ok=True)
             raise
@@ -1437,8 +1524,10 @@ class VideoAnalyzer:
             return
         key = "vision" if label.startswith("Visual") else "text"
         total = progress.usage.setdefault(key, {})
+        step = getattr(progress, "usage_by_step", {}).setdefault(label, {})
         for name, value in usage.items():
             total[name] = total.get(name, 0) + value
+            step[name] = step.get(name, 0) + value
         progress.log(f"{label}: {text}")
         if usage["near_context_limit"]:
             progress.log(
@@ -1513,18 +1602,88 @@ def plan_from_cache(cache: dict, config: HighlightConfig, settings: Settings) ->
     similarity_fn = analyzer.as_similarity_fn(candidates) if candidates else None
     optimizer = ClipOptimizer()
     meta = cache.get("metadata") or {}
-    plan = optimizer.plan(
-        candidates,
-        config,
-        source_duration=float(meta.get("duration") or 0),
-        multi_source=int(meta.get("source_count") or 1) > 1,
-        similarity_fn=similarity_fn,
-        repeat_threshold=analyzer.threshold_for(config.repetition_mode),
-    )
+    source_duration = float(meta.get("duration") or 0)
+    multi = int(meta.get("source_count") or 1) > 1
+    plan = None
+    analysis = cache.get("music_analysis")
+    if config.music_led and isinstance(analysis, dict) and analysis.get("beats"):
+        plan = music_led_plan(
+            candidates,
+            config,
+            analysis,
+            optimizer,
+            source_duration=source_duration,
+            source_lengths=_source_lengths(cache.get("sources") or [], source_duration),
+            multi_source=multi,
+            similarity_fn=similarity_fn,
+            repeat_threshold=analyzer.threshold_for(config.repetition_mode),
+        )
+    if plan is None:
+        plan = optimizer.plan(
+            candidates,
+            config,
+            source_duration=source_duration,
+            multi_source=multi,
+            similarity_fn=similarity_fn,
+            repeat_threshold=analyzer.threshold_for(config.repetition_mode),
+        )
     data = plan.model_dump()
     if speaker_note:
         data["notes"] = f"{speaker_note} {data.get('notes') or ''}".strip()
     return data
+
+
+def music_led_plan(
+    candidates: list[dict],
+    config: HighlightConfig,
+    analysis: dict,
+    optimizer: ClipOptimizer,
+    *,
+    source_duration: float,
+    source_lengths: dict[str, float],
+    multi_source: bool,
+    similarity_fn=None,
+    repeat_threshold: float | None = None,
+) -> ClipPlan | None:
+    """The clip plan cut to the music (see app.analysis.music), or None when the music gives no
+    usable beat or no moment fits (the usual plan is made instead)."""
+    plan_slots = music_beat.slots(analysis, music_beat.target_seconds(analysis, config, source_duration))
+    if not plan_slots:
+        return None
+    extra = {} if repeat_threshold is None else {"repeat_threshold": repeat_threshold}
+    plan = optimizer.plan(
+        music_beat.bias_candidates(candidates, analysis),
+        music_beat.planning_config(config, plan_slots),
+        source_duration=source_duration,
+        multi_source=multi_source,
+        similarity_fn=similarity_fn,
+        **extra,
+    )
+    by_id = {str(c.get("id")): c for c in candidates}
+    fitted, used = music_beat.fit_clips([c.model_dump() for c in plan.clips], plan_slots, by_id, source_lengths)
+    if not fitted:
+        return None
+    clips = [ClipPlanItem.model_validate(c) for c in fitted]
+    length = used[-1][1] - used[0][0]
+    name = str(analysis.get("name") or "the music")
+    notes = f"Cut to the beat of {name}: {len(clips)} clips at {float(analysis.get('bpm') or 0):.0f} beats per minute, {length:.1f}s."
+    return ClipPlan(
+        target_duration=round(length, 3),
+        estimated_duration=round(sum(c.duration for c in clips), 3),
+        clips=clips,
+        notes=notes,
+        order_mode=plan.order_mode,
+    )
+
+
+def _source_lengths(sources: list[dict], total: float) -> dict[str, float]:
+    """Length of each source video by id ("" = the only one), for fitting clips to the beat."""
+    lengths = {str(s.get("id") or ""): float(s.get("duration") or 0) for s in sources or [] if s.get("duration")}
+    if len(sources or []) <= 1:
+        lengths[""] = float(total or 0)
+        for key in list(lengths):
+            lengths[key] = lengths[key] or float(total or 0)
+    return lengths
 
 
 def alternative_moments(

@@ -234,6 +234,78 @@ export interface HighlightForm {
   brief_engine: "local" | "claude";
   /** Speak the brief's narration over the video (needs video_brief). */
   narration: boolean;
+  /** Cut the video to the beat of the user's music (uploaded to the job before analysis). */
+  music_led: boolean;
+  /** The video's own sound under the music: lowered or muted. */
+  music_led_sound: "lower" | "mute";
+  /** Name of the music uploaded for music-led editing (page state only, not sent). */
+  music_file_name: string;
+}
+
+export interface LogEntry {
+  level: string;
+  message: string;
+  ts?: number;
+}
+
+/** GET /api/jobs/:id/insights: where the processing time went (app/services/insights.py). */
+export interface JobInsights {
+  job: { id: string; filename: string; status: string; created_at: string; mode: string };
+  video: { duration: number; width: number; height: number; codec: string; fps: number; size_bytes: number; sources: number };
+  result: { clips: number; outputs: Array<{ duration: number | null; size_bytes: number | null; kind: string }> };
+  totals: { total_seconds: number; analysis_seconds: number; render_seconds: number; ratio: number | null };
+  steps: Array<{
+    name: string;
+    label: string;
+    phase: "analysis" | "render";
+    seconds: number;
+    share: number;
+    status: string;
+    detail: string;
+    done: number;
+    total: number;
+    unit: string;
+  }>;
+  slowest: string[];
+  render: {
+    seconds: number;
+    clips: number;
+    videos: number;
+    output_seconds: number;
+    encoder?: { codec?: string; preset?: string; crf?: number };
+    parts: Array<{ name: string; label: string; seconds: number }>;
+  } | null;
+  ai: Array<{
+    step: string;
+    calls: number;
+    prompt_tokens: number;
+    prompt_seconds: number;
+    reply_tokens: number;
+    reply_seconds: number;
+    tokens_per_second: number | null;
+    seconds_per_call: number;
+    load_seconds: number;
+    near_context_limit: number;
+  }>;
+  run: {
+    computer: { cpu_threads: number; memory_gb: number | null };
+    models: { speech: string; speech_device: string; vision: string; text: string; editor: string };
+    options: { mode: string; vision_scope: string; editor_review: boolean; analysis_copy: boolean; music_led?: boolean };
+    found: {
+      videos: number;
+      scenes: number | null;
+      scenes_ai: number | null;
+      segments: number | null;
+      language: string | null;
+      language_probability: number | null;
+      speech_reliable: boolean;
+      candidates: number;
+      music_bpm?: number | null;
+    };
+  } | null;
+  bottlenecks: Array<{ name: string; label: string; seconds: number; share: number; why: string; tips: string[] }>;
+  warnings: Array<{ level: string; message: string; count: number; ts?: number }>;
+  has_log: boolean;
 }
 
 /** GET /api/system/brief-engines: whether each brief engine is ready. */

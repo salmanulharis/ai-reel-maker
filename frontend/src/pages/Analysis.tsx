@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { useNavigate, useParams } from "react-router-dom";
+import { Link, useNavigate, useParams } from "react-router-dom";
 import { io } from "socket.io-client";
 import { api, formatElapsed, formatTime } from "../services/api";
 import { useElapsed } from "../hooks/useElapsed";
@@ -382,7 +382,9 @@ export default function Analysis() {
         onToggle={(e) => setOpenLog((e.target as HTMLDetailsElement).open)}
       >
         <summary>{copy.logs}</summary>
-        <p className="field-hint">{copy.logsHint}</p>
+        <p className="field-hint">
+          {copy.logsHint} <Link to={`/jobs/${id}/insights`}>{copy.processingDetails}</Link>
+        </p>
         <div
           className="log"
           ref={logRef}

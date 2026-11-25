@@ -108,6 +108,7 @@ const copy = messages.config;
 /** A reason the form cannot be submitted yet, or "" when it is fine. */
 export function formProblem(form: HighlightForm): string {
   if (!form.use_visuals && !form.use_speech) return copy.analysisNeeded;
+  if (form.music_led && !form.music_file_name) return messages.musicLed.needMusic;
   if (form.mode === "prompt" && !form.prompt.trim()) return copy.promptMissing;
   // With "No limit" the longest length is not used, so only the shortest has to be valid.
   const lengths = form.length_mode === "auto" ? [form.min_duration] : [form.min_duration, form.max_duration];
@@ -1001,4 +1002,7 @@ export const defaultForm = (): HighlightForm => ({
   video_brief: false,
   brief_engine: "local",
   narration: true,
+  music_led: false,
+  music_led_sound: "lower",
+  music_file_name: "",
 });

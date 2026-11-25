@@ -6,6 +6,7 @@ import { VideoCropPreview } from "../components/VideoCrop";
 import { PresetBar } from "../components/PresetBar";
 import { PromptPanel, understoodForm } from "../components/PromptPanel";
 import { NarratedVideoPanel } from "../components/NarratedVideoPanel";
+import { MusicLedPanel } from "../components/MusicLedPanel";
 import { Alert, InlineStatus, Spinner } from "../components/Feedback";
 import { TransferProgress } from "../components/Progress";
 import { useUpload } from "../hooks/useUpload";
@@ -329,6 +330,7 @@ export default function Dashboard() {
           </>
         )}
         <NarratedVideoPanel form={form} setForm={setForm} />
+        <MusicLedPanel form={form} setForm={setForm} jobId={job?.id || null} />
       </section>
 
       {error && <Alert>{error}</Alert>}

@@ -76,20 +76,33 @@ def music_mix_command(
     duck: bool,
     video_has_audio: bool,
     audio_bitrate: str = "192k",
+    *,
+    start: float = 0.0,
+    fade_in: float | None = None,
+    source_volume: float = 1.0,
 ) -> list[str]:
     """
     Mix background music under the finished video: looped to its length, faded in and out,
     at `volume` (0-1), and ducked under the video's own sound when `duck` is on. The picture is
-    copied untouched.
+    copied untouched. `start` skips the music's first seconds (music-led videos start on the
+    first bar), `fade_in` overrides the fade-in length, and `source_volume` (0-1) lowers the
+    video's own sound.
     """
     duration = max(0.5, float(duration))
     fade = min(1.5, duration / 4)
+    fade_start = fade if fade_in is None else max(0.0, min(float(fade_in), fade))
+    start = max(0.0, float(start))
     music_chain = (
         f"[1:a]aresample=48000,aformat=channel_layouts=stereo,volume={max(0.0, min(1.0, volume)):.3f},"
-        f"atrim=0:{duration:.3f},afade=t=in:st=0:d={fade:.2f},afade=t=out:st={duration - fade:.3f}:d={fade:.2f}[m]"
+        f"atrim={start:.3f}:{start + duration:.3f},asetpts=PTS-STARTPTS,"
+        f"afade=t=in:st=0:d={fade_start:.2f},afade=t=out:st={duration - fade:.3f}:d={fade:.2f}[m]"
     )
+    if video_has_audio and source_volume <= 0:
+        # The video's own sound is muted: only the music.
+        video_has_audio = False
     if video_has_audio:
-        voice = "[0:a]aresample=48000,aformat=channel_layouts=stereo,asplit=2[v][sc]"
+        level = "" if source_volume >= 0.999 else f",volume={max(0.0, float(source_volume)):.3f}"
+        voice = f"[0:a]aresample=48000,aformat=channel_layouts=stereo{level},asplit=2[v][sc]"
         if duck:
             mix = "[m][sc]sidechaincompress=threshold=0.03:ratio=8:attack=20:release=400[md];[v][md]amix=inputs=2:duration=first:dropout_transition=0:normalize=0[a]"
         else:

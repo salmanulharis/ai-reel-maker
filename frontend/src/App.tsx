@@ -12,6 +12,7 @@ import Result from "./pages/Result";
 import Settings from "./pages/Settings";
 import History from "./pages/JobHistory";
 import Docs from "./pages/Docs";
+import Insights from "./pages/Insights";
 
 const pages = messages.pages;
 
@@ -23,6 +24,7 @@ function pageHeading(pathname: string): [string, string] {
   if (pathname.endsWith("/analysis")) return [pages.analysisTitle, pages.analysisSubtitle];
   if (pathname.endsWith("/review")) return [pages.reviewTitle, pages.reviewSubtitle];
   if (pathname.endsWith("/result")) return [pages.resultTitle, pages.resultSubtitle];
+  if (pathname.endsWith("/insights")) return [pages.insightsTitle, pages.insightsSubtitle];
   return [pages.createTitle, pages.createSubtitle];
 }
 
@@ -100,6 +102,7 @@ export default function App() {
               <Route path="/jobs/:id/analysis" element={<Analysis />} />
               <Route path="/jobs/:id/review" element={<Review />} />
               <Route path="/jobs/:id/result" element={<Result />} />
+              <Route path="/jobs/:id/insights" element={<Insights />} />
               <Route path="/history" element={<History />} />
               <Route path="/settings" element={<Settings />} />
               <Route path="/help" element={<Docs />} />

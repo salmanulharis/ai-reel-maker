@@ -5,13 +5,15 @@ import logging
 import shutil
 import threading
 import time
+from contextlib import contextmanager
 from pathlib import Path
 
 from flask import Flask
 
 from app.ai.ollama import OllamaError
 from app.analysis.director import CONTENT_FILE, DIRECTOR_FILE
-from app.analysis.pipeline import ANALYSIS_PROXY, PARTIAL_FILES, SOUND_EVENTS_FILE, SOUND_VECTORS_FILE, PipelineProgress, VideoAnalyzer
+from app.analysis.music import MUSIC_ANALYSIS_FILE
+from app.analysis.pipeline import AI_USAGE_FILE, ANALYSIS_PROXY, PARTIAL_FILES, RUN_INFO_FILE, SOUND_EVENTS_FILE, SOUND_VECTORS_FILE, PipelineProgress, VideoAnalyzer
 from app.analysis.progress import RenderProgress
 from app.analysis.tighten import tighten_clips
 from app.brief.engines.base import BriefPaused
@@ -30,7 +32,7 @@ from app.video.captions import load_transcript, sequence_srt, write_clip_subtitl
 from app.video.renderer import Renderer
 from app.video.audio_mix import find_music, music_mix_command
 from app.video.overlays import Extras, brand_logo
-from app.utils.atomic import atomic_write_json
+from app.utils.atomic import atomic_write_json, read_json
 from app.utils.timefmt import format_elapsed
 from app.video.sources import fallback_source, load_sources, save_sources
 
@@ -364,6 +366,18 @@ def _run_render(app: Flask, job_id: str) -> None:
         append_log(job_dir, payload)
         _emit(app, job_id, "job_log", payload)
 
+    # Seconds per part of creating the video, for the processing details page.
+    steps: dict[str, float] = {}
+    render_started = time.monotonic()
+
+    @contextmanager
+    def timed(name: str):
+        began = time.monotonic()
+        try:
+            yield
+        finally:
+            steps[name] = round(steps.get(name, 0.0) + time.monotonic() - began, 2)
+
     try:
         sources = load_sources(job_dir) or [fallback_source(job.input_path, job.original_filename)]
         source = Path(sources[0].get("analysis_path") or sources[0]["path"])
@@ -440,9 +454,10 @@ def _run_render(app: Flask, job_id: str) -> None:
                 manager.set_stage(job_id, "rendering", "running", "Speaking the narration", done, total, "lines")
 
             emit_log("Preparing the narrated video")
-            brief, narration = prepare_narration(
-                job_dir, config, settings, log=emit_log, check_cancel=stop_if_cancelled, on_line=spoken
-            )
+            with timed("narration"):
+                brief, narration = prepare_narration(
+                    job_dir, config, settings, log=emit_log, check_cancel=stop_if_cancelled, on_line=spoken
+                )
             if narration:
                 plan.clips, fitted = fit_clips(plan.clips, brief, narration, sources)
                 plan.estimated_duration = sum(c.duration for c in plan.clips)
@@ -543,6 +558,7 @@ def _run_render(app: Flask, job_id: str) -> None:
                     sequence_srt([(subtitle_transcript_for(c), c.start, c.end) for c in group["clips"]]),
                     encoding="utf-8",
                 )
+            clips_started = time.monotonic()
             result = renderer.render(
                 source,
                 group_plan,
@@ -559,12 +575,14 @@ def _run_render(app: Flask, job_id: str) -> None:
                 extras=extras,
                 on_clip=lambda index, share, g=number - 1: tracker.clip(g, index, share),
             )
+            steps["clips"] = round(steps.get("clips", 0.0) + time.monotonic() - clips_started, 2)
             out_meta = result["metadata"]
             if number == 1 and subtitle_note:
                 emit_log(subtitle_note)
             if result.get("leveled"):
                 emit_log(f"{prefix}Sound levelled in {result['leveled']['clips']} of {result['leveled']['of']} clips")
             if composing:
+                compose_started = time.monotonic()
                 spec = compose_video(
                     runner,
                     group["output"],
@@ -579,12 +597,14 @@ def _run_render(app: Flask, job_id: str) -> None:
                     on_progress=lambda share, g=number - 1: tracker.compose(g, min(share, 0.99)),
                 )
                 tracker.compose(number - 1, 1.0)
+                steps["compose"] = round(steps.get("compose", 0.0) + time.monotonic() - compose_started, 2)
                 if spec is not None:
                     if narration and config.subtitles in {"auto", "burned", "srt"}:
                         write_srt(spec, group["srt"])
                     composed = runner.probe(group["output"]).model_dump()
                     out_meta = {**out_meta, **{k: v for k, v in composed.items() if v}}
             if music is not None:
+                music_started = time.monotonic()
                 out_meta = add_music(
                     runner,
                     group["output"],
@@ -597,6 +617,7 @@ def _run_render(app: Flask, job_id: str) -> None:
                     on_progress=lambda share, g=number - 1: tracker.music(g, min(share, 0.99)),
                 )
                 tracker.music(number - 1, 1.0)
+                steps["music"] = round(steps.get("music", 0.0) + time.monotonic() - music_started, 2)
             canvas = result.get("canvas") or {}
             encoder_info = result.get("encoder") or {}
             if result.get("frame_rate") and number == 1:
@@ -653,6 +674,7 @@ def _run_render(app: Flask, job_id: str) -> None:
         manager.set_stage(job_id, "rendering", "done", "", clip_total, clip_total, "clips")
         manager.take_pause_request(job_id)
         took = manager.finish_attempt(job_id, "completed")
+        _save_render_timings(job_dir, steps, time.monotonic() - render_started, plan, groups, made, encoder_info)
         manager.update(job_id, status="completed", render_status="completed", progress=100)
         what = "Highlight" if len(groups) == 1 else f"{len(groups)} shorts"
         emit_log(f"{what} ready. Creating the video took {format_elapsed(took)}")
@@ -704,6 +726,42 @@ def render_extras(config: HighlightConfig, settings) -> Extras:
     )
 
 
+# The video's own sound under the music in a music-led video ("lower").
+MUSIC_LED_SOURCE_VOLUME = 0.25
+
+
+def _music_start(job_dir: Path, music: Path) -> float:
+    """Where the first bar of the music is (the music-led cuts were timed from it), or 0."""
+    analysis = read_json(job_dir / MUSIC_ANALYSIS_FILE, None)
+    if not isinstance(analysis, dict) or (analysis.get("key") or {}).get("name") != music.name:
+        return 0.0
+    return max(0.0, float(analysis.get("start") or 0))
+
+
+RENDER_TIMINGS_FILE = "render_timings.json"
+
+
+def _save_render_timings(
+    job_dir: Path, steps: dict, seconds: float, plan, groups: list, made: list[dict], encoder: dict
+) -> None:
+    """Where the time of the last video creation went (render_timings.json)."""
+    try:
+        atomic_write_json(
+            job_dir / RENDER_TIMINGS_FILE,
+            {
+                "seconds": round(seconds, 2),
+                "steps": steps,
+                "clips": len(plan.clips),
+                "videos": len(groups),
+                "output_seconds": round(sum(float(item.get("duration") or 0) for item in made), 2),
+                "encoder": {key: encoder.get(key) for key in ("codec", "preset", "crf") if encoder.get(key)},
+                "finished_at": time.time(),
+            },
+        )
+    except OSError:  # statistics must never fail a finished video
+        _log.debug("Could not save render timings", exc_info=True)
+
+
 def add_music(
     runner,
     output: Path,
@@ -716,9 +774,12 @@ def add_music(
     on_progress=None,
 ) -> dict:
     """Mix the background music into a finished video. On failure the video keeps its own sound.
-    ``on_progress`` receives the share of the video mixed so far."""
+    ``on_progress`` receives the share of the video mixed so far. Music-led videos start the music
+    at its first bar (where the cuts were timed from) and lower or mute the video's own sound."""
     mixed = output.with_name(f"{output.stem}.music{output.suffix}")
     duration = float(out_meta.get("duration") or 0)
+    led = bool(getattr(config, "music_led", False))
+    start = _music_start(output.parent.parent, music) if led else 0.0
     try:
         with report_progress(runner, duration, on_progress):
             runner.run(
@@ -728,9 +789,12 @@ def add_music(
                     mixed,
                     duration,
                     config.music_volume / 100,
-                    config.music_duck,
+                    config.music_duck and not led,
                     bool(out_meta.get("has_audio", True)),
                     settings.output_audio_bitrate,
+                    start=start,
+                    fade_in=0.02 if led else None,
+                    source_volume=(0.0 if config.music_led_sound == "mute" else MUSIC_LED_SOURCE_VOLUME) if led else 1.0,
                 )
             )
         mixed.replace(output)
@@ -842,6 +906,8 @@ ANALYSIS_VIDEO = "analysis.mp4"
 _CACHE_FILES = (
     *PARTIAL_FILES,
     ANALYSIS_PROXY,
+    AI_USAGE_FILE,
+    RUN_INFO_FILE,
     SOUND_EVENTS_FILE,
     SOUND_VECTORS_FILE,
     CONTENT_FILE,
@@ -1043,6 +1109,8 @@ def load_cache(job_dir: Path) -> dict:
         "content_index": CONTENT_FILE,
         "director_plan": DIRECTOR_FILE,
         "brief": BRIEF_FILE,
+        "music_analysis": MUSIC_ANALYSIS_FILE,
+        "sources": "sources.json",
     }
     for key, name in mapping.items():
         path = job_dir / name

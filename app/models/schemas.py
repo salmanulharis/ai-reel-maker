@@ -346,6 +346,10 @@ class HighlightConfig(BaseModel):
     # Background music (a file added on the Review page): volume in percent, ducked under speech.
     music_volume: float = 25.0
     music_duck: bool = True
+    # Music-led editing: the user's music (added before the analysis) sets the length and the
+    # pace, every cut lands on a beat, and the video's own sound is lowered or muted under it.
+    music_led: bool = False
+    music_led_sound: Literal["lower", "mute"] = "lower"
     # Only choose moments where this speaker talks most ("v0:A"; "" = everyone).
     focus_speaker: str = ""
     # Create the video right after analysis (used by the watch folder).
@@ -430,6 +434,14 @@ class HighlightConfig(BaseModel):
         self.speech_language = language if re.fullmatch(r"[a-z]{2,3}", language) else ""
         self.logo_size = min(40.0, max(4.0, float(self.logo_size or 12.0)))
         self.music_volume = min(100.0, max(0.0, float(self.music_volume)))
+        if self.music_led:
+            # Cuts sit exactly on beats: no fades, no pauses cut out afterwards, one video, and
+            # no narration over the music.
+            self.transition = "cut"
+            self.tighten = "off"
+            self.shorts_count = 0
+            self.video_brief = False
+            self.narration = False
         self.shorts_count = int(self.shorts_count or 0)
         self.shorts_count = 0 if self.shorts_count < 2 else min(10, self.shorts_count)
         if self.shorts_count:

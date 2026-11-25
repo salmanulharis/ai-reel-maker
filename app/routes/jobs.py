@@ -7,7 +7,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from flask import Blueprint, abort, jsonify, request, send_file
+from flask import Blueprint, Response, abort, jsonify, request, send_file
 
 from app.analysis.pipeline import alternative_moments, plan_from_cache
 from app.config import get_settings
@@ -650,7 +650,7 @@ def make_post_text(job_id: str):
 
 
 MUSIC_MAX_BYTES = 200 * 1024 * 1024
-RENDER_OPTIONS = {"music_volume", "music_duck", "narration"}
+RENDER_OPTIONS = {"music_volume", "music_duck", "narration", "music_led_sound"}
 
 
 @jobs_bp.get("/jobs/<job_id>/music")
@@ -687,7 +687,7 @@ def upload_music(job_id: str):
     if dest.stat().st_size > MUSIC_MAX_BYTES:
         dest.unlink()
         return jsonify({"error": "music file is too large"}), 400
-    return jsonify({"name": name})
+    return jsonify({"name": name, **_music_led_replan(manager, job_id)})
 
 
 @jobs_bp.delete("/jobs/<job_id>/music")
@@ -698,7 +698,32 @@ def delete_music(job_id: str):
     music = find_music(manager.job_dir(job_id))
     if music:
         music.unlink(missing_ok=True)
-    return jsonify({"name": None})
+    return jsonify({"name": None, **_music_led_replan(manager, job_id)})
+
+
+def _music_led_replan(manager, job_id: str) -> dict:
+    """After the music of a music-led job changes, read the new music and fit the clips to its
+    beat again (without music, the usual plan). Only once the analysis is finished; before, the
+    analysis does it."""
+    from app.analysis import music as music_beat
+    from app.video.ffmpeg_runner import FFmpegRunner
+
+    job = manager.get(job_id)
+    config = HighlightConfig.model_validate(json.loads(job.config_json or "{}"))
+    job_dir = manager.job_dir(job_id)
+    if not config.music_led or job.analysis_status != "completed" or manager.has_runners(job_id):
+        return {"replanned": False}
+    cache = load_cache(job_dir)
+    if not cache.get("candidates"):
+        return {"replanned": False}
+    analysis = music_beat.load_or_analyze(job_dir, find_music(job_dir), FFmpegRunner())
+    if analysis is None:
+        (job_dir / music_beat.MUSIC_ANALYSIS_FILE).unlink(missing_ok=True)
+    cache["music_analysis"] = analysis
+    plan = plan_from_cache(cache, config, get_settings())
+    atomic_write_json(job_dir / "clip_plan.json", plan, indent=2)
+    manager.save_plan(job_id, plan.get("clips") or [])
+    return {"replanned": True, "notes": plan.get("notes") or ""}
 
 
 @jobs_bp.post("/jobs/<job_id>/render-options")
@@ -783,10 +808,32 @@ def update_clips(job_id: str):
     return jsonify({"clips": clips, "estimated_duration": plan["estimated_duration"]})
 
 
+@jobs_bp.get("/jobs/<job_id>/insights")
+def job_insights(job_id: str):
+    """Where the processing time went: steps, slowest steps, likely bottlenecks, AI model work,
+    warnings. Available as long as the job exists."""
+    from app.services.insights import job_insights as build
+
+    manager = get_job_manager()
+    job = manager.get(job_id)
+    if not job:
+        return jsonify({"error": "not found"}), 404
+    return jsonify(build(manager, job))
+
+
 @jobs_bp.get("/jobs/<job_id>/logs")
 def job_logs(job_id: str):
     manager = get_job_manager()
     path = manager.job_dir(job_id) / "job.log"
+    if request.args.get("download"):
+        # The whole log as plain text.
+        from app.services.insights import log_text
+
+        if not manager.get(job_id):
+            return jsonify({"error": "not found"}), 404
+        response = Response(log_text(manager.job_dir(job_id)), mimetype="text/plain; charset=utf-8")
+        response.headers["Content-Disposition"] = f'attachment; filename="processing-log-{job_id}.txt"'
+        return response
     if not path.exists():
         return jsonify({"logs": []})
     logs = []

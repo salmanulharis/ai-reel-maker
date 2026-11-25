@@ -332,7 +332,7 @@ Request: <<<{request}>>>
 Rules:
 - "summary": one sentence saying what you understood.
 - Add a setting ONLY when the request asks for it or clearly implies it. Leave every other setting out.
-  Examples: TikTok, Reels, Shorts, vertical -> "format":"9:16"; captions -> "subtitles":"burned"; "about a minute" -> "min_seconds":50,"max_seconds":70; "as long as needed" -> "length_auto":true; "5 clips" or "5 shorts" -> "shorts":5.
+  Examples: TikTok, Reels, Shorts, vertical -> "format":"9:16"; captions or subtitles (only when asked for) -> "subtitles":"burned"; "about a minute" -> "min_seconds":50,"max_seconds":70; "as long as needed" -> "length_auto":true; "5 clips" or "5 shorts" -> "shorts":5.
 - "order": "story" to tell it as a story, "hook" to open with the strongest moment, "time" to keep the original order.
 - "priorities" and "leave_out" use only the listed values.
 - "keep", "remove", "moments": short phrases about content to keep, to cut, and specific moments that must be in it.

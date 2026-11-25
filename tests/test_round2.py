@@ -211,9 +211,9 @@ def test_music_routes(client):
     assert odd.get_json()["name"] == client.get(f"/api/jobs/{job_id}/music").get_json()["name"]
     assert odd.get_json()["name"].endswith(".flac") and "/" not in odd.get_json()["name"] and "<" not in odd.get_json()["name"]
     options = client.post(f"/api/jobs/{job_id}/render-options", json={"music_volume": 60, "music_duck": False, "style": "x"}).get_json()
-    assert options == {"config": {"music_volume": 60.0, "music_duck": False, "narration": False}}
+    assert options == {"config": {"music_volume": 60.0, "music_duck": False, "narration": False, "music_led_sound": "lower"}}
     assert client.get(f"/api/jobs/{job_id}").get_json()["config"]["style"] == "auto"
-    assert client.delete(f"/api/jobs/{job_id}/music").get_json() == {"name": None}
+    assert client.delete(f"/api/jobs/{job_id}/music").get_json() == {"name": None, "replanned": False}
 
 
 def test_tighten_spans_route(client):

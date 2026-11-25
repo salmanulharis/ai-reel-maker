@@ -67,6 +67,10 @@ def interpret(
     elif request:
         warning = "The AI model is not available, so only the basics (length, format, captions, times) were taken from the description."
     patch, sources = _patch_from_ai(ai or {}, duration)
+    if "subtitles" in patch and not _CAPTION_WORDS.search(request.lower()):
+        # Captions are off unless asked for: the model tends to add them to any social video.
+        patch.pop("subtitles")
+        sources.pop("subtitles", None)
     for key, value in rules.items():
         patch[key] = value
         sources[key] = "rules"
@@ -153,6 +157,9 @@ _SHORTEST = re.compile(
     r"keep it (?:short|brief|tight)|only the essentials?)\b"
 )
 
+
+# Words that ask for (or against) captions; without them the model's caption choice is ignored.
+_CAPTION_WORDS = re.compile(r"\b(captions?|captioned|subtitles?|subtitled|srt|transcripts?|on-?screen text|text on screen)\b")
 
 # A wanted length at least this share of the video's own length is the video's length.
 _SOURCE_LENGTH_SHARE = 0.9

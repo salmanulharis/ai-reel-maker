@@ -1,7 +1,13 @@
 import type { HighlightForm } from "../types";
 
 /** Choices that belong to one video (crop, time ranges); a preset never stores or changes them. */
-export const VIDEO_SPECIFIC: ReadonlyArray<keyof HighlightForm> = ["crop", "cropEnabled", "must_include", "must_exclude"];
+export const VIDEO_SPECIFIC: ReadonlyArray<keyof HighlightForm> = [
+  "crop",
+  "cropEnabled",
+  "must_include",
+  "must_exclude",
+  "music_file_name",
+];
 
 export interface Preset {
   name: string;

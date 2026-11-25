@@ -244,6 +244,8 @@ class PipelineProgress(_Reporter):
         self._running: dict[str, float] = {}
         # Model work per AI stage ("vision", "text"), summed over every source video.
         self.usage: dict[str, dict[str, float]] = {}
+        # The same per step as logged ("Visual AI", "Transcript AI", "AI editor", ...).
+        self.usage_by_step: dict[str, dict[str, float]] = {}
         # What had to be adjusted while running (for example after running out of memory).
         self.adjustments: list[str] = []
         self.source_index = 0

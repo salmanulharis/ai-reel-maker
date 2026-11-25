@@ -156,11 +156,19 @@ export default function JobHistory() {
                 <td>{highlightCell(job)}</td>
                 <td className="hide-sm">{styleLabel(job.style)}</td>
                 <td className="hide-sm nowrap">
-                  {job.timing?.attempt_started_at
-                    ? `${statusLabel(job.status)}…`
-                    : (job.timing?.total_seconds ?? job.processing_seconds) > 0
-                      ? formatElapsed(job.timing?.total_seconds ?? job.processing_seconds)
-                      : "—"}
+                  {job.timing?.attempt_started_at ? (
+                    `${statusLabel(job.status)}…`
+                  ) : (job.timing?.total_seconds ?? job.processing_seconds) > 0 ? (
+                    <Link
+                      to={`/jobs/${job.id}/insights`}
+                      title={copy.timeDetails}
+                      aria-label={`${copy.timeDetails}: ${job.original_filename}`}
+                    >
+                      {formatElapsed(job.timing?.total_seconds ?? job.processing_seconds)}
+                    </Link>
+                  ) : (
+                    "—"
+                  )}
                 </td>
                 <td>
                   <span className={`status-pill ${statusTone(job.status)}`}>{statusLabel(job.status)}</span>

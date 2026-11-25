@@ -47,7 +47,9 @@
     "reviewTitle": "Review your clips",
     "reviewSubtitle": "Keep, remove, or adjust clips, then create the video.",
     "resultTitle": "Your highlight",
-    "resultSubtitle": "Watch, download, or make changes."
+    "resultSubtitle": "Watch, download, or make changes.",
+    "insightsTitle": "Processing details",
+    "insightsSubtitle": "Where the time went, what slowed it down, and the full log."
   },
   "docs": {
     "navLabel": "Help topics",
@@ -421,7 +423,8 @@
       "parts": "parts",
       "requests": "AI requests",
       "clips": "clips"
-    }
+    },
+    "processingDetails": "See the processing details"
   },
   "review": {
     "title": "Review clips",
@@ -488,7 +491,9 @@
       "remove": "Remove music",
       "volume": "Music volume: {n}%",
       "duck": "Lower the music while someone speaks",
-      "saved": "Saved for the next video"
+      "saved": "Saved for the next video",
+      "ledNote": "The clips are cut to this music's beat. Replacing it fits the clips to the new beat; changing clip times here moves cuts off the beat.",
+      "ledMissing": "This video was meant to be cut to music: add the music to fit the clips to its beat."
     },
     "shortOver": "This short is longer than your goal. Remove or shorten a clip, or create the videos anyway.",
     "previewClip": "Preview",
@@ -577,7 +582,8 @@
     "notUsed": "not used",
     "clipTime": "Time",
     "clipReason": "Why it was chosen",
-    "clipScore": "Score"
+    "clipScore": "Score",
+    "processingDetails": "Processing details"
   },
   "postText": {
     "title": "Text for posting",
@@ -943,7 +949,8 @@
       "failed": "Failed",
       "cancelled": "Stopped",
       "paused": "Paused"
-    }
+    },
+    "timeDetails": "Processing details"
   },
   "prompt": {
     "modeLabel": "How to set up the highlight",
@@ -1125,5 +1132,91 @@
     "nodeMissing": "Node.js 18 or newer is needed. Install it from nodejs.org.",
     "concurrency": "Remotion workers",
     "concurrencyHint": "Frames drawn at once. 0 = automatic (about half of the processor threads, at most 6)."
+  },
+  "insights": {
+    "intro": "Kept with the highlight, so you can come back to it at any time.",
+    "backToVideo": "Back to the video",
+    "backToProgress": "Back to progress",
+    "stillRunning": "This highlight is still being made: the details below cover the steps finished so far.",
+    "total": "Total time",
+    "analysis": "Analysis",
+    "render": "Creating the video",
+    "ratio": "Compared with the video",
+    "ratioValue": "{ratio}× its length",
+    "ratioHint": "Total processing time divided by the length of the original video.",
+    "video": "Original video",
+    "result": "Result",
+    "clips": "{n} clips",
+    "whereTime": "Where the time went",
+    "whereTimeHint": "Time spent in each step, over every attempt (pauses and retries included). Steps reused from an earlier run take no time.",
+    "noSteps": "No step has finished yet.",
+    "slowest": "Slowest",
+    "failedStep": "Failed",
+    "barLabel": "{step}: {time}, {share} of the time",
+    "renderParts": {
+      "narration": "Speaking the narration",
+      "clips": "Cutting and encoding clips",
+      "compose": "Drawing titles and captions",
+      "music": "Mixing the music",
+      "other": "Preparing and checking"
+    },
+    "slowedDown": "What slowed it down",
+    "noBottlenecks": "No single step stood out: the time was spread evenly.",
+    "bottleneckTime": "{time} · {share} of the time",
+    "whatHelps": "What would help",
+    "aiWork": "AI model work",
+    "aiWorkHint": "On a computer without a graphics card, writing the reply usually takes most of an AI step.",
+    "aiStep": "Step",
+    "aiCalls": "Requests",
+    "aiRead": "Read",
+    "aiWrote": "Wrote",
+    "aiSpeed": "Writing speed",
+    "aiPerCall": "Per request",
+    "tokensIn": "{tokens} tokens in {time}",
+    "tokensPerSecond": "{n} tokens/s",
+    "ranWith": "What it ran with",
+    "speechModel": "Speech to text",
+    "language": "language {language}{sure}",
+    "unreliable": "Transcript unreliable",
+    "visionModel": "Video model",
+    "scenesLooked": "looked at {ai} of {scenes} scenes",
+    "textModel": "Text model",
+    "editorModel": "AI editor",
+    "reviewOn": "checked its cut once more",
+    "analysisCopy": "Small analysis copy",
+    "musicLed": "Cut to music",
+    "musicBpm": "{bpm} beats per minute; every cut on a beat",
+    "musicMissing": "No usable music: planned as usual",
+    "yes": "Yes",
+    "no": "No",
+    "moments": "Candidate moments",
+    "computer": "Computer",
+    "computerValue": "{threads} processor threads, {memory} memory",
+    "encoder": "Video encoder",
+    "sourceSize": "Original file size",
+    "olderJob": "Model details are saved from this version on; analyze again to see them for this highlight.",
+    "warnings": "Warnings ({n})",
+    "noWarnings": "No warnings.",
+    "warningCount": "({n} times, numbers differ)",
+    "log": "Full log",
+    "logFilter": "Show",
+    "logAll": "Everything",
+    "logWarnings": "Warnings and errors",
+    "downloadLog": "Download log",
+    "logEmpty": "Nothing to show.",
+    "logNote": "The last 400 lines are shown; the download has the whole log."
+  },
+  "musicLed": {
+    "title": "Cut to music",
+    "hint": "Add your own song: the video takes its length and pace from it and every cut lands on a beat, with quicker cuts where the music is energetic and lively moments preferred for lively music.",
+    "current": "Music: {name}",
+    "needMusic": "Add the music to cut to.",
+    "addVideoFirst": "Add a video first, then the music.",
+    "add": "Add music",
+    "replace": "Replace music",
+    "sound": "The video's own sound",
+    "soundLower": "Lower it under the music",
+    "soundMute": "Mute it (music only)",
+    "note": "Best for visual videos (travel, sports, events). Cuts follow the beat, not sentences; fades and pause trimming are off, and it makes one video."
   }
 }

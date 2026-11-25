@@ -567,6 +567,12 @@ export default function Review() {
         jobId={id}
         volume={Number((job.config as { music_volume?: number } | undefined)?.music_volume ?? 25)}
         duck={(job.config as { music_duck?: boolean } | undefined)?.music_duck !== false}
+        musicLed={Boolean((job.config as { music_led?: boolean } | undefined)?.music_led)}
+        musicLedSound={(job.config as { music_led_sound?: "lower" | "mute" } | undefined)?.music_led_sound || "lower"}
+        onReplanned={() => {
+          void refresh();
+          setPlanVersion((version) => version + 1);
+        }}
       />
       {adjust}
       {error && <Alert>{error}</Alert>}

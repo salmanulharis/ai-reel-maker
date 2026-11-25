@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { useNavigate, useParams } from "react-router-dom";
+import { Link, useNavigate, useParams } from "react-router-dom";
 import { api, formatBytes, formatElapsed, formatTime } from "../services/api";
 import { fill, messages } from "../i18n";
 import { Alert, CheckIcon, InlineStatus, PageLoader, Spinner } from "../components/Feedback";
@@ -198,6 +198,9 @@ export default function Result() {
               })}
             </small>
           )}
+          <Link className="stat-note" to={`/jobs/${id}/insights`}>
+            {copy.processingDetails}
+          </Link>
         </div>
         <div>
           <span>{copy.output}</span>
