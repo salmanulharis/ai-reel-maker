@@ -1478,3 +1478,5 @@ details.help p { color: var(--muted); font-size: 13px; }
 .brief-beat-head { margin: 0 0 8px; display: flex; flex-wrap: wrap; gap: 6px; align-items: baseline; }
 .brief-panel h4.sub-title { margin-top: 16px; }
 .log-tail { font-size: 11px; color: var(--muted); background: var(--surface-2); border-radius: 6px; padding: 6px 8px; white-space: pre-wrap; max-height: 6.5em; overflow: hidden; }
+
+.storage-folder { margin: 10px 0 0; overflow-wrap: anywhere; }

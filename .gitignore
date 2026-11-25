@@ -56,3 +56,8 @@ samples/.multi-e2e/
 
 # Remotion (narrated videos)
 remotion/node_modules/
+
+# Windows installer build (packaging/build.ps1)
+build/
+dist/
+packaging/.cache/

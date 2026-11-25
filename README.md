@@ -56,6 +56,22 @@ Everything runs locally. Your videos are not uploaded to third-party AI services
 
 ---
 
+## Install on Windows (Setup.exe)
+
+Download `AIReelMaker-Setup-<version>.exe` from the [Releases page](https://github.com/salmanulharis/ai-reel-maker/releases) and run it. No administrator rights are needed.
+
+- Windows 10 or 11, 64-bit. Python, FFmpeg and Node are included in the installer.
+- The build is not code-signed, so Windows SmartScreen may say "Windows protected your PC". Choose **More info → Run anyway**.
+- Start it from the Start menu: **AI Reel Maker** opens in its own window, and closing that window stops the app. A job that was running continues where it stopped the next time you start the app. **Stop AI Reel Maker** stops it from the Start menu too.
+- Program files: `%LOCALAPPDATA%\Programs\AI Reel Maker`. Your projects, videos and settings: `%LOCALAPPDATA%\AI Reel Maker` (kept when you update, and the uninstaller asks before deleting them). Optional settings file: `%LOCALAPPDATA%\AI Reel Maker\settings.env` (same keys as `.env`). Log: `%LOCALAPPDATA%\AI Reel Maker\logs\app.log`.
+- The installed app answers on `http://localhost:5050`, only on this computer, so it can run next to a copy started from the source (port 5000).
+- Not included: [Ollama](https://ollama.com) (install it for AI analysis), the AI models (download them from Settings), and the Claude Code CLI (only for Claude-written briefs). For narrated videos, press **Settings → Narrated videos → Prepare video tools** once.
+- To update, run a newer Setup.exe. It replaces the program and keeps your data.
+
+Building the installer yourself: `powershell -ExecutionPolicy Bypass -File packaging\build.ps1` (needs Python 3.12, FFmpeg 9.0 on PATH and Inno Setup 6; see the script's header).
+
+---
+
 ## Requirements
 
 | Component | Notes |

@@ -6,6 +6,8 @@ from pathlib import Path
 from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from app import paths
+
 
 def _project_root() -> Path:
     return Path(__file__).resolve().parent.parent
@@ -35,15 +37,16 @@ def default_ollama_base_url() -> str:
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
-        # Next to the project, not the folder the app is started from.
-        env_file=str(_project_root() / ".env"),
+        # Next to the project (or settings.env in the user's folder once installed), not the
+        # folder the app is started from.
+        env_file=str(paths.env_file()),
         env_file_encoding="utf-8",
         extra="ignore",
         case_sensitive=False,
     )
 
-    app_host: str = "0.0.0.0"
-    app_port: int = 5000
+    app_host: str = Field(default_factory=paths.default_host)
+    app_port: int = Field(default_factory=paths.default_port)
     flask_env: str = "production"
     secret_key: str = "change-me-local-only"
 
@@ -120,7 +123,7 @@ class Settings(BaseSettings):
     whisper_num_workers: int = 1
     worker_idle_sleep: float = 1.5
 
-    data_dir: Path = Field(default_factory=lambda: _project_root() / "data")
+    data_dir: Path = Field(default_factory=paths.default_data_dir)
     temp_dir: Path | None = None
     database_path: Path | None = None
     frontend_dist: Path = Field(default_factory=lambda: _project_root() / "frontend" / "dist")

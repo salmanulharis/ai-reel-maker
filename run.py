@@ -10,6 +10,7 @@ import argparse
 import sys
 import threading
 
+from app import paths
 from app.config import get_settings
 from app.instance import InstanceLock, local_url, open_when_ready, read_record
 
@@ -17,8 +18,14 @@ from app.instance import InstanceLock, local_url, open_when_ready, read_record
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Start AI Reel Maker.")
     parser.add_argument("--open-browser", action="store_true", help="open the app in the browser once it is ready")
+    parser.add_argument("--self-test", action="store_true", help="check that this copy can run, without starting it")
     args = parser.parse_args(argv)
+    if args.self_test:
+        from app.selftest import run as self_test
 
+        return self_test()
+
+    paths.put_bundled_tools_first()
     settings = get_settings()
     settings.ensure_directories()
     lock = InstanceLock(settings.data_dir)

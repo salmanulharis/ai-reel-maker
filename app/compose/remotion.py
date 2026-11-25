@@ -24,13 +24,20 @@ import threading
 from pathlib import Path
 from typing import Any, Callable, Iterator
 
+from app import paths
 from app.services.download_progress import transfer_fields
 from app.utils.atomic import atomic_write_json, read_json
 from app.utils.security import safe_path_argument
 from app.video.ffmpeg_runner import CommandError, FFmpegRunner
 
-ROOT = Path(__file__).resolve().parents[2] / "remotion"
+# The shipped composition, and where it is prepared (the same folder in the repository; a copy
+# in the user's folder once installed, see sync_source).
+SOURCE = paths.remotion_source()
+ROOT = paths.remotion_dir()
 ENTRY = ROOT / "src" / "index.ts"
+# What is copied from SOURCE to ROOT (never node_modules or tests).
+_SOURCE_ITEMS = ("src", "scripts", "package.json", "package-lock.json", "tsconfig.json")
+_SYNC_FILE = ".source.json"
 COMPOSITION = "Reel"
 MIN_NODE = (18, 0)
 CHUNK_SECONDS = 10.0
@@ -69,15 +76,46 @@ def packages_installed() -> bool:
     return (ROOT / "node_modules" / "@remotion" / "renderer" / "package.json").is_file()
 
 
-def source_hash() -> str:
-    """Fingerprint of the composition's code and package versions (the bundle's cache key)."""
+def source_hash(root: Path | None = None) -> str:
+    """Fingerprint of the composition's code and package versions (the bundle's cache key).
+    Always of the shipped code, so an update that changes it makes the tools need preparing."""
+    root = root or SOURCE
     digest = hashlib.sha256()
-    files = sorted(p for p in (ROOT / "src").rglob("*") if p.is_file())
-    for path in [*files, ROOT / "package.json", ROOT / "package-lock.json"]:
+    files = sorted(p for p in (root / "src").rglob("*") if p.is_file())
+    for path in [*files, root / "package.json", root / "package-lock.json"]:
         if path.is_file():
-            digest.update(path.relative_to(ROOT).as_posix().encode())
+            digest.update(path.relative_to(root).as_posix().encode())
             digest.update(path.read_bytes())
     return digest.hexdigest()[:16]
+
+
+def _file_hash(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()[:16] if path.is_file() else ""
+
+
+def sync_source(source: Path | None = None, target: Path | None = None) -> bool:
+    """Copy the shipped composition to where it is prepared, when they differ (installed copy
+    only; in the repository both are the same folder). Returns True when the package list
+    changed, so the packages must be installed again."""
+    source, target = source or SOURCE, target or ROOT
+    if source.resolve() == target.resolve():
+        return False
+    wanted = source_hash(source)
+    state = read_json(target / _SYNC_FILE, {})
+    state = state if isinstance(state, dict) else {}
+    lock = _file_hash(source / "package-lock.json")
+    if state.get("hash") == wanted and (target / "src").is_dir():
+        return False
+    target.mkdir(parents=True, exist_ok=True)
+    for name in _SOURCE_ITEMS:
+        item, copy = source / name, target / name
+        if item.is_dir():
+            shutil.rmtree(copy, ignore_errors=True)
+            shutil.copytree(item, copy)
+        elif item.is_file():
+            shutil.copy2(item, copy)
+    atomic_write_json(target / _SYNC_FILE, {"hash": wanted, "lock": lock})
+    return state.get("lock") != lock
 
 
 def bundle_dir(settings) -> Path:
@@ -138,7 +176,8 @@ def _prepare(settings) -> None:
         version = node_version(runner)
         if not version or version < MIN_NODE:
             raise CommandError("Node.js 18 or newer is needed. Install it from nodejs.org, then try again.")
-        if not packages_installed():
+        packages_changed = sync_source()
+        if packages_changed or not packages_installed():
             npm = npm_executable()
             if not npm:
                 raise CommandError("npm was not found. It comes with Node.js; reinstall Node.js.")

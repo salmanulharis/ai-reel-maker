@@ -27,6 +27,7 @@ from app.services.hardware import detect_hardware
 from app.services.job_manager import get_job_manager
 from app.services.model_catalog import CATALOG, catalog_entry
 from app.services.ollama_runtime import get_ollama_client
+from app.version import __version__
 
 system_bp = Blueprint("system", __name__)
 _pull_lock = threading.Lock()
@@ -35,7 +36,7 @@ _pull_status: dict[str, dict] = {}
 
 @system_bp.get("/health")
 def health():
-    return jsonify({"ok": True, "service": "ai-video-highlights"})
+    return jsonify({"ok": True, "service": "ai-video-highlights", "version": __version__})
 
 
 @system_bp.get("/system/info")

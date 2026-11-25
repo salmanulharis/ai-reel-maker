@@ -875,6 +875,12 @@ export default function Settings() {
           <Stat label={copy.storageCache} value={formatBytes(Number(storage.cache_bytes || 0))} />
           <Stat label={copy.storageTmp} value={formatBytes(Number(storage.tmp_bytes || 0))} />
         </div>
+        {storage.data_dir ? (
+          <p className="muted storage-folder">
+            {copy.storageFolder}: <code>{String(storage.data_dir)}</code>
+            {storage.version ? ` · ${copy.appVersion} ${String(storage.version)}` : ""}
+          </p>
+        ) : null}
         <div className="storage-actions">
           <StorageAction
             label={copy.clearTmp}

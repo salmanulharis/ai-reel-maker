@@ -3,7 +3,9 @@ from __future__ import annotations
 import shutil
 from pathlib import Path
 
+from app import paths
 from app.config import Settings, get_settings
+from app.version import __version__
 
 
 def dir_size(path: Path) -> int:
@@ -35,6 +37,8 @@ def storage_report(settings: Settings | None = None) -> dict:
         "outputs_bytes": outputs,
         "total_bytes": dir_size(settings.data_dir),
         "data_dir": str(settings.data_dir),
+        "version": __version__,
+        "installed": paths.is_installed(),
     }
 
 

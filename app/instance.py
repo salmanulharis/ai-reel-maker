@@ -57,15 +57,16 @@ class InstanceLock:
         self._handle = handle
         return True
 
-    def write_record(self, port: int) -> None:
-        """Note which process runs the app (only while holding the lock)."""
+    def write_record(self, port: int, script: str = SCRIPT_NAME) -> None:
+        """Note which process runs the app (only while holding the lock). ``script`` is the
+        file on its command line: run.py, or launcher.pyw for the installed app."""
         if self._handle is None:
             raise RuntimeError("the instance lock is not held")
         record = {
             "pid": os.getpid(),
             "port": int(port),
             "started": process_start_time(os.getpid()),
-            "script": SCRIPT_NAME,
+            "script": script,
         }
         temp = self.record_path.with_suffix(".tmp")
         temp.write_text(json.dumps(record), encoding="utf-8")

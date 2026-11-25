@@ -848,6 +848,8 @@
     "storageHint": "Space used by this app on this computer.",
     "storageJobs": "Highlights",
     "storageTmp": "Temporary files",
+    "storageFolder": "Data folder",
+    "appVersion": "Version",
     "storageCache": "Saved analysis",
     "storageOutputs": "Finished videos",
     "clearTmp": "Clear temporary files",

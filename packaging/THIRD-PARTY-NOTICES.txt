@@ -1,0 +1,47 @@
+AI Reel Maker - third-party software
+====================================
+
+AI Reel Maker itself is released under the MIT License (see LICENSE).
+This installer also contains, or downloads when you ask for it, the following software.
+
+Included in the installer
+-------------------------
+
+FFmpeg 9.0 (tools\ffmpeg)
+  Full build by gyan.dev (https://www.gyan.dev/ffmpeg/builds/), licensed under the GNU General
+  Public License version 3 (see tools\ffmpeg\LICENSE.txt). AI Reel Maker runs ffmpeg.exe and
+  ffprobe.exe as separate programs. Source code: https://ffmpeg.org/download.html and
+  https://github.com/GyanD/codexffmpeg (build scripts and the exact source of this build).
+
+Node.js 24 (tools\node)
+  MIT License and the licences of its bundled components: tools\node\LICENSE.
+  https://nodejs.org
+
+Python 3.12 (runtime\python)
+  Python Software Foundation License: https://docs.python.org/3/license.html
+
+Python packages (runtime\python\Lib\site-packages)
+  Each package's licence is in its *.dist-info folder. They include Flask, Flask-SocketIO,
+  NumPy, SciPy, scikit-learn, OpenCV (Apache 2.0), PyAV (BSD; contains FFmpeg libraries
+  under the LGPL/GPL), faster-whisper and CTranslate2 (MIT), ONNX Runtime (MIT),
+  kokoro-onnx (MIT) with espeak-ng (GPL v3, espeakng_loader), PySceneDetect (BSD), Pillow,
+  SQLAlchemy, pydantic and huggingface_hub.
+
+Downloaded only when you press a button in Settings
+---------------------------------------------------
+
+Remotion (Settings > Narrated videos > Prepare video tools)
+  Installed from npm into %LOCALAPPDATA%\AI Reel Maker\remotion. Remotion is free for
+  individuals, non-profits and companies of up to three people; larger companies need a
+  company licence. See https://www.remotion.dev/license before using it for such a company.
+  It also downloads a headless Chrome build (Chrome Headless Shell, Google).
+
+AI models (Settings)
+  Whisper speech models (MIT), Kokoro voice (Apache 2.0), SigLIP and CLAP models: each from
+  Hugging Face under its own licence, stored in your user folder (.cache\huggingface).
+
+Not included
+------------
+
+Ollama (https://ollama.com) and the Claude Code CLI (https://claude.com/claude-code) are
+installed separately. The app uses them when they are on this computer.
