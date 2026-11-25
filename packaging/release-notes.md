@@ -2,6 +2,17 @@
 
 Turn long videos into short highlights and narrated reels, on your own computer.
 
+### What's new in 1.1.0
+
+- **Better stories from "Describe it"**: the AI editor first plans a story (hook, context, key moments, ending) and then picks moments for each part. Nothing is added after the ending, and clips that nearly touch become one.
+- **Cleaner cuts**: shortened clips start and end at pauses, sentence ends or scene changes, never mid-word.
+- **Cut to music**: add your own song on the Create page; every cut lands on a beat, with quicker cuts where the music is energetic.
+- **Processing details**: for every video, see where the time went, what slowed it down and what would help, the AI models' work, warnings and the full log.
+- **Faster analysis**: large and AV1/HEVC videos are read from a small copy, the video model looks at fewer scenes, and videos are encoded faster.
+- **Languages**: choose the spoken language on the Create page; a garbled transcript is detected and no longer steers the choice of moments.
+- **Optional**: let Claude choose the moments (Settings), and have the AI editor check its cut once more.
+- Lengths like "the original 17-minute video" are no longer read as the wanted length, "as short as possible" works, and captions are only added when you ask for them.
+
 ### Install
 
 1. Download **AIReelMaker-Setup-{version}.exe** below and run it. No administrator rights are needed.
