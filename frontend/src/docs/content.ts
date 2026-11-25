@@ -162,7 +162,7 @@ export const DOC_ARTICLES = {
   "threads-memory": {
     title: "Threads and memory",
     summary: "What the Speed and memory settings do, and when to change them.",
-    keywords: "cpu threads context num_ctx batch memory ram out of memory",
+    keywords: "cpu threads context num_ctx batch memory ram out of memory grid scenes per picture",
     blocks: [
       { kind: "p", text: "These are set for you by automatic optimization. Change them only if you see a problem: a changed value is kept as **Your choice** while the others stay automatic. **Use recommended** in Automatic optimization hands it back." },
       {
@@ -170,12 +170,13 @@ export const DOC_ARTICLES = {
         head: ["Setting", "What it does", "When to change"],
         rows: [
           ["Processor threads for AI", "How many processor threads the AI may use", "Default is your core count minus one (at most 8), so your computer stays responsive. On processors with performance and efficiency cores, only performance cores are counted. Use all cores only if nothing else runs."],
-          ["Scenes per AI request", "Scenes sent to the video model at once", "On the processor 1 is fastest. Lower it if the log says the context window filled up. The app also lowers it automatically when it would not fit, or after running out of memory."],
-          ["Video model memory (tokens)", "Working memory for the video model", "Each picture needs about 1,100 tokens. 2048 fits 1 scene, 4096 fits 2. Higher uses more RAM."],
+          ["Pictures per AI request", "Pictures sent to the video model at once", "On the processor 1 is fastest. Lower it if the log says the context window filled up. The app also lowers it automatically when it would not fit, or after running out of memory."],
+          ["Scenes per picture", "Scenes shown together in one labelled picture", "1 (the default) shows each scene on its own and is the most accurate. 3 or 4 makes video understanding about twice as fast and keeps every scene at full detail, but the model then compares the scenes in a picture and rates some of them differently. Fewer are used automatically when the replies would not fit."],
+          ["Video model memory (tokens)", "Working memory for the video model", "Each picture needs about 1,100 tokens. 2048 fits 1 picture, 4096 fits 2. Higher uses more RAM."],
           ["Speech model memory (tokens)", "Working memory for the speech model", "Raise it (for example to 4096) if the log says speech requests ran out of room and you have 16 GB or more."],
         ],
       },
-      { kind: "note", text: "Making pictures smaller does not speed up the video model: it enlarges every picture to the same size before reading it." },
+      { kind: "note", text: "Making pictures smaller does not speed up the video model: it enlarges every picture to the same size before reading it. A picture of several scenes (Scenes per picture) is read as fast as a picture of one." },
       { kind: "p", text: "When a highlight starts, the app checks how much memory is free. If the models would not fit side by side, each one is unloaded as soon as its step is done, and the log says so. If a model still runs out of memory, the others are unloaded and the request is retried in smaller parts; scenes that still fail use quick scoring and are analyzed again the next time." },
       { kind: "settings", section: "performance", label: "Open Speed and memory" },
     ],
@@ -234,8 +235,10 @@ export const DOC_ARTICLES = {
       { kind: "h", text: "Turning speech off" },
       { kind: "list", items: ["For every highlight: **Settings → Speech to text → Use speech**.", "For one highlight: tick **Visuals and sound only** on the Create page. Subtitles are turned off with it, because they come from the transcript."] },
       { kind: "note", text: "Turning speech back on reuses earlier transcripts, so nothing is transcribed twice." },
+      { kind: "h", text: "Speed" },
+      { kind: "p", text: "Whisper cuts the speech into pieces at pauses and writes several down at once (**Speech pieces at once**, 8 by default). On a processor this is several times faster than one piece at a time, and the pieces are split back into sentences, so moments are chosen as precisely as before. Set it to 0 to use the older one-at-a-time method." },
       { kind: "h", text: "Languages other than English" },
-      { kind: "p", text: "Choose the **Spoken language** on the Create page when you know it: automatic detection is unreliable for many languages. Small models (tiny, base) often write languages such as Malayalam or Tamil as a mix of scripts and invented words. The app notices such a transcript, warns you in the log, and chooses moments from pictures, sound and speech timing instead. Use **small** or larger for these languages." },
+      { kind: "p", text: "Choose the **Spoken language** on the Create page when you know it: automatic detection is unreliable for many languages. Small models (tiny, base) often write languages such as Malayalam or Tamil as a mix of scripts and invented words. The app notices such a transcript and, with **Translate unclear speech to English** on (the default), writes the speech down again as an English translation, so its meaning still helps choose moments; subtitles from such a video are then in English. If the translation is not readable either, moments are chosen from pictures, sound and speech timing instead, and the log says so. Use **small** or larger for these languages." },
       { kind: "settings", section: "speech", label: "Open Speech to text" },
     ],
   },
@@ -455,7 +458,7 @@ export const DOC_ARTICLES = {
         rows: [
           ["\"does not fit in memory\" or the computer freezes", "Choose the next smaller model, close other programs, or turn on automatic optimization. The app already unloads unused models and retries in smaller parts; scenes that still fail are analyzed again next time."],
           ["Partial GPU in AI models", "Part of the model did not fit in graphics memory. Choose a smaller video model for full speed."],
-          ["\"filled the model's context window\" in the log", "Lower Scenes per AI request, or raise the model memory if you have 16 GB or more."],
+          ["\"filled the model's context window\" in the log", "Lower Pictures per AI request or Scenes per picture, or raise the model memory if you have 16 GB or more."],
           ["Analysis is very slow", "Follow Fastest settings without a graphics card, and check which step is slow."],
           ["Creating the video is slow", "Turn off Smooth motion and keep the original frame rate."],
         ],

@@ -45,9 +45,15 @@ const SECTIONS = NAV.flatMap((entry) => entry.items);
 // Fields saved together with "Save changes", by the section that shows them. Everything else
 // on the page (model choices, switches, storage actions) applies right away.
 const SECTION_FIELDS: Partial<Record<SectionId, string[]>> = {
-  speech: ["whisper_device"],
+  speech: ["whisper_device", "whisper_batch_size"],
   video: ["scene_threshold", "output_crf", "output_video_codec"],
-  performance: ["ollama_vision_batch_size", "ollama_num_thread", "ollama_vision_num_ctx", "ollama_text_num_ctx"],
+  performance: [
+    "ollama_vision_batch_size",
+    "ollama_vision_scenes_per_image",
+    "ollama_num_thread",
+    "ollama_vision_num_ctx",
+    "ollama_text_num_ctx",
+  ],
   connection: ["ollama_base_url", "ollama_timeout", "ollama_max_retries"],
 };
 const FORM_KEYS = Object.values(SECTION_FIELDS).flat();
@@ -815,6 +821,24 @@ export default function Settings() {
           </label>
           {saved === "speech" && <InlineStatus ok>{copy.saved}</InlineStatus>}
         </div>
+        <div className="switch-row speech-switch">
+          <label className="check">
+            <input
+              type="checkbox"
+              checked={settings.whisper_translate_unreliable !== false}
+              disabled={busy === "translate" || settings.enable_whisper === false}
+              aria-describedby="translate-unreliable-hint"
+              onChange={(e) => void setInstant("whisper_translate_unreliable", e.target.checked, "translate")}
+            />
+            <span>
+              <strong>{copy.translateUnreliable}</strong>
+              <span className="field-hint block" id="translate-unreliable-hint">
+                {copy.translateUnreliableHint}
+              </span>
+            </span>
+          </label>
+          {saved === "translate" && <InlineStatus ok>{copy.saved}</InlineStatus>}
+        </div>
         <ManagedNote enabled={mode === "auto"} onOpen={() => go("optimize")} />
         <div className="form-grid">
           <Field label={copy.whisperDevice} hint={copy.whisperDeviceHint}>
@@ -826,6 +850,7 @@ export default function Settings() {
               </select>
             )}
           </Field>
+          <NumberField label={copy.whisperBatch} hint={copy.whisperBatchHint} min={0} max={32} value={settings.whisper_batch_size} onChange={(value) => set("whisper_batch_size", value)} />
         </div>
         <h4 className="group-title">{copy.whisper}</h4>
         <p className="hint group-hint">
@@ -992,6 +1017,7 @@ export default function Settings() {
       <ManagedNote enabled={mode === "auto"} onOpen={() => go("optimize")} />
       <div className="form-grid">
         <NumberField label={copy.batch} hint={copy.batchHint} min={1} max={16} value={settings.ollama_vision_batch_size} onChange={(value) => set("ollama_vision_batch_size", value)} />
+        <NumberField label={copy.scenesPerPicture} hint={copy.scenesPerPictureHint} min={1} max={9} value={settings.ollama_vision_scenes_per_image} onChange={(value) => set("ollama_vision_scenes_per_image", value)} />
         <NumberField label={copy.threads} hint={copy.threadsHint} min={1} max={64} value={settings.ollama_num_thread} onChange={(value) => set("ollama_num_thread", value)} />
         <NumberField label={copy.visionCtx} hint={copy.visionCtxHint} min={1024} step={1024} value={settings.ollama_vision_num_ctx} onChange={(value) => set("ollama_vision_num_ctx", value)} />
         <NumberField label={copy.textCtx} hint={copy.textCtxHint} min={1024} step={1024} value={settings.ollama_text_num_ctx} onChange={(value) => set("ollama_text_num_ctx", value)} />

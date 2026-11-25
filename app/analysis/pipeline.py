@@ -52,6 +52,7 @@ from app.analysis.visual import (
     motion_score,
     sample_timestamps,
     shortlist_scenes,
+    vision_scenes_per_image,
 )
 from app.config import Settings
 from app.models.schemas import CandidateScore, ClipPlan, ClipPlanItem, HighlightConfig, Scene, Transcript
@@ -88,9 +89,11 @@ _TEXT_TOKENS_PER_SEGMENT = 48
 # Progress of the slow steps, saved while they run so a pause, crash, or power cut loses at
 # most one batch. Each is removed when its step finishes; nothing else reads them.
 TRANSCRIPT_PARTIAL = "transcript.partial.json"
+# The English translation of unreliable speech, saved as it is written (see _translate_speech).
+TRANSLATION_PARTIAL = "transcript_translation.partial.json"
 SEGMENT_SCORES_PARTIAL = "segment_scores.partial.json"
 VISUAL_PARTIAL = "visual_analysis.partial.json"
-PARTIAL_FILES = (TRANSCRIPT_PARTIAL, SEGMENT_SCORES_PARTIAL, VISUAL_PARTIAL)
+PARTIAL_FILES = (TRANSCRIPT_PARTIAL, TRANSLATION_PARTIAL, SEGMENT_SCORES_PARTIAL, VISUAL_PARTIAL)
 
 # Sound labels per window and the sound vectors behind them (prompt mode).
 SOUND_EVENTS_FILE = "sound_events.json"
@@ -251,6 +254,22 @@ class VideoAnalyzer:
         cache["transcript"] = transcript_data
         transcript = Transcript.model_validate(transcript_data)
         speech = speech_check.check(transcript) if want_speech else {"reliable": True}
+        if not speech.get("reliable", True) and self._can_translate(transcript, wav):
+            translated = self._translate_speech(wav, transcript, progress, job_dir, source_duration)
+            if translated is False:
+                # Not readable either: remembered, so later analyses do not translate again.
+                transcript = transcript.model_copy(update={"translation_unreadable": True})
+                transcript_data = transcript.model_dump()
+                _write(job_dir / "transcript.json", transcript_data)
+                cache["transcript"] = transcript_data
+            elif translated is not None:
+                transcript = translated
+                transcript_data = translated.model_dump()
+                _write(job_dir / "transcript.json", transcript_data)
+                # Scores and voices were read from the old segments.
+                _forget_words(job_dir, cache)
+                cache["transcript"] = transcript_data
+                speech = speech_check.check(transcript)
         speech_reliable = bool(speech.get("reliable", True))
         cache["speech_reliable"] = speech_reliable
         if not speech_reliable:
@@ -402,20 +421,27 @@ class VideoAnalyzer:
                     "the others use quick motion and picture-quality scoring"
                 )
             vision_batch = self.settings.ollama_vision_batch_size
+            per_image = 1
             if self.ollama is not None:
+                vision_ctx = self.ollama.role_options("vision")["num_ctx"]
+                per_image = vision_scenes_per_image(self.settings, vision_ctx, describe)
                 vision_batch = fitting_vision_batch(
                     vision_batch,
-                    self.ollama.role_options("vision")["num_ctx"],
+                    vision_ctx,
                     self.settings.ollama_vision_num_predict,
                     vision_reply_tokens(describe),
-                )
+                    per_image,
+                ) * per_image
             batch_count = max(1, (ai_scene_count + vision_batch - 1) // max(1, vision_batch))
+            # For the time estimates, and for the speed this run records (auto_tune.record_run).
+            progress.speeds["vision_scenes_per_image"] = per_image
+            tiling = f", {per_image} scenes per picture" if per_image > 1 else ""
             progress.log(
                 f"Visual AI: analyzing {ai_scene_count} scene(s) in up to {batch_count} batched call(s) "
-                f"({self.settings.ollama_vision_max_pixels}px frames, model {self.settings.ollama_vision_model})"
+                f"({self.settings.ollama_vision_max_pixels}px frames{tiling}, model {self.settings.ollama_vision_model})"
             )
             ai_scenes = ai_scene_count if vision_ready else 0
-            progress.expect("visual", progress.vision_seconds(ai_scenes) if ai_scenes else 2.0)
+            progress.expect("visual", progress.vision_seconds(ai_scenes, per_image) if ai_scenes else 2.0)
             # Scenes handed to the vision model so far (every batch that has started).
             sent = {"scenes": 0}
             if ai_scenes:
@@ -590,6 +616,7 @@ class VideoAnalyzer:
         multi = len(sources) > 1
         combined_meta: dict = cache.get("metadata") or {}
         piece_metas: list[dict] = []
+        speech_reliable: list[bool] = []
         progress.configure_sources(
             [_file_size(working_path(source)) for source in sources],
             [source.get("duration") for source in sources],
@@ -610,6 +637,16 @@ class VideoAnalyzer:
                 piece_cache = dict(cache)
             piece = self.analyze(work, working_path(source), config, progress, piece_cache, plan=False)
             piece_metas.append(dict(piece.get("metadata") or {}))
+            speech_reliable.append(bool(piece.get("speech_reliable", True)))
+            if not multi:
+                # The analysis ran on a copy; the processing details (run_info.json) and later
+                # steps read these from the job's own cache (a translated transcript also drops
+                # the scores and voices read from the old one).
+                for key in ("scenes", "transcript", "visual", "segment_scores", "speakers"):
+                    if key in piece:
+                        cache[key] = piece[key]
+                    else:
+                        cache.pop(key, None)
             content[str(source.get("id") or f"v{index}")] = content_entry(
                 piece.get("scenes") or [],
                 piece.get("visual") or {},
@@ -626,6 +663,8 @@ class VideoAnalyzer:
             source["fps"] = float((piece.get("metadata") or {}).get("fps") or 0)
             progress.log(f"{label}: {len(tagged)} candidate moments")
 
+        # Unreliable when the words of any video could not be used.
+        cache["speech_reliable"] = all(speech_reliable)
         best = max(sources, key=lambda item: int(item.get("width") or 0) * int(item.get("height") or 0))
         if not multi:
             # One video: keep its full probe (sound, codecs, rotation) under the summary.
@@ -781,6 +820,7 @@ class VideoAnalyzer:
                 "language": transcript.get("language") if len(sources) == 1 else None,
                 "language_probability": transcript.get("language_probability") if len(sources) == 1 else None,
                 "speech_reliable": cache.get("speech_reliable", True),
+                "speech_translated": bool(transcript.get("translated")) if len(sources) == 1 else None,
                 "candidates": len(cache.get("candidates") or []),
                 "music_bpm": (cache.get("music_analysis") or {}).get("bpm"),
             },
@@ -1124,6 +1164,7 @@ class VideoAnalyzer:
         partial: Path | None = None,
         duration: float = 0.0,
         language: str = "",
+        task: str = "transcribe",
     ) -> tuple[dict, bool]:
         """Transcript data, and whether it is worth caching. A failed run is not cached, so the
         next analysis tries again instead of reusing an empty transcript. Finished segments are
@@ -1131,6 +1172,8 @@ class VideoAnalyzer:
         extra: dict = {"check_cancel": self._check_cancel}
         if language:
             extra["language"] = language
+        if task != "transcribe":
+            extra["task"] = task
         if duration > 0:
             extra["on_position"] = lambda seconds: progress.step("transcript", seconds, duration, "time")
         if self.run_plan.whisper_gpu_compute:
@@ -1154,6 +1197,7 @@ class VideoAnalyzer:
                 self.settings.whisper_device,
                 cpu_threads=self.settings.whisper_cpu_threads,
                 num_workers=self.settings.whisper_num_workers,
+                batch_size=self.settings.whisper_batch_size,
                 **extra,
             )
         except CancelledError:
@@ -1161,11 +1205,18 @@ class VideoAnalyzer:
         except Exception as exc:  # noqa: BLE001
             transcript, info = Transcript(), {"ok": False, "error": str(exc)}
         if not info.get("ok"):
-            progress.log(
-                f"Transcription failed: {info.get('error') or 'unknown error'}. "
-                "Continuing without speech; the next analysis will try again.",
-                "WARNING",
-            )
+            if task == "translate":
+                progress.log(
+                    f"Translation failed: {info.get('error') or 'unknown error'}. "
+                    "The original transcript is kept; the next analysis will try again.",
+                    "WARNING",
+                )
+            else:
+                progress.log(
+                    f"Transcription failed: {info.get('error') or 'unknown error'}. "
+                    "Continuing without speech; the next analysis will try again.",
+                    "WARNING",
+                )
             return Transcript().model_dump(), False
         if info.get("warning"):
             progress.log(str(info["warning"]), "WARNING")
@@ -1175,9 +1226,11 @@ class VideoAnalyzer:
             heard = f", language {transcript.language}"
             if transcript.language_probability is not None:
                 heard += f" ({transcript.language_probability:.0%} sure)"
-        progress.log(f"Transcription completed ({nseg} segment{'s' if nseg != 1 else ''}{heard})")
+        done = "Translation" if task == "translate" else "Transcription"
+        progress.log(f"{done} completed ({nseg} segment{'s' if nseg != 1 else ''}{heard})")
         if (
-            not language
+            task == "transcribe"
+            and not language
             and transcript.language_probability is not None
             and transcript.language_probability < speech_check.UNSURE_PROBABILITY
         ):
@@ -1187,6 +1240,57 @@ class VideoAnalyzer:
                 "WARNING",
             )
         return transcript.model_dump(), True
+
+    def _can_translate(self, transcript: Transcript, wav: Path) -> bool:
+        """An unreliable transcript can be written down again as an English translation: when
+        the setting is on, it is not a translation already, and the audio is still there."""
+        return (
+            bool(getattr(self.settings, "whisper_translate_unreliable", False))
+            and not transcript.translated
+            and not transcript.translation_unreadable
+            and bool(transcript.segments)
+            and str(transcript.language or "").lower() != "en"
+            and wav.exists()
+        )
+
+    def _translate_speech(
+        self, wav: Path, transcript: Transcript, progress: PipelineProgress, job_dir: Path, duration: float
+    ) -> Transcript | None | bool:
+        """Whisper's English translation of speech it could not write down in its own language.
+        None when it failed (tried again next time) and False when it is not readable either; the
+        transcript is then kept and its words are not used, as before. The spoken language stays
+        in ``language``."""
+        spoken = str(transcript.language or "")
+        progress.stage("transcript", "running", "Translating to English")
+        progress.log(
+            f"The transcript looks unreliable{f' ({spoken})' if spoken else ''}: writing the speech down again "
+            "as an English translation, so its meaning can still be used to choose moments"
+        )
+        if self.run_plan.free_gpu_for_speech:
+            self._unload_models(None)
+        partial = job_dir / TRANSLATION_PARTIAL
+        data, ok = self._transcribe(wav, progress, partial, duration=duration, language=spoken, task="translate")
+        if self.run_plan.one_at_a_time or self.run_plan.free_gpu_for_speech:
+            release_whisper_models()
+        partial.unlink(missing_ok=True)
+        if not ok:
+            progress.stage("transcript", "done", "Translation failed")
+            return None
+        translated = Transcript.model_validate({**data, "language": spoken or data.get("language"), "translated": True})
+        check = speech_check.check(translated)
+        if not translated.segments or not check.get("reliable", True):
+            reason = f" ({check.get('reason')})" if check.get("reason") else ""
+            progress.log(
+                f"The English translation is not readable either{reason}; the original transcript is kept.",
+                "WARNING",
+            )
+            progress.stage("transcript", "done", "Translation not readable")
+            return False
+        progress.log(
+            "Using the English translation of the speech. Subtitles made from it are in English."
+        )
+        progress.stage("transcript", "done", "Translated to English")
+        return translated
 
     def _score_transcript(
         self,
@@ -2078,9 +2182,18 @@ def _write(path: Path, data) -> None:
 
 def _forget_speech(job_dir: Path, cache: dict) -> None:
     """Remove the transcript and everything read from its words, so they are made again."""
-    for name in ("transcript.json", "segment_scores.json", TRANSCRIPT_PARTIAL, SEGMENT_SCORES_PARTIAL, "speakers.json"):
+    for name in ("transcript.json", TRANSCRIPT_PARTIAL, TRANSLATION_PARTIAL):
         (job_dir / name).unlink(missing_ok=True)
-    for key in ("transcript", "segment_scores", "speakers"):
+    cache.pop("transcript", None)
+    _forget_words(job_dir, cache)
+
+
+def _forget_words(job_dir: Path, cache: dict) -> None:
+    """Remove what was read from the transcript's segments (scores, voices), so it is made again
+    from a new transcript."""
+    for name in ("segment_scores.json", SEGMENT_SCORES_PARTIAL, "speakers.json"):
+        (job_dir / name).unlink(missing_ok=True)
+    for key in ("segment_scores", "speakers"):
         cache.pop(key, None)
 
 

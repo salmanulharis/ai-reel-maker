@@ -546,6 +546,131 @@ def test_failed_transcription_is_not_cached_and_runs_again(tmp_path, monkeypatch
     assert len(result["segment_scores"]) == 2
 
 
+def test_transcription_uses_the_batch_size_setting(tmp_path, monkeypatch):
+    job_dir, cache = _job(tmp_path)
+    seen: list[dict] = []
+
+    def transcribe(*_args, **kwargs):
+        seen.append(kwargs)
+        return _transcript(), {"ok": True}
+
+    monkeypatch.setattr("app.analysis.pipeline.transcribe_detailed", transcribe)
+    _analyze(tmp_path, job_dir, cache, whisper_batch_size=6)
+    assert seen and seen[0]["batch_size"] == 6
+
+
+_GARBLED = [
+    "ஓட்டு வேண்டும் VS1COP PROCESSA ஓPTIMAISD for this particular device",
+    "எந்து ஒன்று கiddillum phoneுடன் என்றை 12GB RAMを足りない because",
+    "தரம்ஞஞஞஞஞஞஞஞஞஞ मकी गान mr",
+] * 3
+
+
+def _garbled() -> Transcript:
+    return Transcript(
+        segments=[TranscriptSegment(start=i * 1.0, end=i * 1.0 + 0.9, text=t) for i, t in enumerate(_GARBLED)],
+        language="ml",
+        language_probability=0.99,
+    )
+
+
+def _translating(calls: list, translation: Transcript | None = None):
+    def transcribe(*_args, **kwargs):
+        calls.append(kwargs.get("task", "transcribe"))
+        if kwargs.get("task") == "translate":
+            return (translation or _transcript()).model_copy(update={"language": "en"}), {"ok": True}
+        return _garbled(), {"ok": True}
+
+    return transcribe
+
+
+def test_unreliable_speech_is_written_down_again_in_english(tmp_path, monkeypatch):
+    job_dir, cache = _job(tmp_path)
+    calls: list[str] = []
+    monkeypatch.setattr("app.analysis.pipeline.transcribe_detailed", _translating(calls))
+    logs: list[dict] = []
+    result = _analyze(tmp_path, job_dir, cache, logs=logs)
+    assert calls == ["transcribe", "translate"]
+    saved = json.loads((job_dir / "transcript.json").read_text(encoding="utf-8"))
+    assert saved["translated"] is True and saved["language"] == "ml", "the spoken language is kept"
+    assert saved["segments"][0]["text"].startswith("Here is the main idea")
+    assert result["speech_reliable"] is True
+    assert any("English translation" in entry["message"] for entry in logs)
+    # The next analysis reuses it, even with Malayalam chosen as the spoken language.
+    from app.workers.worker import load_cache
+
+    calls.clear()
+    settings = Settings(data_dir=tmp_path / "data")
+    analyzer = VideoAnalyzer(settings, FakeRunner(), None, vision_enabled=False, text_enabled=False)
+    analyzer.analyze(
+        job_dir, job_dir / "source.mp4", HighlightConfig(speech_language="ml"),
+        PipelineProgress(lambda *_: None), load_cache(job_dir), plan=False,
+    )
+    assert calls == []
+
+
+def test_a_cached_unreliable_transcript_is_translated_once(tmp_path, monkeypatch):
+    job_dir, cache = _job(tmp_path)
+    (job_dir / "transcript.json").write_text(_garbled().model_dump_json(), encoding="utf-8")
+    (job_dir / "segment_scores.json").write_text("[]", encoding="utf-8")
+    from app.workers.worker import load_cache
+
+    calls: list[str] = []
+    monkeypatch.setattr("app.analysis.pipeline.transcribe_detailed", _translating(calls))
+    result = _analyze(tmp_path, job_dir, load_cache(job_dir))
+    assert calls == ["translate"]
+    assert len(result["segment_scores"]) == 2, "scores are made again from the translated segments"
+
+
+def test_translation_can_be_turned_off(tmp_path, monkeypatch):
+    job_dir, cache = _job(tmp_path)
+    calls: list[str] = []
+    monkeypatch.setattr("app.analysis.pipeline.transcribe_detailed", _translating(calls))
+    result = _analyze(tmp_path, job_dir, cache, whisper_translate_unreliable=False)
+    assert calls == ["transcribe"]
+    assert result["speech_reliable"] is False
+
+
+def test_an_unreadable_translation_keeps_the_original(tmp_path, monkeypatch):
+    job_dir, cache = _job(tmp_path)
+    calls: list[str] = []
+    monkeypatch.setattr("app.analysis.pipeline.transcribe_detailed", _translating(calls, translation=_garbled()))
+    logs: list[dict] = []
+    result = _analyze(tmp_path, job_dir, cache, logs=logs)
+    assert calls == ["transcribe", "translate"]
+    saved = json.loads((job_dir / "transcript.json").read_text(encoding="utf-8"))
+    assert saved["translated"] is False and result["speech_reliable"] is False
+    assert saved["translation_unreadable"] is True
+    assert any("not readable either" in entry["message"] for entry in logs)
+    # Remembered: the next analysis does not translate again.
+    from app.workers.worker import load_cache
+
+    calls.clear()
+    _analyze(tmp_path, job_dir, load_cache(job_dir))
+    assert calls == []
+
+
+def test_a_failed_translation_is_tried_again_next_time(tmp_path, monkeypatch):
+    job_dir, cache = _job(tmp_path)
+    calls: list[str] = []
+
+    def transcribe(*_args, **kwargs):
+        calls.append(kwargs.get("task", "transcribe"))
+        if kwargs.get("task") == "translate":
+            return Transcript(), {"ok": False, "error": "out of memory"}
+        return _garbled(), {"ok": True}
+
+    monkeypatch.setattr("app.analysis.pipeline.transcribe_detailed", transcribe)
+    logs: list[dict] = []
+    _analyze(tmp_path, job_dir, cache, logs=logs)
+    assert any("Translation failed" in entry["message"] and "original transcript is kept" in entry["message"] for entry in logs)
+    from app.workers.worker import load_cache
+
+    calls.clear()
+    _analyze(tmp_path, job_dir, load_cache(job_dir))
+    assert calls == ["translate"]
+
+
 def test_speech_off_still_extracts_audio_for_loudness(tmp_path, monkeypatch):
     job_dir, cache = _job(tmp_path)
     wav = job_dir / "source" / "audio.wav"

@@ -251,6 +251,7 @@ export default function Insights() {
                       })}`
                     : ""}
                   {run.found.speech_reliable === false && <span className="status-pill accent">{copy.unreliable}</span>}
+                  {run.found.speech_translated && <span className="status-pill">{copy.translated}</span>}
                 </dd>
               </>
             )}

@@ -66,6 +66,12 @@ class Settings(BaseSettings):
     ollama_vision_num_ctx: int = 4096
     ollama_vision_num_predict: int = 256
     ollama_vision_batch_size: int = 4
+    # Scenes tiled into one picture for the video model (1 = one frame per picture). Ollama
+    # reads every picture up to about a megapixel at the same cost, so a 2x2 grid of 512 px
+    # frames costs what one frame does, with each frame at full detail. Off by default: on a
+    # real job, grids were 2.3x faster but the model judged several scenes differently (it
+    # compares the scenes in a picture), so tiling is a speed-for-judgement trade to opt into.
+    ollama_vision_scenes_per_image: int = 1
     ollama_vision_min_scene_duration: float = 1.0
     ollama_text_batch_size: int = 20
     ollama_text_num_ctx: int = 4096
@@ -127,6 +133,13 @@ class Settings(BaseSettings):
 
     whisper_cpu_threads: int = 6
     whisper_num_workers: int = 1
+    # Pieces of speech Whisper writes down at once (faster-whisper's batched mode). 0 = the
+    # older one-piece-at-a-time method, which re-reads unclear parts several times.
+    whisper_batch_size: int = 8
+    # When a transcript is unreliable (Whisper cannot write the language down, for example
+    # Malayalam with the small model), write the speech down again as an English translation,
+    # so the words can still be used to choose moments.
+    whisper_translate_unreliable: bool = True
     worker_idle_sleep: float = 1.5
 
     data_dir: Path = Field(default_factory=paths.default_data_dir)

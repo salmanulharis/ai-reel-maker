@@ -207,6 +207,7 @@ def _probe_whisper(settings: Settings) -> dict[str, Any]:
             device=settings.whisper_device or "auto",
             cpu_threads=settings.whisper_cpu_threads,
             num_workers=settings.whisper_num_workers,
+            batch_size=settings.whisper_batch_size,
         )
     finally:
         path.unlink(missing_ok=True)

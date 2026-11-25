@@ -34,6 +34,8 @@ VISUAL_SCENE_SCHEMA_FAST = {
         "visual_importance": {"type": "number"},
         "action_strength": {"type": "number"},
         "information_density": {"type": "number"},
+        # Nothing reads the model's value (the motion measurement is used), but it stays: removing
+        # it from the reply changed the other scores and captions on a real job.
         "visual_change": {"type": "number"},
         "repetition_likelihood": {"type": "number"},
         "context_dependency": {"type": "number"},
@@ -211,7 +213,11 @@ def visual_batch_schema(with_avoid: bool = False, with_caption: bool = False) ->
     return {**VISUAL_BATCH_SCHEMA, "properties": {"scenes": {"type": "array", "items": item}}}
 
 
-def visual_batch_prompt(scenes: list[dict], custom_focus: str = "", avoid: str = "", describe: bool = False) -> str:
+def visual_batch_prompt(
+    scenes: list[dict], custom_focus: str = "", avoid: str = "", describe: bool = False, grid: bool = False
+) -> str:
+    """With ``grid`` the images are grids of scene frames, each frame labelled with its scene id
+    (see app.analysis.frame_grid); otherwise there is one frame per scene, in scene order."""
     extra = f" Focus: {custom_focus}." if custom_focus else ""
     avoid_key = ',"avoid":0-1' if avoid else ""
     if avoid:
@@ -224,7 +230,14 @@ def visual_batch_prompt(scenes: list[dict], custom_focus: str = "", avoid: str =
         f"{idx}. scene_id={scene['scene_id']} [{scene['start']:.1f}-{scene['end']:.1f}s]"
         for idx, scene in enumerate(scenes)
     )
-    return f"""Analyze each scene from its frame image. Image order matches scene order.{extra}
+    if grid:
+        intro = (
+            "Each image is a grid of scene frames. The label above each frame names its scene "
+            "(\"Scene 12\" means scene 12). Analyze each scene from its own frame only."
+        )
+    else:
+        intro = "Analyze each scene from its frame image. Image order matches scene order."
+    return f"""{intro}{extra}
 Return compact JSON only:
 {{"scenes":[{{"scene_id":n,"visual_importance":0-1,"action_strength":0-1,"information_density":0-1,"visual_change":0-1,"repetition_likelihood":0-1,"context_dependency":0-1{avoid_key}}}]}}
 Use the same scene_id values. Score 0.0-1.0. Penalize intros, endings, repetition, and empty frames.

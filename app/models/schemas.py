@@ -123,6 +123,11 @@ class Transcript(BaseModel):
     language: str | None = None
     # How sure Whisper was of the language it detected (None: chosen by the user, or older files).
     language_probability: float | None = None
+    # The text is Whisper's English translation of speech in ``language`` (made when the
+    # speech could not be written down reliably in its own language).
+    translated: bool = False
+    # An English translation was made and was not readable either: not tried again.
+    translation_unreadable: bool = False
 
 
 class Scene(BaseModel):

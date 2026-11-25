@@ -17,6 +17,8 @@ import time
 from dataclasses import dataclass
 from typing import Any, Callable, Hashable
 
+from app.ai.context_fit import vision_scene_cost
+
 STAGES = [
     ("prepare", "Preparing video"),
     ("metadata", "Video metadata"),
@@ -453,7 +455,8 @@ class PipelineProgress(_Reporter):
             return fixed + seconds / 5.0 * TEXT_TOKENS_PER_SEGMENT / tokens
         per_image = self.speeds.get("vision_seconds_per_image")
         if stage == "visual" and per_image:
-            return fixed + seconds / 20.0 * FRAMES_PER_VISION_SCENE * per_image
+            share = vision_scene_cost(int(self.speeds.get("vision_scenes_per_image") or 1))
+            return fixed + seconds / 20.0 * FRAMES_PER_VISION_SCENE * per_image * share
         return fixed + per_second * seconds
 
     def _reweigh(self) -> None:
@@ -470,8 +473,10 @@ class PipelineProgress(_Reporter):
 
     # Estimates from counts
 
-    def vision_seconds(self, scenes: int) -> float:
-        return max(1.0, scenes * FRAMES_PER_VISION_SCENE * self.speeds.get("vision_seconds_per_image", 6.0))
+    def vision_seconds(self, scenes: int, scenes_per_image: int = 1) -> float:
+        """Expected time for ``scenes`` scenes, ``scenes_per_image`` of them sharing a picture."""
+        per_image = self.speeds.get("vision_seconds_per_image", 6.0)
+        return max(1.0, scenes * FRAMES_PER_VISION_SCENE * per_image * vision_scene_cost(scenes_per_image))
 
     def text_seconds(self, segments: int) -> float:
         return max(1.0, segments * TEXT_TOKENS_PER_SEGMENT / self.speeds.get("text_tokens_per_sec", 10.0))

@@ -10,13 +10,14 @@ from collections.abc import Callable
 from app.ai.context_fit import (
     VISION_CAPTION_TOKENS,
     VISION_TOKENS_PER_SCENE,
+    fitting_scenes_per_image,
     fitting_vision_batch,
     predict_budget,
     vision_ctx_for_batch,
 )
 from app.ai.ollama import OllamaClient, OllamaConnectionError, OllamaError, OllamaTruncatedError, is_memory_error
 from app.ai.prompts import visual_batch_prompt, visual_batch_schema
-from app.analysis import score_source
+from app.analysis import frame_grid, score_source
 from app.models.schemas import Scene, VisualAnalysis
 from app.utils.timefmt import clamp_timestamp
 
@@ -160,6 +161,10 @@ def analyze_scenes_visual(
     reasons so far after every batch, so finished batches can be saved as they complete. With
     ``describe`` the model also says in a few words what each scene shows ("caption").
 
+    Up to ``ollama_vision_scenes_per_image`` scenes share one picture (a labelled grid, see
+    app.analysis.frame_grid), fewer when the context window is too small for their replies.
+    A scene whose frame cannot be opened is sent on its own, one frame per picture.
+
     Returns the scores, log messages, and the fallback reason for every scene that did not get
     an AI score (see app.analysis.score_source)."""
     from app.config import get_settings
@@ -201,13 +206,22 @@ def analyze_scenes_visual(
     if not ai_queue or client is None:
         return results, errors, reasons
 
-    # A request that ran out of memory lowers this for the batches that follow.
+    num_ctx = client.role_options("vision")["num_ctx"]
+    per_image = vision_scenes_per_image(cfg, num_ctx, describe)
+    tiled = [item for item in ai_queue if per_image > 1 and frame_grid.can_tile(item[2])]
+    tiled_ids = {item[0].scene_id for item in tiled}
+    # (scene, scenes per picture): grids first, then the scenes sent one frame per picture.
+    queue = [(item, per_image) for item in tiled] + [
+        (item, 1) for item in ai_queue if item[0].scene_id not in tiled_ids
+    ]
+    # Pictures per request. A request that ran out of memory lowers this for the batches that follow.
     limit = {
         "size": fitting_vision_batch(
             cfg.ollama_vision_batch_size,
-            client.role_options("vision")["num_ctx"],
+            num_ctx,
             cfg.ollama_vision_num_predict,
             vision_reply_tokens(describe),
+            per_image if tiled else 1,
         )
     }
     unreachable = False
@@ -215,12 +229,14 @@ def analyze_scenes_visual(
     position = 0
     batch_index = 0
 
-    while position < len(ai_queue):
-        batch = ai_queue[position : position + limit["size"]]
-        position += len(batch)
+    while position < len(queue):
+        grid = queue[position][1]
+        batch = []
+        while position < len(queue) and queue[position][1] == grid and len(batch) < limit["size"] * grid:
+            batch.append(queue[position][0])
+            position += 1
         batch_index += 1
-        remaining = len(ai_queue) - position
-        batch_count = batch_index + (remaining + limit["size"] - 1) // limit["size"]
+        batch_count = batch_index + _requests_left(queue, position, limit["size"])
         if on_batch_start:
             on_batch_start(batch_index, batch_count, len(batch))
         if unreachable or out_of_memory:
@@ -231,7 +247,7 @@ def analyze_scenes_visual(
             continue
         try:
             by_id = _score_visual_batch(
-                client, model, batch, custom_focus, cfg, avoid, on_memory_error, limit, describe=describe
+                client, model, batch, custom_focus, cfg, avoid, on_memory_error, limit, describe=describe, grid=grid
             )
             for scene_model, _, _, fallback in batch:
                 raw = by_id.get(scene_model.scene_id, {})
@@ -269,6 +285,27 @@ def analyze_scenes_visual(
     return results, errors, reasons
 
 
+def vision_scenes_per_image(cfg: "Settings", num_ctx: int, describe: bool) -> int:
+    """Scenes tiled into one picture: the configured number, or fewer when one picture and the
+    replies for its scenes would not fit the context window."""
+    return fitting_scenes_per_image(
+        getattr(cfg, "ollama_vision_scenes_per_image", 1),
+        num_ctx,
+        cfg.ollama_vision_num_predict,
+        vision_reply_tokens(describe),
+    )
+
+
+def _requests_left(queue: list[tuple[tuple, int]], position: int, pictures: int) -> int:
+    """Requests still needed for the scenes after ``position`` at ``pictures`` per request."""
+    left = 0
+    for grid in {grid for _, grid in queue[position:]}:
+        scenes = sum(1 for _, each in queue[position:] if each == grid)
+        per_request = max(1, pictures * grid)
+        left += (scenes + per_request - 1) // per_request
+    return left
+
+
 def _score_visual_batch(
     client: OllamaClient,
     model: str,
@@ -280,39 +317,64 @@ def _score_visual_batch(
     limit: dict[str, int] | None = None,
     retried: bool = False,
     describe: bool = False,
+    grid: int = 1,
 ) -> dict[int, dict]:
     """Raw AI rows by scene id. A reply cut off by the token limit is retried as two smaller batches.
 
-    When the model runs out of memory and ``on_memory_error`` is given, it is called to free
-    memory, and the batch is retried in halves, then once as a single frame with the smallest
-    context window. ``limit["size"]`` is lowered so later batches start at the size that worked."""
+    With ``grid`` above 1, up to that many scenes share one picture (labelled tiles); otherwise
+    every scene is its own picture. When the model runs out of memory and ``on_memory_error``
+    is given, it is called to free memory, and the batch is retried in halves, then once as a
+    single picture with the smallest context window. ``limit["size"]`` (pictures per request)
+    is lowered so later batches start at the size that worked."""
     scene_meta = [
         {"scene_id": scene.scene_id, "start": scene.start, "end": scene.end}
         for scene, _, _, _ in batch
     ]
+    tiles = max(1, int(grid))
     options = client.role_options("vision")
     if retried:
-        options["num_ctx"] = min(options["num_ctx"], vision_ctx_for_batch(1, cfg.ollama_vision_num_predict))
+        smallest = (
+            vision_ctx_for_batch(1, cfg.ollama_vision_num_predict)
+            if tiles == 1
+            else vision_ctx_for_batch(1, cfg.ollama_vision_num_predict, vision_reply_tokens(describe), len(batch))
+        )
+        options["num_ctx"] = min(options["num_ctx"], smallest)
     options["num_predict"] = predict_budget(
         cfg.ollama_vision_num_predict, len(batch), vision_reply_tokens(describe), options["num_ctx"]
     )
-    images = [client.encode_image(str(frame)) for _, _, frame, _ in batch]
+    if tiles > 1:
+        quality = int(getattr(cfg, "ollama_vision_jpeg_quality", 75) or 75)
+        images = [
+            frame_grid.encode(
+                frame_grid.compose(
+                    [(scene.scene_id, frame) for scene, _, frame, _ in batch[start : start + tiles]],
+                    cfg.ollama_vision_max_pixels,
+                ),
+                quality,
+            )
+            for start in range(0, len(batch), tiles)
+        ]
+    else:
+        images = [client.encode_image(str(frame)) for _, _, frame, _ in batch]
 
     def halves() -> dict[int, dict]:
-        middle = len(batch) // 2
+        # Between pictures when there are several, otherwise between the scenes of the one picture.
+        middle = (len(images) // 2) * tiles if len(images) > 1 else len(batch) // 2
         return {
             **_score_visual_batch(
-                client, model, batch[:middle], custom_focus, cfg, avoid, on_memory_error, limit, describe=describe
+                client, model, batch[:middle], custom_focus, cfg, avoid, on_memory_error, limit,
+                describe=describe, grid=grid,
             ),
             **_score_visual_batch(
-                client, model, batch[middle:], custom_focus, cfg, avoid, on_memory_error, limit, describe=describe
+                client, model, batch[middle:], custom_focus, cfg, avoid, on_memory_error, limit,
+                describe=describe, grid=grid,
             ),
         }
 
     try:
         data = client.chat(
             model=model,
-            prompt=visual_batch_prompt(scene_meta, custom_focus, avoid, describe),
+            prompt=visual_batch_prompt(scene_meta, custom_focus, avoid, describe, grid=tiles > 1),
             images=images,
             schema=visual_batch_schema(bool(avoid), describe),
             options=options,
@@ -323,15 +385,17 @@ def _score_visual_batch(
             raise
         return halves()
     except OllamaError as exc:
-        if on_memory_error is None or not is_memory_error(str(exc)) or (len(batch) <= 1 and retried):
+        if on_memory_error is None or not is_memory_error(str(exc)) or (len(images) <= 1 and retried):
             raise
         on_memory_error()
         if limit is not None:
-            limit["size"] = max(1, len(batch) // 2)
-        if len(batch) > 1:
+            limit["size"] = max(1, len(images) // 2)
+        if len(images) > 1:
             return halves()
+        # One picture (a single frame or one grid): smaller grids would cost as much memory.
         return _score_visual_batch(
-            client, model, batch, custom_focus, cfg, avoid, on_memory_error, limit, retried=True, describe=describe
+            client, model, batch, custom_focus, cfg, avoid, on_memory_error, limit,
+            retried=True, describe=describe, grid=grid,
         )
     by_id: dict[int, dict] = {}
     for row in data.get("scenes") or []:

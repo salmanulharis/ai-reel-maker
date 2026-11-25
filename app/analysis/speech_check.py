@@ -98,6 +98,8 @@ def check(transcript: Transcript | dict | None) -> dict:
         return {"reliable": True, "reason": "", "language": None, "probability": None}
     language = (transcript.language or "").lower() or None
     probability = transcript.language_probability
+    # A translation is English text, whatever language was spoken.
+    script_language = "en" if transcript.translated else language
     text = " ".join(segment.text for segment in transcript.segments)
     scripts: dict[str, int] = {}
     for char in text:
@@ -127,7 +129,7 @@ def check(transcript: Transcript | dict | None) -> dict:
         problems.append("many words mix scripts")
     if words and repeats / len(words) >= _REPEAT_WORD_SHARE:
         problems.append("many words repeat one letter")
-    expected = _LANGUAGE_SCRIPTS.get(language or "")
+    expected = _LANGUAGE_SCRIPTS.get(script_language or "")
     if expected and "LATIN" not in expected and other_total >= _MIN_LETTERS:
         share = sum(count for name, count in other.items() if name in expected) / other_total
         if share < _EXPECTED_SCRIPT_SHARE:

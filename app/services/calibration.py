@@ -15,7 +15,7 @@ import time
 import wave
 from typing import Any
 
-from app.ai.context_fit import VISION_PROMPT_TOKENS_PER_IMAGE
+from app.ai.context_fit import VISION_PROMPT_TOKENS_PER_IMAGE, vision_scene_cost
 from app.ai.ollama import describe_placement
 from app.config import Settings, get_settings
 from app.services.model_catalog import VISION_FIT_GB, catalog_entry, model_memory_gb, next_larger, nominal_ram_gb
@@ -153,6 +153,7 @@ def _measure_whisper(settings: Settings) -> dict[str, Any] | None:
         device=settings.whisper_device or "auto",
         cpu_threads=settings.whisper_cpu_threads,
         num_workers=settings.whisper_num_workers,
+        batch_size=settings.whisper_batch_size,
     )
     try:
         _write_sample_audio(warm, 1.0)
@@ -266,7 +267,9 @@ def estimate(speeds: dict[str, float], settings: Settings) -> dict[str, Any] | N
             missing = True
     if settings.enable_visual_analysis:
         if speeds.get("vision_seconds_per_image"):
-            parts["video_understanding"] = _REFERENCE_SCENES * speeds["vision_seconds_per_image"]
+            # The measured speed is for one frame per request; tiled scenes share the reading.
+            share = vision_scene_cost(getattr(settings, "ollama_vision_scenes_per_image", 1))
+            parts["video_understanding"] = _REFERENCE_SCENES * speeds["vision_seconds_per_image"] * share
         else:
             missing = True
     if not parts:

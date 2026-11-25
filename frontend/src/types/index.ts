@@ -299,6 +299,7 @@ export interface JobInsights {
       language: string | null;
       language_probability: number | null;
       speech_reliable: boolean;
+      speech_translated?: boolean | null;
       candidates: number;
       music_bpm?: number | null;
     };

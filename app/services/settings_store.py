@@ -18,6 +18,8 @@ _RANGES = {
     "ollama_timeout": (10, None),
     "ollama_max_retries": (0, 10),
     "ollama_vision_batch_size": (1, 32),
+    "ollama_vision_scenes_per_image": (1, 9),
+    "whisper_batch_size": (0, 32),
     "ollama_vision_num_ctx": (1024, None),
     "ollama_text_num_ctx": (1024, None),
     "ollama_director_num_ctx": (2048, None),

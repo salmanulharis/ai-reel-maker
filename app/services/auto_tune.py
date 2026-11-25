@@ -13,6 +13,7 @@ import json
 import time
 from typing import Any
 
+from app.ai.context_fit import vision_scene_cost
 from app.config import Settings, get_settings
 from app.services import calibration
 from app.services.ai_profile import (
@@ -39,7 +40,7 @@ LABELS = {
     "ollama_text_model": "Speech understanding model",
     "whisper_model": "Speech to text model",
     "whisper_device": "Speech to text runs on",
-    "ollama_vision_batch_size": "Scenes per AI request",
+    "ollama_vision_batch_size": "Pictures per AI request",
     "ollama_vision_num_ctx": "Video model memory",
     "ollama_text_num_ctx": "Speech model memory",
     "ollama_num_thread": "Processor threads for AI",
@@ -273,7 +274,7 @@ def _reason(key: str, rec: dict[str, Any], hw: dict[str, Any]) -> str:
             return "The NVIDIA graphics card has memory to spare, so speech to text uses it."
         return "No NVIDIA graphics card with spare memory, so the processor is used. This is the reliable choice."
     if key == "ollama_vision_batch_size":
-        return "How many scenes fit in one request without running out of memory. It is lowered automatically if needed."
+        return "How many pictures fit in one request without running out of memory. It is lowered automatically if needed."
     if key in {"ollama_vision_num_ctx", "ollama_text_num_ctx"}:
         return "Enough working memory for each request without using more RAM than this computer can spare."
     if key == "ollama_director_num_ctx":
@@ -374,7 +375,11 @@ def record_run(progress: Any, cache: dict[str, Any], settings: Settings | None =
     if entry["vision"]:
         vision = usage["vision"]
         busy = float(vision.get("prompt_sec") or 0) + float(vision.get("output_sec") or 0)
-        entry["vision"]["seconds_per_image"] = round(busy / calibration.images_in(vision), 1)
+        # Kept as the time of a one-frame request: a picture of several scenes is read once but
+        # answered for each scene (see context_fit.vision_scene_cost).
+        tiles = max(1, int((getattr(progress, "speeds", None) or {}).get("vision_scenes_per_image") or 1))
+        per_picture = busy / calibration.images_in(vision)
+        entry["vision"]["seconds_per_image"] = round(per_picture / (tiles * vision_scene_cost(tiles)), 1)
     history = [entry, *read_history()][:_HISTORY_SIZE]
     write_setting(_HISTORY_KEY, json.dumps(history))
 
@@ -421,7 +426,7 @@ def tips(history: list[dict[str, Any]], settings: Settings, hw: dict[str, Any]) 
             "For talks, interviews, and lectures, turning it off in AI models makes analysis much faster; speech is still analyzed."
         )
     if (vision.get("near_context_limit") or vision.get("cut_off")) and settings.ollama_vision_batch_size > 1:
-        found.append("Some video requests ran out of working memory. Lowering \"Scenes per AI request\" in Speed and memory avoids this.")
+        found.append("Some video requests ran out of working memory. Lowering \"Pictures per AI request\" in Speed and memory avoids this.")
     if text.get("near_context_limit") or text.get("cut_off"):
         if float(hw.get("ram_gb") or 0) >= 16:
             found.append(

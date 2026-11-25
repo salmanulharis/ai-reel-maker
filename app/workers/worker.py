@@ -1056,10 +1056,14 @@ def _measured_speeds(settings) -> dict[str, float]:
         from app.services.auto_tune import read_history
         from app.services.calibration import current_speeds
 
-        return current_speeds(settings, read_history())
+        speeds = current_speeds(settings, read_history())
     except Exception:  # noqa: BLE001 - estimates fall back to typical speeds
         _log.debug("Could not read measured speeds", exc_info=True)
         return {}
+    if speeds.get("vision_seconds_per_image"):
+        # Until the visual stage knows how many scenes fit in a picture, the setting is used.
+        speeds["vision_scenes_per_image"] = max(1, int(getattr(settings, "ollama_vision_scenes_per_image", 1) or 1))
+    return speeds
 
 
 def _run_plan(settings, ollama, progress: PipelineProgress) -> RunPlan:

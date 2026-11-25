@@ -574,6 +574,9 @@ def test_estimate_from_measured_speed():
     estimate = calibration.estimate(speeds, settings)
     assert estimate["complete"] is True
     assert estimate["parts"] == {"speech_to_text": 60, "speech_understanding": 720, "video_understanding": 900}
+    # Four scenes per picture share the reading; each reply is not shared.
+    tiled = calibration.estimate(speeds, settings.model_copy(update={"ollama_vision_scenes_per_image": 4}))
+    assert tiled["parts"]["video_understanding"] == 360
     partial = calibration.estimate({"vision_seconds_per_image": 30.0}, settings)
     assert partial["complete"] is False
     assert calibration.estimate({}, settings) is None
