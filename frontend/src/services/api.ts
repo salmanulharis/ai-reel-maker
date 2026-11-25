@@ -236,7 +236,9 @@ export function configPayload(form: HighlightForm) {
     min_duration: finiteOr(form.min_duration, Math.min(20, max)),
     max_duration: max,
     length_mode: form.social_short ? "range" : form.length_mode,
+    auto_length_strict: !form.social_short && form.length_mode === "auto" && Boolean(form.auto_length_strict),
     use_speech: form.use_speech,
+    speech_language: form.use_speech ? form.speech_language || "" : "",
     style: form.style,
     // The focus text box only shows for the custom style; a hidden focus must not steer the AI.
     // In prompt mode the focus comes from the description.

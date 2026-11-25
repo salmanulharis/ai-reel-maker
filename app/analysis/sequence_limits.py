@@ -1,8 +1,16 @@
 from __future__ import annotations
 
 AUTO_MIN = 1.5
+# Shortest clip of a spoken moment in automatic clip length.
+SPEECH_MIN = 2.5
 # Longest single clip when the highlight itself has no maximum (automatic length).
 AUTO_LENGTH_CLIP_CAP = 30.0
+
+
+# A shortened clip found at cut points may be this much shorter than the length aimed for.
+_CUT_MIN_SHARE = 0.6
+# ... or this much longer, when the cap allows it.
+_CUT_MAX_SHARE = 1.25
 
 
 def keep_best_span(
@@ -10,8 +18,13 @@ def keep_best_span(
     end: float,
     max_len: float,
     peak: float | None = None,
+    cuts: list | None = None,
+    target: float | None = None,
 ) -> tuple[float, float]:
-    """Cut a window to a hard maximum, keeping the most important moment."""
+    """Cut a window to a hard maximum, keeping the most important moment. With ``cuts`` ([time,
+    strength] inside the window, see boundaries.CutPoints) the new edges are cut points, so a
+    shortened clip does not start or stop mid-word; ``target`` is the length aimed for (default
+    ``max_len``). Without a fitting pair of cut points the window is cut by time as before."""
     start = float(start)
     end = float(end)
     if end <= start:
@@ -20,6 +33,11 @@ def keep_best_span(
     duration = end - start
     if duration <= max_len + 1e-9:
         return start, end
+    if cuts:
+        snapped = _span_at_cuts(start, end, max_len, peak, cuts, target)
+        if snapped is not None:
+            return snapped
+        max_len = min(max_len, float(target)) if target else max_len
     center = float(peak) if peak is not None else (start + end) / 2.0
     center = min(max(center, start), end)
     half = max_len / 2.0
@@ -35,6 +53,45 @@ def keep_best_span(
         new_start = start
         new_end = min(end, start + max_len)
     return round(new_start, 3), round(new_end, 3)
+
+
+def _span_at_cuts(
+    start: float,
+    end: float,
+    max_len: float,
+    peak: float | None,
+    cuts: list,
+    target: float | None,
+) -> tuple[float, float] | None:
+    target = min(max_len, float(target) if target else max_len)
+    shortest = target * _CUT_MIN_SHARE
+    center = float(peak) if peak is not None else (start + end) / 2.0
+    points: list[tuple[float, float]] = [(start, 1.0)]
+    for item in cuts:
+        try:
+            time, strength = float(item[0]), float(item[1])
+        except (TypeError, ValueError, IndexError):
+            continue
+        if start < time < end:
+            points.append((time, strength))
+    points.append((end, 1.0))
+    points.sort()
+    best: tuple[float, float, float] | None = None
+    for i, (span_start, start_strength) in enumerate(points):
+        for span_end, end_strength in points[i + 1 :]:
+            length = span_end - span_start
+            if length > max_len + 1e-6:
+                break
+            if length < shortest:
+                continue
+            value = start_strength + end_strength - abs(length - target) / max(target, 0.1)
+            if span_start <= center <= span_end:
+                value += 1.5
+            if best is None or value > best[0]:
+                best = (value, span_start, span_end)
+    if best is None:
+        return None
+    return round(best[1], 3), round(best[2], 3)
 
 
 def peak_from_candidate(candidate: dict) -> float | None:
@@ -98,11 +155,18 @@ def desired_auto_length(
     start = float(candidate["start"])
     end = float(candidate["end"])
     natural = max(0.0, end - start)
+    metrics = candidate.get("metrics") or {}
+    if (
+        min_len is None
+        and float(metrics.get("speech_presence") or 0) >= 0.5
+        and len(str(candidate.get("text") or "").split()) >= 3
+    ):
+        # Speech needs a few seconds to be understood; shorter pieces sound like fragments.
+        floor = max(floor, SPEECH_MIN)
     cap = max(floor, float(cap))
     if natural <= 0:
         return 0.0, "Empty span"
 
-    metrics = candidate.get("metrics") or {}
     importance = float(metrics.get("importance") or candidate.get("score") or 0.5)
     density = float(metrics.get("information_density") or 0.45)
     hook = float(metrics.get("hook_strength") or 0.2)
@@ -218,7 +282,13 @@ def fit_candidate(
         length = natural
         reason = f"{natural:.1f}s — full moment is under the {cap:.0f}s maximum"
     length = _clamp_sequence_length(length, natural, cap, floor)
-    start, end = keep_best_span(item["start"], item["end"], length, peak_from_candidate(item))
+    cuts = item.get("cuts")
+    if cuts and length + 1e-9 < natural:
+        # A little longer than aimed for is fine when it lets the clip end at a cut point.
+        room = max(length, min(cap, length * _CUT_MAX_SHARE))
+        start, end = keep_best_span(item["start"], item["end"], room, peak_from_candidate(item), cuts, target=length)
+    else:
+        start, end = keep_best_span(item["start"], item["end"], length, peak_from_candidate(item))
     item["start"] = start
     item["end"] = end
     item["duration_reason"] = reason

@@ -169,5 +169,5 @@ def test_renderer_cuts_each_clip_from_its_source(tmp_path: Path):
     # Both sources are already 24 fps at a constant rate, so no frame-rate conversion is added.
     assert "fps=" not in joined and "minterpolate" not in joined
     cut = next(cmd for cmd in commands if cmd[0] == "ffmpeg" and "concat" not in cmd)
-    assert cut[cut.index("-preset") + 1] == "slow"
+    assert cut[cut.index("-preset") + 1] == "medium"
     assert cut[cut.index("-crf") + 1] == "14"

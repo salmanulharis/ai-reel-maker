@@ -92,6 +92,12 @@ class Settings(BaseSettings):
     ollama_director_num_ctx: int = 16384
     ollama_director_num_predict: int = 3072
     director_think: bool = False
+    # Who the AI editor is: "local" (the model above) or "claude" (Claude Code on the user's
+    # subscription, like the brief). Pre-selects the choice for new jobs; never switched by itself.
+    director_engine: str = "local"
+    # After choosing, the editor reads its cut in order once more and may remove a moment that
+    # repeats or confuses, or add the moment just before one that needs it (one more request).
+    director_review: bool = False
 
     # Video brief (title, hook, beats with narration) for narrated videos. "local" uses Ollama on
     # this computer; "claude" sends the video's summary (and, if allowed, small frame sheets) to

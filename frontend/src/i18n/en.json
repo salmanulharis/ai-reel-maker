@@ -126,6 +126,9 @@
     },
     "customFocus": "What should the highlight focus on?",
     "customFocusPlaceholder": "For example: focus on the product demo, skip the introduction.",
+    "speechLanguage": "Spoken language",
+    "speechLanguageDetect": "Detect automatically",
+    "speechLanguageHint": "Choose it when you know it: automatic detection is unreliable for many languages, and a wrong guess turns the transcript into nonsense. Changing it later transcribes the video again.",
     "visualsOnly": "Visuals and sound only",
     "visualsOnlyHint": "Ignore what is said: no transcription and no subtitles. Moments are chosen from pictures, motion, and sound, with action and visuals preferred. Faster, and good for music, sports, gaming, and travel videos.",
     "subtitlesNeedSpeech": "Subtitles need speech, which is turned off for this highlight.",
@@ -416,6 +419,7 @@
       "segments": "spoken parts",
       "frames": "pictures",
       "parts": "parts",
+      "requests": "AI requests",
       "clips": "clips"
     }
   },
@@ -902,7 +906,13 @@
     "directorModel": "Model",
     "directorModelSame": "Same as the speech model",
     "directorThink": "Think before choosing",
-    "directorThinkHint": "Better choices from models that can reason first (such as qwen3:8b), but it takes several extra minutes without a graphics card."
+    "directorThinkHint": "Better choices from models that can reason first (such as qwen3:8b), but it takes several extra minutes without a graphics card.",
+    "directorEngine": "Who chooses the moments",
+    "directorEngineLocal": "Local model (on this computer)",
+    "directorEngineClaude": "Claude (Claude Code on your subscription)",
+    "directorEngineHint": "Claude plans the story better than small local models. It reads the list of moments (what is said, seen and heard), so that text is sent to Anthropic. If Claude cannot answer, the video pauses and you choose: retry, or use the local model. It never switches by itself.",
+    "directorReview": "Check the cut once more",
+    "directorReviewHint": "After choosing, the AI editor reads its cut in order and removes a moment that repeats or confuses, or adds the moment just before one that needs it. One more request: about a minute or two without a graphics card."
   },
   "history": {
     "shortsMade": "{n} shorts",
@@ -1073,6 +1083,8 @@
     "voiceInVideo": "Voice-over in the video",
     "noBrief": "This video has no brief yet.",
     "pausedTitle": "Claude could not write the brief",
+    "pausedTitleEditor": "Claude could not choose the moments",
+    "pausedHintEditor": "Nothing was switched automatically. Retry when Claude is available, or let the local model choose the moments.",
     "pausedHint": "Nothing was switched automatically. Retry when Claude is available, or let the local engine write the brief.",
     "retry": "Retry with Claude",
     "useLocal": "Use the local engine",

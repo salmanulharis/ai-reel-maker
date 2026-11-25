@@ -313,8 +313,9 @@ def edit_job_brief(job_id: str):
 @jobs_bp.post("/jobs/<job_id>/brief-engine")
 def switch_brief_engine(job_id: str):
     """Choose the engine for this job's brief ("local" or "claude"). With ``resume``, a job that
-    paused because Claude could not write the brief continues with the new choice."""
-    from app.brief.service import clear_failure
+    paused because Claude could not write the brief continues with the new choice. When Claude
+    paused the job as the AI editor, the choice is the AI editor's instead."""
+    from app.brief.service import clear_failure, read_failure
 
     manager = get_job_manager()
     job = manager.get(job_id)
@@ -327,7 +328,10 @@ def switch_brief_engine(job_id: str):
     if engine not in {"local", "claude"}:
         return jsonify({"error": "engine must be local or claude"}), 400
     values = json.loads(job.config_json or "{}")
-    values["brief_engine"] = engine
+    failure = read_failure(manager.job_dir(job_id)) if job.status == "paused" else None
+    # A pause while Claude was the AI editor switches the editor; otherwise the brief's engine.
+    field = "director_engine" if (failure or {}).get("stage") == "director" else "brief_engine"
+    values[field] = engine
     try:
         config = HighlightConfig.model_validate(values)
     except ValueError as exc:

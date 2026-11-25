@@ -266,7 +266,7 @@ class EditorClient:
             raise self.fail
         if think and self.fail_think:
             raise OllamaError('HTTP 400: "m" does not support thinking')
-        ids = re.findall(r"^(m\d+) \[", prompt, re.MULTILINE)
+        ids = re.findall(r"^(m\d+)(?: \(c\d+\))? \[", prompt, re.MULTILINE)
         return {
             "understanding": "Dog moments first",
             "left_out": "talking",
@@ -305,8 +305,9 @@ def test_long_videos_are_read_in_parts_then_chosen_from():
     client = EditorClient(num_ctx=4096, picks=lambda ids: ids[:1])
     many = [{**c, "id": f"v0:x{i}", "start": i * 7.0, "end": i * 7.0 + 5, "text": "word " * 60} for i, c in enumerate(_candidates() * 20)]
     plan = run_director(client, "m", Settings(_env_file=None, ollama_director_num_predict=256), _config(), many, CONTENT)
-    assert len(client.calls) > 2, "several parts and a final choice"
-    assert "This is one part of a longer video" in client.calls[0]["prompt"]
+    assert len(client.calls) > 3, "an outline, several parts and a final choice"
+    assert "planning the story" in client.calls[0]["prompt"], "the story is planned first"
+    assert "This is one part of a longer video" in client.calls[1]["prompt"]
     assert "Choose the moments for the final video" in client.calls[-1]["prompt"]
     assert plan and plan["clips"]
 
@@ -493,7 +494,8 @@ def test_asking_for_a_change_plans_again_without_analyzing(app_env, monkeypatch)
     prompt = client.calls[-1]["prompt"]
     assert "make it about the ball" in prompt and "The last plan used, in order: m6" in prompt
     clips = get_job_manager().serialize(job)["clips"]
-    assert {c["role"] for c in clips} == {"hook"}
+    # A story opens with one hook and closes with one ending.
+    assert [c["role"] for c in clips] == ["hook", "ending"]
     info = http.get("/api/jobs/j1/ai-plan").get_json()
     assert info["plan"]["understanding"] == "Dog moments first" and info["refine_notes"] == ["make it about the ball"]
     names = [s["name"] for s in get_job_manager().stages("j1")]

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Callable
 
@@ -93,6 +94,9 @@ def _usable_file(path: Path) -> bool:
         return False
 
 
+# Clips whose loudness is measured at the same time (each measurement reads one clip).
+_MEASURE_WORKERS = 4
+
 class Renderer:
     def __init__(self, runner: FFmpegRunner):
         self.runner = runner
@@ -150,6 +154,8 @@ class Renderer:
         # Filters, subtitle file and silent-track flag per clip. Worked out once, so a second
         # pass in software does not measure, reframe or count the clips again.
         prepared: dict[int, tuple[list[str], Path | None, bool]] = {}
+        # Loudness of each clip, measured up front a few at a time (one FFmpeg pass per clip).
+        loudness: dict[int, float | None] = {}
 
         def prepare(i: int, clip) -> tuple[list[str], Path | None, bool]:
             nonlocal reframed, leveled, offset, moment
@@ -168,7 +174,8 @@ class Renderer:
             if not getattr(clip, "join_previous", False):
                 moment += 1
             if settings.level_audio:
-                gain = leveling_gain(self._measure(clip_source, clip))
+                measured = loudness[i] if i in loudness else self._measure(clip_source, clip)
+                gain = leveling_gain(measured)
                 if gain is not None:
                     audio_filters.extend(leveling_filters(gain))
                     leveled += 1
@@ -270,6 +277,11 @@ class Renderer:
                 files.append(target)
             return files
 
+        if settings.level_audio and len(clips) > 1:
+            indexes = list(range(len(clips)))
+            with ThreadPoolExecutor(max_workers=min(_MEASURE_WORKERS, len(indexes))) as pool:
+                for index, value in zip(indexes, pool.map(lambda n: self._measure(clip_sources[n], clips[n]), indexes)):
+                    loudness[index] = value
         try:
             clip_files = encode_all(video_codec)
         except FFmpegError:

@@ -47,9 +47,9 @@ def test_user_1080p_cap_does_not_upscale_720p():
     assert canvas.height == 720
 
 
-def test_source_quality_uses_slow_crf14():
+def test_source_quality_uses_medium_crf14():
     args = video_encode_args("libx264", "source", crf=18)
-    assert args[args.index("-preset") + 1] == "slow"
+    assert args[args.index("-preset") + 1] == "medium"
     assert args[args.index("-crf") + 1] == "14"
     assert encode_crf("source", 23) == 14
 
@@ -63,7 +63,7 @@ def test_cut_command_source_quality_is_high():
         quality="source",
         video_codec="libx264",
     )
-    assert cmd[cmd.index("-preset") + 1] == "slow"
+    assert cmd[cmd.index("-preset") + 1] == "medium"
     assert cmd[cmd.index("-crf") + 1] == "14"
     assert "-pix_fmt" in cmd
     assert "yuv420p" in cmd

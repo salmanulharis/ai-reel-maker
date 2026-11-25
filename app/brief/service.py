@@ -203,8 +203,13 @@ def update_brief(job_dir: Path, changes: dict) -> tuple[VideoBrief, list[str]]:
 # A Claude failure that paused the job, for the Analysis page.
 
 
-def save_failure(job_dir: Path, message: str, reason: str) -> None:
-    atomic_write_json(brief_dir(job_dir) / FAILURE_FILE, {"message": message, "reason": reason, "at": time.time()})
+def save_failure(job_dir: Path, message: str, reason: str, stage: str = "brief") -> None:
+    """``stage``: what Claude was doing, "brief" (writing the brief) or "director" (choosing the
+    moments as the AI editor)."""
+    atomic_write_json(
+        brief_dir(job_dir) / FAILURE_FILE,
+        {"message": message, "reason": reason, "stage": stage, "at": time.time()},
+    )
 
 
 def read_failure(job_dir: Path) -> dict | None:

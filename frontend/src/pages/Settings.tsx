@@ -737,6 +737,35 @@ export default function Settings() {
             <p className="field-hint" id="director-think-hint">
               {copy.directorThinkHint}
             </p>
+            <fieldset className="field">
+              <legend>{copy.directorEngine}</legend>
+              {(["local", "claude"] as const).map((name) => (
+                <label key={name} className="check">
+                  <input
+                    type="radio"
+                    name="director-engine"
+                    checked={String(settings.director_engine || "local") === name}
+                    disabled={busy === "director"}
+                    onChange={() => void setInstant("director_engine", name, "director")}
+                  />
+                  <strong>{name === "claude" ? copy.directorEngineClaude : copy.directorEngineLocal}</strong>
+                </label>
+              ))}
+              <p className="field-hint">{copy.directorEngineHint}</p>
+            </fieldset>
+            <label className="check">
+              <input
+                type="checkbox"
+                checked={Boolean(settings.director_review)}
+                disabled={busy === "director"}
+                aria-describedby="director-review-hint"
+                onChange={(e) => void setInstant("director_review", e.target.checked, "director")}
+              />
+              <strong>{copy.directorReview}</strong>
+            </label>
+            <p className="field-hint" id="director-review-hint">
+              {copy.directorReviewHint}
+            </p>
           </div>
           <div className="btn-row">{saved === "director" && <InlineStatus ok>{copy.saved}</InlineStatus>}</div>
         </div>

@@ -233,6 +233,8 @@ export const DOC_ARTICLES = {
       { kind: "h", text: "Turning speech off" },
       { kind: "list", items: ["For every highlight: **Settings → Speech to text → Use speech**.", "For one highlight: tick **Visuals and sound only** on the Create page. Subtitles are turned off with it, because they come from the transcript."] },
       { kind: "note", text: "Turning speech back on reuses earlier transcripts, so nothing is transcribed twice." },
+      { kind: "h", text: "Languages other than English" },
+      { kind: "p", text: "Choose the **Spoken language** on the Create page when you know it: automatic detection is unreliable for many languages. Small models (tiny, base) often write languages such as Malayalam or Tamil as a mix of scripts and invented words. The app notices such a transcript, warns you in the log, and chooses moments from pictures, sound and speech timing instead. Use **small** or larger for these languages." },
       { kind: "settings", section: "speech", label: "Open Speech to text" },
     ],
   },
@@ -341,7 +343,7 @@ export const DOC_ARTICLES = {
         items: [
           "**Understand my request** shows what the AI understood, the settings it chose (marked **from your words** or **quality default**), and what it will look for: **Keep**, **Cut**, **Must include**, **Looks like**, and **Sounds like**. Change anything before you start. If you start straight away, the description is read first.",
           "The analysis runs as usual. With **Video analysis** on, the video model also writes a short description of each scene it looks at. With **Audio analysis** on, speech is written down and, when the sound model is downloaded, sounds such as music, laughter, applause, and cheering are labelled.",
-          "**Choosing moments with AI**: an AI editor reads every candidate moment with what is said, shown, and heard, and picks the ones that fit your description, each with a role (hook, key moment, ending, …) and a reason. It picks moments from a list and never makes up times, so every clip still starts and ends at a clean point.",
+          "**Choosing moments with AI**: an AI editor first plans the story from a summary of each part of the video (a hook, the context a viewer needs, the key moments, an ending), then picks the moments for each part of that plan, each with a role and a reason. It picks moments from a list and never makes up times; clips that are shortened are cut at pauses, sentence ends or scene changes, and clips that nearly touch in the video are joined into one.",
           "On the Review page, **AI plan** shows what the AI chose and left out. Type a change in **What should change?** (\"make it shorter, end on the joke\") and press **Change the plan**: the clips are planned again from the finished analysis, without analyzing the video again.",
         ],
       },

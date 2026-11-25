@@ -211,8 +211,8 @@ def encode_crf(quality: str, crf: int) -> int:
 def encode_preset(codec: str, quality: str) -> str:
     if codec == "h264_nvenc":
         return "p7" if quality in {"source", "very_high"} else "p5"
-    if quality in {"source", "very_high"}:
-        return "slow"
+    # x264 "slow" typically takes 1.5-2x the time of "medium" and makes no visible difference at
+    # the quality levels used here (CRF 14-18), so every quality uses "medium".
     return "medium"
 
 

@@ -20,6 +20,15 @@ const SUBTITLE_LANGUAGES = [
   "Russian", "Ukrainian", "Arabic", "Hindi", "Bengali", "Urdu", "Malayalam", "Tamil", "Indonesian",
   "Vietnamese", "Thai", "Chinese", "Japanese", "Korean",
 ];
+// Languages Whisper can be told to expect (code, name). Detection is the default.
+const SPEECH_LANGUAGES: Array<[string, string]> = [
+  ["en", "English"], ["ml", "Malayalam"], ["ta", "Tamil"], ["hi", "Hindi"], ["te", "Telugu"],
+  ["kn", "Kannada"], ["bn", "Bengali"], ["mr", "Marathi"], ["gu", "Gujarati"], ["pa", "Punjabi"],
+  ["ur", "Urdu"], ["ar", "Arabic"], ["es", "Spanish"], ["fr", "French"], ["de", "German"],
+  ["it", "Italian"], ["pt", "Portuguese"], ["nl", "Dutch"], ["pl", "Polish"], ["tr", "Turkish"],
+  ["ru", "Russian"], ["uk", "Ukrainian"], ["id", "Indonesian"], ["vi", "Vietnamese"], ["th", "Thai"],
+  ["zh", "Chinese"], ["ja", "Japanese"], ["ko", "Korean"],
+];
 const STYLES = [
   "auto",
   "informative",
@@ -226,7 +235,7 @@ export function HighlightConfigPanel({
                   type="checkbox"
                   checked={autoLength}
                   disabled={form.social_short || shortsMode}
-                  onChange={(e) => update({ length_mode: e.target.checked ? "auto" : "range" })}
+                  onChange={(e) => update({ length_mode: e.target.checked ? "auto" : "range", auto_length_strict: false })}
                 />
                 <span>{copy.noLimit}</span>
               </label>
@@ -328,6 +337,27 @@ export function HighlightConfigPanel({
             </span>
           </span>
         </label>
+        {form.use_speech && (
+          <div className="field">
+            <label htmlFor="speech-language">{copy.speechLanguage}</label>
+            <select
+              id="speech-language"
+              value={form.speech_language}
+              aria-describedby="speech-language-hint"
+              onChange={(e) => update({ speech_language: e.target.value })}
+            >
+              <option value="">{copy.speechLanguageDetect}</option>
+              {SPEECH_LANGUAGES.map(([code, name]) => (
+                <option key={code} value={code}>
+                  {name}
+                </option>
+              ))}
+            </select>
+            <p className="field-hint" id="speech-language-hint">
+              {copy.speechLanguageHint}
+            </p>
+          </div>
+        )}
         <label className="check visuals-only">
           <input
             type="checkbox"
@@ -912,7 +942,9 @@ export const defaultForm = (): HighlightForm => ({
   min_duration: 20,
   max_duration: 30,
   length_mode: "range",
+  auto_length_strict: false,
   use_speech: true,
+  speech_language: "",
   style: "auto",
   custom_focus: "",
   preserve_context: "balanced",

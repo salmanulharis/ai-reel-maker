@@ -142,12 +142,14 @@ def transcribe_detailed(
     on_progress: Callable[[dict], None] | None = None,
     check_cancel: Callable[[], None] | None = None,
     on_position: Callable[[float], None] | None = None,
+    language: str | None = None,
 ) -> tuple[Transcript, dict]:
     """Transcribe ``wav_path``. ``resume`` is a saved partial transcription (see
     ``on_progress``): the audio before its ``until`` time is skipped and its segments are kept.
     ``on_progress`` receives such a partial now and then, so an interrupted run can continue
     where it stopped. ``check_cancel`` is called between segments and stops the run by raising.
-    ``on_position`` receives the time in the audio reached so far, after every segment."""
+    ``on_position`` receives the time in the audio reached so far, after every segment.
+    ``language`` (a Whisper code) skips language detection."""
     try:
         from faster_whisper import WhisperModel  # noqa: F401
     except ImportError:
@@ -175,6 +177,7 @@ def transcribe_detailed(
             on_progress=progress,
             check_cancel=check_cancel,
             on_position=on_position,
+            language=language,
         )
 
     try:
@@ -250,14 +253,17 @@ def _transcribe_with(
     on_progress: Callable[[dict], None] | None = None,
     check_cancel: Callable[[], None] | None = None,
     on_position: Callable[[float], None] | None = None,
+    language: str | None = None,
 ) -> Transcript:
     model = _get_whisper_model(model_size, device, compute, cpu_threads, num_workers)
     segments: list[TranscriptSegment] = []
     words: list[WordTimestamp] = []
-    language = None
+    chosen = language or None
+    language = chosen
+    probability: float | None = None
     offset = 0.0
     audio = str(wav_path)
-    options: dict = {}
+    options: dict = {"language": chosen} if chosen else {}
     resume = _valid_resume(resume)
     if resume:
         rest = _audio_after(wav_path, float(resume["until"]))
@@ -265,16 +271,20 @@ def _transcribe_with(
             offset = float(resume["until"])
             segments = [TranscriptSegment.model_validate(item) for item in resume["segments"]]
             words = [WordTimestamp.model_validate(item) for item in resume.get("words") or []]
-            language = resume.get("language")
+            language = chosen or resume.get("language")
+            probability = resume.get("language_probability")
             if language:
                 # The rest is in the language already heard; detecting it again could differ.
                 options["language"] = language
             audio = rest
     if not isinstance(audio, str) and len(audio) < WHISPER_SAMPLE_RATE * _MIN_RESUME_AUDIO_SECONDS:
-        return Transcript(segments=segments, words=words, language=language)
+        return Transcript(segments=segments, words=words, language=language, language_probability=probability)
 
     segments_iter, info = model.transcribe(audio, word_timestamps=True, vad_filter=True, **options)
-    language = language or getattr(info, "language", None)
+    if not language:
+        language = getattr(info, "language", None)
+        detected = getattr(info, "language_probability", None)
+        probability = round(float(detected), 3) if isinstance(detected, (int, float)) else None
     last_saved = time.monotonic()
     for seg in segments_iter:
         if check_cancel:
@@ -293,17 +303,23 @@ def _transcribe_with(
             on_position(offset + float(seg.end))
         if on_progress and time.monotonic() - last_saved >= PROGRESS_SAVE_SECONDS:
             last_saved = time.monotonic()
-            on_progress(_partial_state(segments, words, language))
-    return Transcript(segments=segments, words=words, language=language)
+            on_progress(_partial_state(segments, words, language, probability))
+    return Transcript(segments=segments, words=words, language=language, language_probability=probability)
 
 
-def _partial_state(segments: list[TranscriptSegment], words: list[WordTimestamp], language: str | None) -> dict:
+def _partial_state(
+    segments: list[TranscriptSegment],
+    words: list[WordTimestamp],
+    language: str | None,
+    probability: float | None = None,
+) -> dict:
     """A saved point: everything up to the end of the last finished segment."""
     return {
         "until": segments[-1].end if segments else 0.0,
         "segments": [item.model_dump() for item in segments],
         "words": [item.model_dump() for item in words],
         "language": language,
+        "language_probability": probability,
     }
 
 

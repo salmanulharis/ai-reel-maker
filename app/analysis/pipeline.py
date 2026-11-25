@@ -26,7 +26,7 @@ from app.ai.prompts import (
     visual_analysis_focus,
     visual_focus_priorities,
 )
-from app.analysis import score_source
+from app.analysis import score_source, speech_check
 from app.analysis.audio import detect_silence, extract_audio, release_whisper_models, transcribe_detailed
 from app.analysis import avoid as leave_out
 from app.analysis.avoid import picture_avoid_texts, speech_avoid_text, vision_avoid_text
@@ -42,7 +42,8 @@ from app.analysis.image_match import get_matcher, release_matcher, score_scenes
 from app.analysis import audio_events
 from app.analysis.director import CONTENT_FILE, DIRECTOR_FILE, apply_director, content_entry, run_director
 from app.brief.engines.base import BriefEngineError, BriefPaused
-from app.brief.service import apply_brief, make_brief, planning_config, save_failure
+from app.brief.schema import BRIEF_DIR
+from app.brief.service import apply_brief, clear_failure, make_brief, planning_config, read_failure, save_failure
 from app.analysis.visual import (
     vision_reply_tokens,
     analyze_scenes_visual,
@@ -57,9 +58,17 @@ from app.services.run_plan import RunPlan
 from app.video.ffmpeg_runner import CancelledError, FFmpegRunner, report_progress
 from app.utils.timefmt import format_duration
 from app.utils.atomic import atomic_write_json, part_path, read_json, replace_file
+from app.video.processor import VideoProcessor
 from app.video.sources import save_sources, tag_candidates, working_path
 
 
+
+# Small copy of the picture that scenes and frames are read from (see _analysis_proxy).
+ANALYSIS_PROXY = "analysis_proxy.mp4"
+_PROXY_SHORT_SIDE = 540
+_SLOW_CODECS = {"av1", "hevc", "h265", "vp9"}
+# The vision shortlist is sized for a highlight of at most this share of the video.
+_SHORTLIST_SOURCE_SHARE = 0.4
 
 # Candidate moments kept for planning: the configured number, or more for long videos so
 # their later parts are not crowded out (one per ~8 s), up to this ceiling.
@@ -140,11 +149,24 @@ class VideoAnalyzer:
         source_duration = float(meta.get("duration") or 0)
         progress.source_duration(source_duration)
 
+        proxy: dict[str, Path] = {}
+
+        def analysis_video(stage: str) -> Path:
+            """The video that scenes and frames are read from: a small copy of a large source.
+            Only scene detection (which decodes every frame) makes the copy; a few frames alone
+            are read faster from the original than a copy could be made."""
+            if "path" not in proxy:
+                existing = job_dir / ANALYSIS_PROXY
+                if stage != "scenes" and not (existing.is_file() and existing.stat().st_size > 1000):
+                    return source
+                proxy["path"] = self._analysis_proxy(job_dir, source, meta, progress, stage)
+            return proxy["path"]
+
         scenes = cache.get("scenes")
         if not scenes:
             progress.stage("scenes", "running")
             detected = detect_scenes(
-                source,
+                analysis_video("scenes"),
                 self.settings.scene_threshold,
                 self.runner,
                 on_progress=progress.share("scenes", "time", source_duration),
@@ -183,6 +205,17 @@ class VideoAnalyzer:
             progress.stage("audio", "done", "cached")
 
         transcript_data = cache.get("transcript")
+        wanted_language = str(getattr(config, "speech_language", "") or "")
+        if (
+            want_speech
+            and isinstance(transcript_data, dict)
+            and wanted_language
+            and str(transcript_data.get("language") or "") != wanted_language
+        ):
+            # Made in another language than the one now chosen: transcribed again.
+            progress.log(f"The spoken language is now set to '{wanted_language}': transcribing again")
+            transcript_data = None
+            _forget_speech(job_dir, cache)
         if not want_speech:
             # Not written to disk, so turning speech back on transcribes (or reuses) as usual.
             transcript_data = Transcript().model_dump()
@@ -195,7 +228,7 @@ class VideoAnalyzer:
                 if self.run_plan.free_gpu_for_speech:
                     self._unload_models(None)
                 transcript_data, transcribed = self._transcribe(
-                    wav, progress, job_dir / TRANSCRIPT_PARTIAL, duration=source_duration
+                    wav, progress, job_dir / TRANSCRIPT_PARTIAL, duration=source_duration, language=wanted_language
                 )
                 if self.run_plan.one_at_a_time or self.run_plan.free_gpu_for_speech:
                     release_whisper_models()
@@ -212,6 +245,16 @@ class VideoAnalyzer:
             )
         cache["transcript"] = transcript_data
         transcript = Transcript.model_validate(transcript_data)
+        speech = speech_check.check(transcript) if want_speech else {"reliable": True}
+        speech_reliable = bool(speech.get("reliable", True))
+        cache["speech_reliable"] = speech_reliable
+        if not speech_reliable:
+            progress.log(
+                f"The transcript looks unreliable ({speech.get('reason')}). Moments are chosen from pictures, "
+                f"sound and speech timing instead of the words. For better results, "
+                f"{speech_check.advice(speech, self.settings.whisper_model)}.",
+                "WARNING",
+            )
 
         silences = cache.get("silences")
         if silences is None:
@@ -237,7 +280,9 @@ class VideoAnalyzer:
             progress.stage("frames", "running")
             use_lite_frames = self.settings.enable_visual_analysis and bool(self.ollama) and self.vision_enabled
             frame_density = "lite" if use_lite_frames else "auto"
-            frame_map = self._extract_frames(source, scenes, frames_dir, source_duration, frame_density, progress)
+            frame_map = self._extract_frames(
+                analysis_video("frames"), scenes, frames_dir, source_duration, frame_density, progress
+            )
             _write(job_dir / "frames.json", frame_map)
             progress.log(f"Representative frames sampled ({sum(len(v) for v in frame_map.values())} frames)")
             progress.stage("frames", "done")
@@ -257,7 +302,11 @@ class VideoAnalyzer:
         if config.mode == "prompt" and want_speech:
             cache["sound_events"] = self._sound_events(job_dir, source, meta, config, cache, progress)
 
-        if want_speech:
+        if want_speech and not speech_reliable:
+            # Scoring garbled words gives random scores; the timings are still used.
+            segment_scores = []
+            progress.stage("content", "skipped", "The transcript is unreliable")
+        elif want_speech:
             progress.stage("content", "running")
             usage_before = self._usage()
             segment_scores, scores_changed = self._score_transcript(
@@ -517,6 +566,7 @@ class VideoAnalyzer:
         progress.stage("planning", "done")
         if not self.settings.debug_analysis:
             _cleanup_frames(frames_dir)
+            (job_dir / ANALYSIS_PROXY).unlink(missing_ok=True)
         return cache
 
     def analyze_sources(
@@ -556,7 +606,10 @@ class VideoAnalyzer:
             piece = self.analyze(work, working_path(source), config, progress, piece_cache, plan=False)
             piece_metas.append(dict(piece.get("metadata") or {}))
             content[str(source.get("id") or f"v{index}")] = content_entry(
-                piece.get("scenes") or [], piece.get("visual") or {}, piece.get("sound_events")
+                piece.get("scenes") or [],
+                piece.get("visual") or {},
+                piece.get("sound_events"),
+                speech_reliable=piece.get("speech_reliable", True),
             )
             tagged = tag_candidates(piece.get("candidates") or [], source)
             all_candidates.extend(tagged)
@@ -632,6 +685,11 @@ class VideoAnalyzer:
                     "Skipped videos with no unique high-value moments: "
                     + ", ".join(str(n) for n in skipped if n)
                 )
+        if not self.settings.debug_analysis:
+            # Frames and scenes are cached; the small analysis copies are made again if needed.
+            for index, source in enumerate(sources):
+                work = job_dir / "work" / str(source.get("id") or f"v{index}") if multi else job_dir
+                (work / ANALYSIS_PROXY).unlink(missing_ok=True)
         plan_data = plan.model_dump()
         _write(job_dir / "clip_plan.json", plan_data)
         cache["clip_plan"] = plan_data
@@ -868,6 +926,35 @@ class VideoAnalyzer:
             cache["audio_energy"] = energy
         return energy
 
+    def _analysis_proxy(self, job_dir: Path, source: Path, meta: dict, progress: PipelineProgress, stage: str) -> Path:
+        """A small copy of a large or slow-to-decode source for scene detection and frames
+        (ANALYSIS_PROXY), or the source itself when it is small already or the copy fails.
+        Times are unchanged: every frame keeps its timestamp."""
+        target = job_dir / ANALYSIS_PROXY
+        if target.is_file() and target.stat().st_size > 1000:
+            return target
+        if not _needs_proxy(meta):
+            return source
+        duration = float(meta.get("duration") or 0)
+        pending = part_path(target)
+        progress.log(
+            f"Making a small copy of the {meta.get('width')}x{meta.get('height')} video for analysis "
+            "(the original is used for the final video)"
+        )
+        try:
+            report = progress.share(stage, "time", duration, "Preparing the video for analysis")
+            with report_progress(self.runner, duration, report):
+                self.runner.run(VideoProcessor.analysis_proxy_command(source, pending, _PROXY_SHORT_SIDE))
+            replace_file(pending, target)
+        except CancelledError:
+            pending.unlink(missing_ok=True)
+            raise
+        except Exception as exc:  # noqa: BLE001 - analysis still works on the original
+            pending.unlink(missing_ok=True)
+            progress.log(f"The analysis copy could not be made ({str(exc)[:160]}); analyzing the original", "WARNING")
+            return source
+        return target
+
     def _extract_frames(
         self,
         source: Path,
@@ -944,18 +1031,28 @@ class VideoAnalyzer:
         return frame_map
 
     def _transcribe(
-        self, wav: Path, progress: PipelineProgress, partial: Path | None = None, duration: float = 0.0
+        self,
+        wav: Path,
+        progress: PipelineProgress,
+        partial: Path | None = None,
+        duration: float = 0.0,
+        language: str = "",
     ) -> tuple[dict, bool]:
         """Transcript data, and whether it is worth caching. A failed run is not cached, so the
         next analysis tries again instead of reusing an empty transcript. Finished segments are
         saved to ``partial`` as they come, and a later run continues after them."""
         extra: dict = {"check_cancel": self._check_cancel}
+        if language:
+            extra["language"] = language
         if duration > 0:
             extra["on_position"] = lambda seconds: progress.step("transcript", seconds, duration, "time")
         if self.run_plan.whisper_gpu_compute:
             extra["gpu_compute"] = self.run_plan.whisper_gpu_compute
         if partial is not None:
             resume = read_json(partial)
+            if isinstance(resume, dict) and language and resume.get("language") not in (None, language):
+                # Saved while transcribing in another language: not continued.
+                resume = None
             if isinstance(resume, dict) and resume.get("segments"):
                 progress.log(
                     f"Continuing transcription from {format_duration(float(resume.get('until') or 0))} "
@@ -986,7 +1083,22 @@ class VideoAnalyzer:
         if info.get("warning"):
             progress.log(str(info["warning"]), "WARNING")
         nseg = len(transcript.segments)
-        progress.log(f"Transcription completed ({nseg} segment{'s' if nseg != 1 else ''})")
+        heard = ""
+        if transcript.language:
+            heard = f", language {transcript.language}"
+            if transcript.language_probability is not None:
+                heard += f" ({transcript.language_probability:.0%} sure)"
+        progress.log(f"Transcription completed ({nseg} segment{'s' if nseg != 1 else ''}{heard})")
+        if (
+            not language
+            and transcript.language_probability is not None
+            and transcript.language_probability < speech_check.UNSURE_PROBABILITY
+        ):
+            progress.log(
+                "Whisper was unsure which language is spoken. If the transcript is wrong, choose the spoken "
+                "language on the Create page.",
+                "WARNING",
+            )
         return transcript.model_dump(), True
 
     def _score_transcript(
@@ -1128,29 +1240,48 @@ class VideoAnalyzer:
     ) -> dict | None:
         """The AI editor's choice of moments for prompt mode (saved as director_plan.json), or
         None when it is unavailable: the plan is then made from the scores alone."""
-        progress.stage("director", "running")
-        if self.ollama is None or not self.text_enabled:
+        engine = director_engine(config, self.settings)
+        claude = None
+        progress.stage("director", "running", "Claude is choosing the moments" if engine == "claude" else "")
+        if engine == "claude":
+            from app.brief.engines.claude_cli import ClaudeCliEngine
+
+            claude = ClaudeCliEngine(self.settings, self.runner)
+        elif self.ollama is None or not self.text_enabled:
             progress.log("The AI editor needs the text model; the moments are chosen from their scores.", "WARNING")
             progress.stage("director", "skipped", "Text model not available")
             return None
         model = director_model(self.settings)
-        if self.run_plan.one_at_a_time:
+        if self.run_plan.one_at_a_time and claude is None:
             self._unload_models(model)
         usage_before = self._usage()
         started = time.perf_counter()
-        plan = run_director(
-            self.ollama,
-            model,
-            self.settings,
-            config,
-            candidates,
-            content,
-            previous=previous,
-            cached=cache.get("director_plan"),
-            check_cancel=self._check_cancel,
-            log=progress.log,
-            on_part=lambda done, total: progress.step("director", done, total, "parts"),
-        )
+        claude_cwd = job_dir / BRIEF_DIR
+        claude_cwd.mkdir(parents=True, exist_ok=True)
+        try:
+            plan = run_director(
+                self.ollama,
+                model,
+                self.settings,
+                config,
+                candidates,
+                content,
+                previous=previous,
+                cached=cache.get("director_plan"),
+                check_cancel=self._check_cancel,
+                log=progress.log,
+                on_part=lambda done, total: progress.step("director", done, total, "requests"),
+                engine=engine,
+                claude=claude,
+                claude_cwd=claude_cwd,
+            )
+        except BriefEngineError as exc:
+            # The user chose Claude: the job pauses with the reason instead of switching engines.
+            save_failure(job_dir, str(exc), exc.reason, stage="director")
+            progress.log(f"Claude could not choose the moments: {exc}", "WARNING")
+            raise BriefPaused(str(exc), exc.reason) from exc
+        if (read_failure(job_dir) or {}).get("stage") == "director":
+            clear_failure(job_dir)
         self._log_usage(progress, "AI editor", usage_before)
         if plan is None:
             progress.log("The AI editor could not make a plan; the moments are chosen from their scores.", "WARNING")
@@ -1676,10 +1807,26 @@ def _plan_embedder(settings: Settings) -> Embedder | None:
 
 
 def _highlight_seconds(config: HighlightConfig, source_duration: float) -> float:
-    """Roughly how long the highlight will be, for sizing the vision shortlist."""
+    """Roughly how long the highlight will be, for sizing the vision shortlist. A range aims
+    for its middle; neither can be more than a share of the video (a highlight that long would
+    hardly be shortened, and the vision model would look at almost every scene)."""
+    limit = source_duration * _SHORTLIST_SOURCE_SHARE if source_duration > 0 else float("inf")
     if getattr(config, "length_mode", "range") == "auto":
-        return max(float(config.min_duration), source_duration * 0.25)
-    return float(config.max_duration)
+        return max(float(config.min_duration), min(source_duration * 0.25, limit))
+    middle = (float(config.min_duration) + float(config.max_duration)) / 2
+    count = max(1, int(getattr(config, "shorts_count", 0) or 0))
+    return max(float(config.min_duration), min(middle * count, limit))
+
+
+def _needs_proxy(meta: dict) -> bool:
+    """Whether scenes and frames should be read from a small copy: a picture larger than 720p,
+    or one in a codec that is slow to decode on a CPU."""
+    width, height = int(meta.get("width") or 0), int(meta.get("height") or 0)
+    if width <= 0 or height <= 0 or float(meta.get("duration") or 0) <= 0:
+        return False
+    short_side = min(width, height)
+    codec = str(meta.get("video_codec") or "").lower()
+    return short_side > 720 or (codec in _SLOW_CODECS and short_side > _PROXY_SHORT_SIDE)
 
 
 def _candidate_limit(configured: int, source_duration: float) -> int:
@@ -1691,6 +1838,12 @@ def frame_extract_workers(frame_count: int) -> int:
     """Concurrent FFmpeg frame grabs: half the logical CPUs, at most 4, never more than needed."""
     cpus = os.cpu_count() or 2
     return max(1, min(4, cpus // 2, frame_count))
+
+
+def director_engine(config: HighlightConfig, settings: Settings) -> str:
+    """Who is the AI editor for this job: its own choice, or the one in Settings."""
+    chosen = str(getattr(config, "director_engine", "") or "") or str(getattr(settings, "director_engine", "local") or "local")
+    return "claude" if chosen == "claude" else "local"
 
 
 def director_model(settings: Settings) -> str:
@@ -1762,6 +1915,14 @@ def _file_size(path) -> float:
 
 def _write(path: Path, data) -> None:
     atomic_write_json(path, data, indent=2)
+
+
+def _forget_speech(job_dir: Path, cache: dict) -> None:
+    """Remove the transcript and everything read from its words, so they are made again."""
+    for name in ("transcript.json", "segment_scores.json", TRANSCRIPT_PARTIAL, SEGMENT_SCORES_PARTIAL, "speakers.json"):
+        (job_dir / name).unlink(missing_ok=True)
+    for key in ("transcript", "segment_scores", "speakers"):
+        cache.pop(key, None)
 
 
 def _cleanup_frames(frames_dir: Path) -> None:

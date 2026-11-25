@@ -134,6 +134,39 @@ def _real_amount(amount: str, gap: str, unit: str) -> bool:
     return True
 
 
+# A length that describes the source rather than the result: "the original 17-minute video",
+# "from my 2 hour stream", "this 45 minute podcast".
+_SOURCE_NOUNS = (
+    r"video|clip|footage|recording|vlog|film|movie|source|stream|livestream|podcast|interview|"
+    r"review|lecture|talk|webinar|episode|session|meeting|tutorial|match|game|upload"
+)
+_SOURCE_AFTER = re.compile(rf"^[\s-]*(?:-?long\s+)?(?:(?:raw|full|original|uncut)\s+)?(?:{_SOURCE_NOUNS})\b")
+# Words before the length that make it the given video's: always ("the original 17-minute"),
+# or only when a video noun follows ("this 45 minute podcast"; "a 30 second video" is a request).
+_SOURCE_ALWAYS = re.compile(
+    r"\b(?:original|entire|whole|full|uncut|raw|from|out of)\s+(?:(?:the|a|an|my|this|our|that|his|her|their)\s+)?$"
+)
+_SOURCE_DETERMINER = re.compile(r"\b(?:the|this|my|our|that|his|her|their|of)\s+$")
+# "As short as possible" and friends: no fixed length, only the clearly strongest moments.
+_SHORTEST = re.compile(
+    r"\b(as (?:short|brief|concise|tight) as (?:possible|you can|it can be)|shortest possible|"
+    r"keep it (?:short|brief|tight)|only the essentials?)\b"
+)
+
+
+# A wanted length at least this share of the video's own length is the video's length.
+_SOURCE_LENGTH_SHARE = 0.9
+
+
+def _describes_source(text: str, start: int, end: int) -> bool:
+    """Whether the length found at text[start:end] is the length of the video given, not of the
+    one asked for ("the original 17-minute video", "watching a 2 hour stream")."""
+    before = text[max(0, start - 40) : start]
+    if _SOURCE_ALWAYS.search(before):
+        return True
+    return bool(_SOURCE_AFTER.match(text[end : end + 40]) and _SOURCE_DETERMINER.search(before))
+
+
 def parse_clock(text: str) -> float:
     parts = [float(part) for part in text.split(":")]
     seconds = 0.0
@@ -190,7 +223,7 @@ def read_rules(request: str, duration: float = 0.0) -> dict[str, Any]:
         (
             m
             for m in re.finditer(rf"{_NUMBER}\s*(?:-|to|–|or)\s*{_NUMBER}(\s*){_UNIT}", text)
-            if _real_amount(m.group(2), m.group(3), m.group(4))
+            if _real_amount(m.group(2), m.group(3), m.group(4)) and not _describes_source(text, m.start(), m.end())
         ),
         None,
     )
@@ -211,6 +244,7 @@ def read_rules(request: str, duration: float = 0.0) -> dict[str, Any]:
                         text,
                     )
                     if _real_amount(m.group(2), m.group(3), m.group(4))
+                    and not _describes_source(text, m.start(2), m.end())
                 ),
                 None,
             )
@@ -225,8 +259,15 @@ def read_rules(request: str, duration: float = 0.0) -> dict[str, Any]:
                 patch["min_duration"], patch["max_duration"] = round(single * 0.85), round(single * 1.15)
             else:
                 patch["min_duration"], patch["max_duration"] = max(5.0, round(single * 0.85)), single
+    if duration > 0 and float(patch.get("max_duration") or 0) >= duration * _SOURCE_LENGTH_SHARE:
+        # About as long as the video itself: a description of the source, not a wanted length.
+        patch.pop("min_duration", None)
+        patch.pop("max_duration", None)
     if "min_duration" in patch:
         patch["length_mode"] = "range"
+    elif _SHORTEST.search(text):
+        patch["length_mode"] = "auto"
+        patch["auto_length_strict"] = True
     elif re.search(r"\b(as long as (?:it )?needs?|any length|however long|keep (?:all|every) (?:good|strong|best) (?:moment|part)s?)\b", text):
         patch["length_mode"] = "auto"
 
@@ -272,6 +313,9 @@ def _patch_from_ai(raw: dict[str, Any], duration: float) -> tuple[dict[str, Any]
     if not isinstance(raw, dict):
         return patch, {}
     low, high = _positive(raw.get("min_seconds")), _positive(raw.get("max_seconds"))
+    if duration > 0 and max(low or 0, high or 0) >= duration * _SOURCE_LENGTH_SHARE:
+        # The model took the length of the video given for the length wanted.
+        low = high = None
     if low or high:
         low = low or max(5.0, round((high or 0) * 0.6))
         high = high or round(low * 1.5)

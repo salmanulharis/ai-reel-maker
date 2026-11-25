@@ -50,6 +50,8 @@ EDITABLE = {
     "ollama_director_model",
     "ollama_director_num_ctx",
     "director_think",
+    "director_engine",
+    "director_review",
     # Narrated videos (the Claude CLI's program path is .env only: it names a program to run).
     "brief_engine",
     "claude_model",
@@ -69,6 +71,7 @@ EDITABLE = {
 _CHOICES = {
     "vision_scope": {"shortlist", "all"},
     "brief_engine": {"local", "claude"},
+    "director_engine": {"local", "claude"},
     "claude_model": {"opus", "sonnet", "haiku"},
     "claude_effort": {"low", "medium", "high"},
     "render_engine": {"remotion", "ffmpeg"},

@@ -18,6 +18,10 @@ AUTO_LENGTH_SOURCE_SHARE = 0.25
 HOOK_REASON = "Opens the video (strongest hook)."
 # A short must reach this share of the shortest length asked for, or it is not made.
 SHORT_MIN_SHARE = 0.75
+# Two clips that follow each other in the video and in the plan, at most this far apart in the
+# video, become one clip: a jump over a second of footage looks like a mistake, not an edit.
+JOIN_GAP = 1.5
+JOIN_REASON = "joined with the next moment"
 
 
 def _duration(item: dict) -> float:
@@ -159,6 +163,8 @@ class ClipOptimizer:
         selected: list[dict] = []
         used_ranges: list[tuple[str, float, float]] = []
         repeated_so_far = 0.0
+        # The AI editor chose the moments: others only fill up to the minimum length.
+        directed = any(c.get("director_rank") is not None for c in pool)
 
         def is_repeat(item: dict) -> bool:
             if not selected:
@@ -230,6 +236,8 @@ class ClipOptimizer:
                     continue
                 # The AI editor chose this moment for the request: quality guesses do not override it.
                 picked = cand.get("director_rank") is not None
+                if directed and not picked and not need_more:
+                    continue
                 if not picked and is_low_value(cand) and current_duration() >= min_duration * 0.55:
                     continue
                 if auto_length and not need_more and float(cand.get("score", 0)) < keep_from:
@@ -279,15 +287,8 @@ class ClipOptimizer:
 
         source_ids = {str(c.get("source_id") or "") for c in selected if c.get("source_id")}
         if order_mode == "ai" and any(c.get("director_order") is not None for c in selected):
-            # The AI editor's story order; moments it did not choose follow in time order.
-            selected.sort(
-                key=lambda c: (
-                    0 if c.get("director_order") is not None else 1,
-                    float(c.get("director_order") or 0),
-                    str(c.get("source_id") or ""),
-                    float(c["start"]),
-                )
-            )
+            # The AI editor's story order; moments it did not choose go where they belong.
+            selected = self._story_order(selected)
         elif len(source_ids) > 1:
             selected = self._multi_source_order(selected)
         elif order_mode == "narrative":
@@ -296,6 +297,7 @@ class ClipOptimizer:
             selected.sort(key=lambda c: float(c["start"]))
         if order_mode == "hook":
             selected = self._hook_first(selected)
+        selected = _join_neighbours(selected, max_duration)
 
         clips = [self._as_item(c) for c in selected]
         estimated = sum(c.duration for c in clips)
@@ -432,6 +434,43 @@ class ClipOptimizer:
         if not reason.startswith(HOOK_REASON):
             opener["reason"] = f"{HOOK_REASON} {reason}"
         return [opener] + [item for i, item in enumerate(selected) if i != best]
+
+    @staticmethod
+    def _story_order(selected: list[dict]) -> list[dict]:
+        """The AI editor's moments in its order. Each moment it did not choose (added to reach
+        the minimum length) goes right after the chosen moment before it in the same video, so
+        it extends that part of the story; never before the opening hook or after the ending."""
+        story = sorted(
+            (c for c in selected if c.get("director_order") is not None),
+            key=lambda c: float(c.get("director_order") or 0),
+        )
+        extra = sorted(
+            (c for c in selected if c.get("director_order") is None),
+            key=lambda c: (str(c.get("source_id") or ""), float(c["start"])),
+        )
+        for item in extra:
+            sid, start = str(item.get("source_id") or ""), float(item["start"])
+            anchor = None
+            for index, chosen in enumerate(story):
+                if str(chosen.get("source_id") or "") != sid or float(chosen["end"]) > start + 0.05:
+                    continue
+                if anchor is None or float(chosen["end"]) > float(story[anchor]["end"]):
+                    anchor = index
+            if anchor is None:
+                position = 1 if story and story[0].get("role") == "hook" else 0
+            else:
+                position = anchor + 1
+                # Keep moments added after the same anchor in time order.
+                while (
+                    position < len(story)
+                    and story[position].get("director_order") is None
+                    and float(story[position]["start"]) < start
+                ):
+                    position += 1
+            if story and position >= len(story) and story[-1].get("role") == "ending":
+                position = len(story) - 1
+            story.insert(min(position, len(story)), item)
+        return story
 
     def _narrative_order(self, selected: list[dict]) -> list[dict]:
         def rank(item: dict) -> tuple[int, float]:
@@ -669,3 +708,34 @@ class ClipOptimizer:
             source_path=str(candidate.get("source_path") or ""),
             role=str(candidate.get("role") or ""),
         )
+
+
+def _join_neighbours(selected: list[dict], max_duration: float) -> list[dict]:
+    """Clips next to each other in the plan that continue each other in the same video (the
+    next starts at most JOIN_GAP seconds after the previous ends) become one clip, as long as
+    the footage between them keeps the total within ``max_duration``."""
+    total = sum(_duration(c) for c in selected)
+    joined: list[dict] = []
+    for item in selected:
+        if joined:
+            previous = joined[-1]
+            gap = float(item["start"]) - float(previous["end"])
+            if (
+                _source_key(item) == _source_key(previous)
+                and -0.05 <= gap <= JOIN_GAP
+                and total + max(0.0, gap) <= max_duration + 1e-6
+            ):
+                merged = dict(previous)
+                merged["end"] = max(float(previous["end"]), float(item["end"]))
+                texts = [str(previous.get("text") or "").strip(), str(item.get("text") or "").strip()]
+                merged["text"] = " ".join(t for t in texts if t)
+                merged["score"] = max(float(previous.get("score") or 0), float(item.get("score") or 0))
+                if not previous.get("role") or item.get("role") == "ending":
+                    merged["role"] = item.get("role") or previous.get("role") or ""
+                length = float(merged["end"]) - float(merged["start"])
+                merged["duration_reason"] = f"{length:.1f}s — {JOIN_REASON} ({max(0.0, gap):.1f}s apart)"
+                total += max(0.0, gap)
+                joined[-1] = merged
+                continue
+        joined.append(item)
+    return joined

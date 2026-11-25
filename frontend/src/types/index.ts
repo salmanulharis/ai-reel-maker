@@ -148,7 +148,7 @@ export interface Job {
   clips: Clip[];
   sources?: JobSource[];
   /** Why a narrated video's brief paused the job (Claude could not write it). */
-  brief_failure?: { message: string; reason: string } | null;
+  brief_failure?: { message: string; reason: string; stage?: "brief" | "director" } | null;
   outputs: Array<{
     id: number;
     kind?: string;
@@ -182,7 +182,11 @@ export interface HighlightForm {
   min_duration: number;
   max_duration: number;
   length_mode: "range" | "auto";
+  /** Automatic length, keeping only moments close to the very best ("as short as possible"). */
+  auto_length_strict: boolean;
   use_speech: boolean;
+  /** The language spoken in the video as a Whisper code ("ml", "en"); "" = detect it. */
+  speech_language: string;
   style: string;
   cropEnabled: boolean;
   crop: CropBox;

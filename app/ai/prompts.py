@@ -377,16 +377,7 @@ _REQUIREMENT_LABELS = (
 )
 
 
-def director_prompt(
-    request: str,
-    requirements: dict,
-    notes: list[str],
-    lines: list[str],
-    target: str,
-    pick_up_to: int,
-    previous: list[str] | None = None,
-    final: bool = True,
-) -> str:
+def _request_block(request: str, requirements: dict, notes: list[str], previous: list[str] | None = None) -> str:
     wants = [
         f"{label}: {'; '.join(requirements[key])}" for key, label in _REQUIREMENT_LABELS if requirements.get(key)
     ]
@@ -397,6 +388,22 @@ def director_prompt(
             f"- {note}" for note in notes
         )
     before = f"\nThe last plan used, in order: {', '.join(previous)}" if previous else ""
+    return f"""Request: <<<{request}>>>
+Requirements:
+{asked}{changes}{before}"""
+
+
+def director_prompt(
+    request: str,
+    requirements: dict,
+    notes: list[str],
+    lines: list[str],
+    target: str,
+    pick_up_to: int,
+    previous: list[str] | None = None,
+    final: bool = True,
+    outline: list[str] | None = None,
+) -> str:
     if final:
         task = f"Choose the moments for the final video ({target}). Pick up to {pick_up_to}."
     else:
@@ -405,20 +412,120 @@ def director_prompt(
             f"for the final video ({target})."
         )
     listing = "\n".join(lines)
+    plan = ""
+    order_rule = (
+        '- "order": "story" only when another order tells it better than the original timeline; '
+        "then list clips in viewing order."
+    )
+    if outline:
+        plan = "\nThe story outline (beats in viewing order, each from a chapter c1, c2, ...):\n" + "\n".join(outline) + "\n"
+        order_rule = (
+            "- Follow the outline: pick moments for every beat from its chapter (shown after each id), "
+            'and list the clips in the outline\'s order. Set "order" to "story".\n'
+            "- When a moment needs the one just before it to be understood, pick that one too."
+        )
     return f"""You are a video editor. {task}
-Request: <<<{request}>>>
-Requirements:
-{asked}{changes}{before}
-
+{_request_block(request, requirements, notes, previous if final else None)}
+{plan}
 Each moment: id [start-end, length] score | says: speech | sees: picture | hears: sounds.
 "score" is the automatic highlight value (0-1); use it when the request does not decide.
 Rules:
 - Follow the request and requirements first. Never pick a moment that matches "Cut".
+- The video must tell one clear story: a hook that opens it, the context a viewer needs, the key moments, and a clear ending.
 - Pick moments that are complete and understandable; avoid cutting mid-sentence.
 - Do not pick two moments with the same content.
-- "role" is the moment's part in the video. "why" says in a few words why it is in (refer to the request).
-- "order": "story" only when another order tells it better than the original timeline; then list clips in viewing order.
+- "role" is the moment's part in the video: one "hook" (first) and one "ending" (last). "why" says in a few words why it is in (refer to the request).
+{order_rule}
 - "understanding": one sentence about what the final video shows. "left_out": what you cut, briefly.
 Moments:
 {listing}
 Return JSON only, using ids from the list."""
+
+
+# Prompt mode: the AI editor's outline (the story first, then the moments)
+
+OUTLINE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "understanding": {"type": "string"},
+        "beats": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "chapter": {"type": "string"},
+                    "role": {"type": "string", "enum": list(DIRECTOR_ROLES)},
+                    "purpose": {"type": "string"},
+                    "seconds": {"type": "number"},
+                },
+                "required": ["chapter", "role", "purpose", "seconds"],
+            },
+        },
+    },
+    "required": ["understanding", "beats"],
+}
+
+
+def outline_prompt(
+    request: str,
+    requirements: dict,
+    notes: list[str],
+    chapters: list[str],
+    target: str,
+    max_beats: int,
+    previous: list[str] | None = None,
+) -> str:
+    listing = "\n".join(chapters)
+    return f"""You are a video editor planning the story of a short video cut from a longer one ({target}).
+{_request_block(request, requirements, notes, previous)}
+
+The longer video in chapters, in time order. Each chapter: id [start-end] | says: what is said | sees: what is shown.
+{listing}
+
+Plan the story before choosing any moment. Rules:
+- Follow the request and requirements first. Leave out chapters that do not serve it.
+- Write 3 to {max_beats} beats in viewing order. Each beat uses one chapter; a chapter may serve more than one beat.
+- The first beat is the "hook" (what makes people keep watching); the last is the "ending" (a clear conclusion, result or payoff). Between them: "context" a viewer needs to follow, then "key" moments and "highlight" or "reaction" moments.
+- Keep the original order unless another order clearly tells the story better.
+- "purpose": a few words on what the beat shows. "seconds": how long it should run; together about the length asked for.
+- "understanding": one sentence about what the final video shows.
+Return JSON only, using chapter ids from the list."""
+
+
+# Prompt mode: the AI editor checks its own cut
+
+REVIEW_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "remove": {"type": "array", "items": {"type": "string"}},
+        "add": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {"id": {"type": "string"}, "before": {"type": "string"}, "why": {"type": "string"}},
+                "required": ["id", "before"],
+            },
+        },
+        "notes": {"type": "string"},
+    },
+    "required": ["remove", "add", "notes"],
+}
+
+
+def review_prompt(request: str, requirements: dict, notes: list[str], cut: list[str], context: list[str]) -> str:
+    plan = "\n".join(cut)
+    extra = "\n".join(context) or "(none)"
+    return f"""You are a video editor checking a cut before it is made.
+{_request_block(request, requirements, notes)}
+
+The cut, in viewing order (id and role | says | sees | hears):
+{plan}
+
+Moments just before some of them in the original video, that could be added:
+{extra}
+
+Watch the cut in your head. Does it tell one clear story that fits the request, from the hook to the ending?
+- "remove": ids in the cut that repeat another, confuse the story or do not fit the request (few or none).
+- "add": a moment from the second list to put right before the moment "before", only when that moment cannot be understood without it.
+- "notes": one sentence on the story.
+Return JSON only, using ids from the lists."""

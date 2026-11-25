@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import re
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -120,6 +121,8 @@ class Transcript(BaseModel):
     segments: list[TranscriptSegment] = Field(default_factory=list)
     words: list[WordTimestamp] = Field(default_factory=list)
     language: str | None = None
+    # How sure Whisper was of the language it detected (None: chosen by the user, or older files).
+    language_probability: float | None = None
 
 
 class Scene(BaseModel):
@@ -296,6 +299,9 @@ class HighlightConfig(BaseModel):
     # False: ignore what is said and choose moments from pictures and sound only (no
     # transcription, no speech scoring, no subtitles).
     use_speech: bool = True
+    # The language spoken in the video as a Whisper code ("ml", "en", ...); "" = detect it.
+    # Detection is unreliable for many languages, and a wrong guess garbles the transcript.
+    speech_language: str = ""
     style: Literal[
         "auto",
         "informative",
@@ -379,6 +385,10 @@ class HighlightConfig(BaseModel):
     # Which engine writes the brief: "local" (Ollama on this computer) or "claude" (the Claude
     # Code CLI on the user's subscription). Chosen by the user; never switched automatically.
     brief_engine: Literal["local", "claude"] = "local"
+    # Which engine is the AI editor in prompt mode: "" = the choice in Settings, "local" (Ollama)
+    # or "claude". Like the brief, never switched automatically: when Claude cannot answer, the
+    # job pauses and the user chooses.
+    director_engine: Literal["", "local", "claude"] = ""
     # Speak the brief's narration (Kokoro) over the video. Needs a brief.
     narration: bool = False
 
@@ -416,6 +426,8 @@ class HighlightConfig(BaseModel):
             self.tighten = "off"
         self.focus_speaker = str(self.focus_speaker or "").strip()[:20]
         self.subtitle_language = " ".join(str(self.subtitle_language or "").split())[:40]
+        language = str(self.speech_language or "").strip().lower()
+        self.speech_language = language if re.fullmatch(r"[a-z]{2,3}", language) else ""
         self.logo_size = min(40.0, max(4.0, float(self.logo_size or 12.0)))
         self.music_volume = min(100.0, max(0.0, float(self.music_volume)))
         self.shorts_count = int(self.shorts_count or 0)

@@ -261,7 +261,11 @@ export default function Analysis() {
         )}
         {paused && job.brief_failure && !pausing ? (
           <Alert kind="info">
-            <strong>{messages.narrated.pausedTitle}:</strong> {job.brief_failure.message} {messages.narrated.pausedHint}
+            <strong>
+              {job.brief_failure.stage === "director" ? messages.narrated.pausedTitleEditor : messages.narrated.pausedTitle}:
+            </strong>{" "}
+            {job.brief_failure.message}{" "}
+            {job.brief_failure.stage === "director" ? messages.narrated.pausedHintEditor : messages.narrated.pausedHint}
           </Alert>
         ) : (
           paused && (

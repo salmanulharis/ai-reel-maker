@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from app.analysis.boundaries import context_pad, overlapping_text, snap_window
+from app.analysis.boundaries import CutPoints, context_pad, overlapping_text, snap_window
 from app.analysis.scorer import HighlightScorer
 from app.analysis.sequence_limits import keep_best_span, sequence_cap
 from app.analysis.signals import ENERGY_HOP, POOR_QUALITY, quiet_point
@@ -45,6 +45,8 @@ def generate_candidates(
     loudness = _Loudness(energy)
     signals = audio_signals(transcript, loudness.available)
     audio_focus = effective_audio_focus(config.audio_focus, signals)
+    # Where moments can be shortened later without cutting through a word (see fit_candidate).
+    cut_points = CutPoints(transcript, silences, scenes)
 
     def transcript_candidate(
         cid: str,
@@ -70,7 +72,7 @@ def generate_candidates(
         peak = (start + end) / 2
         if hook >= 0.7:
             peak = start + max(0.0, end - start) * 0.25
-        start, end = keep_best_span(start, end, seq_max, peak)
+        start, end = keep_best_span(start, end, seq_max, peak, cut_points.between(start, end))
         score_model = CandidateScore.model_validate(score_data or {})
         text = overlapping_text(transcript, start, end) or fallback_text
         visual = _visual_at(start, scenes, visual_by_scene)
@@ -111,6 +113,7 @@ def generate_candidates(
             "source": "transcript",
             "metrics": score_model.model_dump(),
             "peak": peak,
+            "cuts": cut_points.between(start, end),
             "score_factor": factor,
             "audio_signals": signals,
         }
@@ -158,7 +161,7 @@ def generate_candidates(
                 source_duration,
                 pad=pad,
             )
-            start, end = keep_best_span(start, end, seq_max)
+            start, end = keep_best_span(start, end, seq_max, None, cut_points.between(start, end))
             if loudness.available and not transcript.words:
                 # No speech to align to: cut between sounds rather than through them, but keep
                 # cuts that already sit on a scene change.
@@ -208,6 +211,7 @@ def generate_candidates(
                     "topic": _topic(text) if (text or "").strip() else f"scene-{scene.get('scene_id', 0)}-{int(start)}",
                     "source": "visual",
                     "metrics": metrics.model_dump(),
+                    "cuts": cut_points.between(start, end),
                     "score_factor": _POOR_QUALITY_FACTOR if poor else 1.0,
                     "score_floor": None if poor else _SCENE_FLOOR,
                     "audio_signals": signals,
@@ -231,8 +235,45 @@ def generate_candidates(
                 }
             )
 
-    candidates.sort(key=lambda c: c["score"], reverse=True)
-    return candidates[:max_candidates]
+    return keep_with_coverage(candidates, max_candidates, source_duration)
+
+
+# Up to this share of the kept candidates is reserved so that every stretch of COVERAGE_WINDOW
+# seconds keeps its best moment: setup and context are rarely the highest-scored moments, but a
+# story needs them.
+COVERAGE_SHARE = 0.25
+COVERAGE_WINDOW = 60.0
+
+
+def keep_with_coverage(candidates: list[dict], limit: int, source_duration: float) -> list[dict]:
+    """The best ``limit`` candidates by score, with room kept for the best moment of every
+    stretch of the video that would otherwise have none. Best first."""
+    ranked = sorted(candidates, key=lambda c: c["score"], reverse=True)
+    limit = max(0, int(limit))
+    if len(ranked) <= limit:
+        return ranked
+    reserve = int(limit * COVERAGE_SHARE) if source_duration > COVERAGE_WINDOW * 2 else 0
+    kept = ranked[: limit - reserve]
+    covered = {int(float(c["start"]) // COVERAGE_WINDOW) for c in kept}
+    chosen = {id(c) for c in kept}
+    for candidate in ranked[limit - reserve :]:
+        if reserve <= 0:
+            break
+        window = int(float(candidate["start"]) // COVERAGE_WINDOW)
+        if window in covered:
+            continue
+        kept.append(candidate)
+        chosen.add(id(candidate))
+        covered.add(window)
+        reserve -= 1
+    for candidate in ranked:
+        if len(kept) >= limit:
+            break
+        if id(candidate) not in chosen:
+            kept.append(candidate)
+            chosen.add(id(candidate))
+    kept.sort(key=lambda c: c["score"], reverse=True)
+    return kept
 
 
 def audio_signals(transcript: Transcript, has_loudness: bool) -> list[str]:

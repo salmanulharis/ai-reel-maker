@@ -11,7 +11,7 @@ from flask import Flask
 
 from app.ai.ollama import OllamaError
 from app.analysis.director import CONTENT_FILE, DIRECTOR_FILE
-from app.analysis.pipeline import PARTIAL_FILES, SOUND_EVENTS_FILE, SOUND_VECTORS_FILE, PipelineProgress, VideoAnalyzer
+from app.analysis.pipeline import ANALYSIS_PROXY, PARTIAL_FILES, SOUND_EVENTS_FILE, SOUND_VECTORS_FILE, PipelineProgress, VideoAnalyzer
 from app.analysis.progress import RenderProgress
 from app.analysis.tighten import tighten_clips
 from app.brief.engines.base import BriefPaused
@@ -841,6 +841,7 @@ def _clip_subtitle_writer(subtitle_dir: Path, transcript_for, config: HighlightC
 ANALYSIS_VIDEO = "analysis.mp4"
 _CACHE_FILES = (
     *PARTIAL_FILES,
+    ANALYSIS_PROXY,
     SOUND_EVENTS_FILE,
     SOUND_VECTORS_FILE,
     CONTENT_FILE,

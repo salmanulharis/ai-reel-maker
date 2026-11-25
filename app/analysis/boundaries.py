@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import bisect
+
 from app.models.schemas import Transcript, WordTimestamp
 
 
@@ -78,3 +80,51 @@ def overlapping_text(transcript: Transcript, start: float, end: float) -> str:
 
 def context_pad(mode: str) -> float:
     return {"low": 0.12, "balanced": 0.35, "high": 0.7}.get(mode, 0.35)
+
+
+# Where a clip may start or end, with how good a place it is: 1.0 at a sentence end, a pause
+# or a scene change; 0.5 at a short gap between two words.
+STRONG_CUT = 1.0
+WEAK_CUT = 0.5
+_WORD_GAP = 0.25
+_SENTENCE_MARKS = (".", "!", "?", "。", "！", "？", "।", "؟")
+
+
+class CutPoints:
+    """Every good cut point of a video, for looking up the ones inside a moment."""
+
+    def __init__(self, transcript: Transcript, silences: list[dict], scenes: list[dict]):
+        points: dict[float, float] = {}
+
+        def add(time: float, strength: float) -> None:
+            key = round(float(time), 3)
+            points[key] = max(points.get(key, 0.0), strength)
+
+        words = transcript.words
+        for before, after in zip(words, words[1:]):
+            gap = float(after.start) - float(before.end)
+            if gap < 0:
+                continue
+            sentence = before.word.strip().endswith(_SENTENCE_MARKS)
+            if sentence or gap >= _WORD_GAP:
+                add(float(before.end) + gap / 2, STRONG_CUT if sentence or gap >= 0.6 else WEAK_CUT)
+        for silence in silences or []:
+            start, end = float(silence["start"]), float(silence["end"])
+            if end > start:
+                edge = min(0.15, (end - start) / 2)
+                add(start + edge, STRONG_CUT)
+                add(end - edge, STRONG_CUT)
+        for scene in scenes or []:
+            add(float(scene["start"]), STRONG_CUT)
+        self.times = sorted(points)
+        self.strength = [points[time] for time in self.times]
+
+    def between(self, start: float, end: float, limit: int = 80) -> list[list[float]]:
+        """[time, strength] of the cut points strictly inside start..end (at most ``limit``,
+        the strongest kept)."""
+        low = bisect.bisect_right(self.times, float(start) + 1e-3)
+        high = bisect.bisect_left(self.times, float(end) - 1e-3)
+        found = [[self.times[i], self.strength[i]] for i in range(low, high)]
+        if len(found) > limit:
+            found = sorted(sorted(found, key=lambda item: -item[1])[:limit])
+        return found

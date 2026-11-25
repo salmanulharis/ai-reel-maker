@@ -26,6 +26,44 @@ class VideoProcessor:
         ]
 
     @staticmethod
+    def analysis_proxy_command(input_path: str | Path, output_path: str | Path, short_side: int = 540) -> list[str]:
+        """A small, quick-to-decode copy of the picture for analysis only (scene changes and
+        sampled frames): the shorter side scaled to ``short_side``, every frame and timestamp
+        kept, no sound. Decoding a 4K or AV1 source once here is far cheaper than decoding it
+        for every analysis step."""
+        side = int(short_side)
+        scale = f"scale='if(gte(iw,ih),-2,{side})':'if(gte(iw,ih),{side},-2)':flags=bilinear"
+        return [
+            "ffmpeg",
+            "-hide_banner",
+            "-y",
+            "-i",
+            safe_path_argument(input_path),
+            "-map",
+            "0:v:0",
+            "-an",
+            "-sn",
+            "-dn",
+            "-vf",
+            f"{scale},format=yuv420p",
+            "-fps_mode",
+            "passthrough",
+            "-c:v",
+            "libx264",
+            "-preset",
+            "ultrafast",
+            "-tune",
+            "fastdecode",
+            "-crf",
+            "28",
+            "-g",
+            "48",
+            "-f",
+            "mp4",
+            safe_path_argument(output_path),
+        ]
+
+    @staticmethod
     def extract_audio_command(input_path: str | Path, output_path: str | Path, sample_rate: int = 16000) -> list[str]:
         return [
             "ffmpeg",
